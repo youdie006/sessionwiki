@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/web-search.png" width="880" alt="session-atlas web UI searching for 'token' across Claude Code and Codex sessions, with a full transcript open on the right">
+  <img src="docs/web-search.png" width="880" alt="session-atlas web UI searching for 'token' across Claude Code and Codex sessions, with a rendered transcript open on the right">
 </p>
 
 That conversation where Claude fixed your CORS bug three weeks ago? It is still on your disk &mdash; you just can't find it. Every AI coding agent writes its sessions to disk: each tool in its own format, in its own folder, on every machine you use. After a few months that is thousands of conversations full of solved problems, and no way to get back to any of them.
@@ -62,7 +62,7 @@ GB). After that, updates are incremental and take seconds.
 | `list` | Recent sessions across all tools in one timeline. `--tool codex`, `--project api`, `-n 50`, `--all` (include subagent transcripts). |
 | `search <query>` | Full-text search over every message of every tool. Substring matching, so partial identifiers and CJK text (Korean, Japanese, Chinese) work without any language setup. Minimum 3 characters. |
 | `show <id>` | One session as a readable transcript. The id prefix from `list`/`search` output is enough. `--full` expands tool calls, `--json` emits the parsed session. |
-| `web` | Local web viewer on `127.0.0.1:7575` &mdash; recent sessions, live search with highlighted snippets, readable transcripts with collapsed tool calls. Never leaves localhost. |
+| `web` | Local web viewer on `127.0.0.1:7575` &mdash; recent sessions grouped by day, live search with highlighted snippets, transcripts with rendered code blocks and collapsed tool calls, light and dark themes. Never leaves localhost. |
 
 ```console
 $ session-atlas search "CORS preflight"
@@ -71,6 +71,13 @@ a906f587b1d1 claude-code 2026-06-09 14:01 .../projects/api-server [assistant]
 
 $ session-atlas show a906
 ```
+
+The web viewer ships with a dark theme (toggle in the sidebar, follows your
+system preference by default):
+
+<p align="center">
+  <img src="docs/web-dark.png" width="760" alt="The same transcript in the dark theme">
+</p>
 
 ## Supported tools
 
