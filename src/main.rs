@@ -3,6 +3,7 @@ mod commands;
 mod index;
 mod model;
 mod util;
+mod web;
 
 use clap::{Parser, Subcommand};
 
@@ -48,6 +49,15 @@ enum Command {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Browse and search sessions in a local web UI
+    Web {
+        /// Port to listen on (localhost only)
+        #[arg(long, default_value_t = 7575)]
+        port: u16,
+        /// Do not open the browser automatically
+        #[arg(long)]
+        no_open: bool,
+    },
     /// Print one session as a readable transcript
     Show {
         /// Session id (prefix is enough), from list/search output
@@ -71,6 +81,7 @@ fn main() {
         Command::Search { query, limit, tool, project } => {
             commands::search(&query, limit, tool.as_deref(), project.as_deref())
         }
+        Command::Web { port, no_open } => web::serve(port, no_open),
         Command::Show { id, full, json } => commands::show(&id, full, json),
     };
     if let Err(e) = result {

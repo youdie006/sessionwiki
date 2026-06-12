@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>session-atlas</title>
+<style>
+  :root {
+    --paper: #faf9f6;
+    --card: #ffffff;
+    --ink: #1d1d1b;
+    --muted: #6f6c64;
+    --line: #e4e1da;
+    --accent: #355bd0;
+    --user-bg: #f0ede6;
+    --tool-bg: #f6f5f1;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Pretendard Variable",
+      Pretendard, "Noto Sans KR", Roboto, sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    font-size: 14px;
+    line-height: 1.55;
+  }
+  .layout { display: flex; height: 100vh; }
+
+  aside {
+    width: 360px;
+    min-width: 280px;
+    border-right: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    background: var(--paper);
+  }
+  .brand {
+    padding: 14px 16px 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  .brand h1 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: .01em; }
+  .brand .stats { color: var(--muted); font-size: 12px; margin-top: 3px; }
+  .controls { padding: 10px 12px; border-bottom: 1px solid var(--line); display: flex; gap: 8px; }
+  .controls input[type="search"] {
+    flex: 1;
+    padding: 7px 10px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: var(--card);
+    font: inherit;
+    color: inherit;
+  }
+  .controls input[type="search"]:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
+  .controls select {
+    padding: 7px 8px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: var(--card);
+    font: inherit;
+    color: inherit;
+  }
+  nav { overflow-y: auto; flex: 1; }
+  .item {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    cursor: pointer;
+  }
+  .item:hover { background: #f3f1ec; }
+  .item.active { background: #e9edf9; }
+  .item .title {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    font-weight: 480;
+  }
+  .item .meta { color: var(--muted); font-size: 12px; margin-top: 3px; }
+  .item .snip { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+  .item mark { background: #ffe9a8; color: inherit; padding: 0 1px; border-radius: 2px; }
+  .tool-name { color: var(--accent); }
+  .empty { padding: 24px 16px; color: var(--muted); }
+
+  main { flex: 1; overflow-y: auto; }
+  .placeholder { padding: 48px; color: var(--muted); max-width: 560px; }
+  .placeholder h2 { font-size: 16px; color: var(--ink); }
+  .placeholder code { background: var(--tool-bg); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+
+  .doc { max-width: 860px; margin: 0 auto; padding: 28px 32px 80px; }
+  .doc-head { border-bottom: 1px solid var(--line); padding-bottom: 14px; margin-bottom: 22px; }
+  .doc-head h2 { margin: 0 0 8px; font-size: 18px; line-height: 1.4; }
+  .doc-head dl {
+    display: grid;
+    grid-template-columns: 84px 1fr;
+    gap: 2px 14px;
+    margin: 0;
+    font-size: 12.5px;
+  }
+  .doc-head dt { color: var(--muted); }
+  .doc-head dd { margin: 0; overflow-wrap: anywhere; }
+
+  .msg { margin-bottom: 14px; }
+  .msg .role { font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+  .msg .body {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    padding: 10px 14px;
+    border-radius: 8px;
+  }
+  .msg.user .body { background: var(--user-bg); }
+  .msg.user .role { color: #7a6a45; }
+  .msg.assistant .body { background: var(--card); border: 1px solid var(--line); }
+  .msg.tool details {
+    background: var(--tool-bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 14px;
+  }
+  .msg.tool summary {
+    cursor: pointer;
+    color: var(--muted);
+    font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .msg.tool .body { padding: 8px 0 4px; font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace; font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside>
+    <div class="brand">
+      <h1>session-atlas</h1>
+      <div class="stats" id="stats">loading index&hellip;</div>
+    </div>
+    <div class="controls">
+      <input type="search" id="q" placeholder="Search all sessions (3+ chars)" autocomplete="off">
+      <select id="tool">
+        <option value="">all tools</option>
+      </select>
+    </div>
+    <nav id="list"></nav>
+  </aside>
+  <main id="main">
+    <div class="placeholder">
+      <h2>Pick a session on the left</h2>
+      <p>This is a read-only view of your local index. To bring it up to date,
+         run <code>session-atlas list</code> in a terminal, then reload.</p>
+    </div>
+  </main>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+let activeEl = null;
+
+async function jget(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+function fmtBytes(n) {
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return n.toFixed(i ? 1 : 0) + " " + u[i];
+}
+
+function fmtDate(iso) {
+  if (!iso) return "-";
+  return iso.slice(0, 16).replace("T", " ");
+}
+
+// Snippets mark matches with U+0002 .. U+0003; build DOM nodes, never HTML.
+function snippetNodes(text) {
+  const frag = document.createDocumentFragment();
+  let inMark = false;
+  for (const part of text.split(/([\u0002\u0003])/)) {
+    if (part === "\u0002") { inMark = true; continue; }
+    if (part === "\u0003") { inMark = false; continue; }
+    if (!part) continue;
+    if (inMark) {
+      const m = document.createElement("mark");
+      m.textContent = part;
+      frag.appendChild(m);
+    } else {
+      frag.appendChild(document.createTextNode(part));
+    }
+  }
+  return frag;
+}
+
+function renderItems(rows, isSearch) {
+  const list = $("list");
+  list.replaceChildren();
+  if (!rows.length) {
+    const d = document.createElement("div");
+    d.className = "empty";
+    d.textContent = isSearch ? "No matches." : "Index is empty. Run: session-atlas list";
+    list.appendChild(d);
+    return;
+  }
+  for (const r of rows) {
+    const item = document.createElement("div");
+    item.className = "item";
+    const title = document.createElement("div");
+    title.className = "title";
+    title.textContent = r.title || "(untitled)";
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const tool = document.createElement("span");
+    tool.className = "tool-name";
+    tool.textContent = r.tool;
+    meta.appendChild(tool);
+    const sub = r.kind === "sub" ? " · subagent" : "";
+    meta.appendChild(document.createTextNode(
+      ` · ${fmtDate(r.started)} · ${r.msgs} msgs${sub}`));
+    item.append(title, meta);
+    if (isSearch && r.snippet) {
+      const snip = document.createElement("div");
+      snip.className = "snip";
+      snip.appendChild(snippetNodes(r.snippet));
+      item.appendChild(snip);
+    }
+    item.onclick = () => { openSession(r.id); setActive(item); };
+    list.appendChild(item);
+  }
+}
+
+function setActive(el) {
+  if (activeEl) activeEl.classList.remove("active");
+  el.classList.add("active");
+  activeEl = el;
+}
+
+async function openSession(id) {
+  const s = await jget("/api/session/" + encodeURIComponent(id));
+  const doc = document.createElement("div");
+  doc.className = "doc";
+
+  const head = document.createElement("div");
+  head.className = "doc-head";
+  const h2 = document.createElement("h2");
+  h2.textContent = s.title || "(untitled)";
+  const dl = document.createElement("dl");
+  for (const [k, v] of [
+    ["tool", s.tool],
+    ["project", s.project || "-"],
+    ["started", fmtDate(s.started)],
+    ["messages", String(s.messages.length)],
+    ["file", s.path],
+  ]) {
+    const dt = document.createElement("dt");
+    dt.textContent = k;
+    const dd = document.createElement("dd");
+    dd.textContent = v;
+    dl.append(dt, dd);
+  }
+  head.append(h2, dl);
+  doc.appendChild(head);
+
+  for (const m of s.messages) {
+    const wrap = document.createElement("div");
+    wrap.className = "msg " + m.role;
+    if (m.role === "tool") {
+      const det = document.createElement("details");
+      const sum = document.createElement("summary");
+      sum.textContent = m.text.split("\n")[0].slice(0, 120);
+      const body = document.createElement("div");
+      body.className = "body";
+      body.textContent = m.text;
+      det.append(sum, body);
+      wrap.appendChild(det);
+    } else {
+      const role = document.createElement("div");
+      role.className = "role";
+      role.textContent = m.role;
+      const body = document.createElement("div");
+      body.className = "body";
+      body.textContent = m.text;
+      wrap.append(role, body);
+    }
+    doc.appendChild(wrap);
+  }
+  $("main").replaceChildren(doc);
+  $("main").scrollTop = 0;
+}
+
+async function refresh() {
+  const q = $("q").value.trim();
+  const tool = $("tool").value;
+  const t = tool ? `&tool=${encodeURIComponent(tool)}` : "";
+  if (q.length >= 3) {
+    renderItems(await jget(`/api/search?q=${encodeURIComponent(q)}${t}`), true);
+  } else {
+    renderItems(await jget(`/api/sessions?limit=200${t}`), false);
+  }
+}
+
+let timer = null;
+$("q").addEventListener("input", () => {
+  clearTimeout(timer);
+  timer = setTimeout(refresh, 250);
+});
+$("tool").addEventListener("change", refresh);
+
+(async function init() {
+  const stats = await jget("/api/stats");
+  let sessions = 0, bytes = 0;
+  for (const t of stats.tools) {
+    sessions += t.sessions;
+    bytes += t.bytes;
+    const opt = document.createElement("option");
+    opt.value = t.tool;
+    opt.textContent = t.tool;
+    $("tool").appendChild(opt);
+  }
+  $("stats").textContent =
+    `${sessions.toLocaleString()} sessions · ${stats.tools.length} tools · ${fmtBytes(bytes)}`;
+  await refresh();
+})();
+</script>
+</body>
+</html>
