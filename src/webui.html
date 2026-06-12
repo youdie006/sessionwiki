@@ -152,6 +152,16 @@
   .dot.codex { background: var(--dot-codex); }
   .dot.gemini { background: var(--dot-gemini); }
   .item .snip { color: var(--ink-2); font-size: 12px; margin-top: 4px; line-height: 1.5; }
+  .item .preview {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    color: var(--ink-3);
+    font-size: 12px;
+    margin-top: 3px;
+    line-height: 1.45;
+  }
   mark { background: var(--mark); color: inherit; padding: 0 1px; border-radius: 2px; }
   .empty { padding: 22px 14px; color: var(--ink-2); font-size: 13px; }
 
@@ -215,6 +225,31 @@
   .doc-head .resume code:hover { border-color: var(--accent); color: var(--ink); }
 
   .doc { max-width: 800px; margin: 0 auto; padding: 26px 36px 90px; }
+
+  .outline {
+    background: var(--bg-sunken);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    margin-bottom: 22px;
+  }
+  .outline summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 10px 16px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+  }
+  .outline ol {
+    margin: 0;
+    padding: 0 16px 12px 36px;
+    font-size: 13px;
+    color: var(--ink-2);
+  }
+  .outline li { margin: 4px 0; cursor: pointer; }
+  .outline li:hover { color: var(--accent); }
 
   .msg { display: flex; gap: 12px; margin-bottom: 18px; }
   .avatar {
@@ -480,6 +515,8 @@ function renderItems(rows, isSearch) {
       const snip = el("div", "snip");
       snip.appendChild(snippetNodes(r.snippet));
       item.appendChild(snip);
+    } else if (r.preview) {
+      item.appendChild(el("div", "preview", r.preview.replace(/\s+/g, " ")));
     }
     item.onclick = () => { openSession(r.id); setActive(item); };
     list.appendChild(item);
@@ -526,7 +563,29 @@ async function openSession(id) {
   }
 
   const doc = el("div", "doc");
-  for (const m of s.messages) {
+
+  // Outline: the user turns are the session's table of contents.
+  // Each entry jumps to its message in the transcript.
+  const userTurns = [];
+  s.messages.forEach((m, i) => {
+    const t = m.text.trimStart();
+    if (m.role === "user" && !t.startsWith("<") && !t.startsWith("[Request interrupted")) userTurns.push(i);
+  });
+  const anchors = {};
+  if (userTurns.length >= 3) {
+    const det = el("details", "outline");
+    det.appendChild(el("summary", "", `Outline · ${userTurns.length} turns`));
+    const ol = el("ol");
+    for (const i of userTurns) {
+      const li = el("li", "", s.messages[i].text.replace(/\s+/g, " ").slice(0, 110));
+      li.onclick = () => anchors[i] && anchors[i].scrollIntoView({ behavior: "smooth", block: "start" });
+      ol.appendChild(li);
+    }
+    det.appendChild(ol);
+    doc.appendChild(det);
+  }
+
+  for (const [mi, m] of s.messages.entries()) {
     if (m.role === "tool") {
       const row = el("div", "toolrow");
       const det = el("details");
@@ -535,6 +594,7 @@ async function openSession(id) {
       det.append(sum, body);
       row.appendChild(det);
       doc.appendChild(row);
+      anchors[mi] = row;
       continue;
     }
     const wrap = el("div", "msg " + m.role);
@@ -547,6 +607,7 @@ async function openSession(id) {
     content.appendChild(body);
     wrap.append(av, content);
     doc.appendChild(wrap);
+    anchors[mi] = wrap;
   }
   $("main").replaceChildren(head, doc);
   $("main").scrollTop = 0;

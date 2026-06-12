@@ -127,7 +127,7 @@ pub fn search(query: &str, limit: usize, tool: Option<&str>, project: Option<&st
     Ok(())
 }
 
-pub fn show(id: &str, full: bool, json: bool) -> Result<()> {
+pub fn show(id: &str, full: bool, json: bool, outline: bool) -> Result<()> {
     let mut conn = index::open()?;
     index::sync(&mut conn, None)?;
     let row = resolve_one(&conn, id)?;
@@ -137,6 +137,36 @@ pub fn show(id: &str, full: bool, json: bool) -> Result<()> {
 
     if json {
         println!("{}", serde_json::to_string_pretty(&session)?);
+        return Ok(());
+    }
+
+    if outline {
+        // A session's user turns are its table of contents; the last
+        // assistant message is where it ended. No LLM required.
+        println!("{}", bold(&session.title));
+        println!(
+            "{}",
+            dim(&format!(
+                "{} | {} | {} | {} messages",
+                session.tool,
+                project_label(&session.project),
+                fmt_date(session.started),
+                session.messages.len()
+            ))
+        );
+        println!();
+        let mut n = 0;
+        for m in &session.messages {
+            if m.role == Role::User && !is_harness_noise(&m.text) {
+                n += 1;
+                println!("{:>3}. {}", n, truncate(&m.text, 110));
+            }
+        }
+        if let Some(last) = session.messages.iter().rev().find(|m| m.role == Role::Assistant) {
+            println!();
+            println!("{}", bold("ended with:"));
+            println!("{}", truncate(&last.text, 400));
+        }
         return Ok(());
     }
 
@@ -173,6 +203,12 @@ pub fn show(id: &str, full: bool, json: bool) -> Result<()> {
         println!();
     }
     Ok(())
+}
+
+/// Slash-command echoes and interruption markers are not conversation.
+fn is_harness_noise(text: &str) -> bool {
+    let t = text.trim_start();
+    t.starts_with('<') || t.starts_with("[Request interrupted")
 }
 
 /// Resolve an id prefix to exactly one indexed session.

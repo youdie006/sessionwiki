@@ -61,10 +61,10 @@ GB). After that, updates are incremental and take seconds.
 | `scan` | Discover session stores on this machine: which tools, where, how many, how big. Pure filesystem walk, instant. |
 | `list` | Recent sessions across all tools in one timeline. `--tool codex`, `--project api`, `-n 50`, `--all` (include subagent transcripts). |
 | `search <query>` | Full-text search over every message of every tool. Substring matching, so partial identifiers and CJK text (Korean, Japanese, Chinese) work without any language setup. Minimum 3 characters. |
-| `show <id>` | One session as a readable transcript. The id prefix from `list`/`search` output is enough. `--full` expands tool calls, `--json` emits the parsed session. |
+| `show <id>` | One session as a readable transcript. The id prefix from `list`/`search` output is enough. `--full` expands tool calls, `--json` emits the parsed session, `--outline` prints a digest instead: every question you asked plus how the session ended &mdash; the fastest way to recall what a long session was about. |
 | `resume <id>` | Reopen the session in its original tool: runs `claude --resume <uuid>` or `codex resume <uuid>` in the right project directory. `--print` to just show the command. For a subagent transcript it resumes the parent session. |
 | `brief <id>` | Emit the session as a markdown briefing (head and tail of long sessions, middle omitted) &mdash; paste it into any tool to carry the context over, including across tools. `--max-chars`, `--tools`. |
-| `web` | Local web viewer on `127.0.0.1:7575` &mdash; recent sessions grouped by day, live search with highlighted snippets, transcripts with rendered code blocks and collapsed tool calls, a copyable resume command per session, light and dark themes. Never leaves localhost. |
+| `web` | Local web viewer on `127.0.0.1:7575` &mdash; recent sessions grouped by day with a preview of how each one ended, live search with highlighted snippets, transcripts with rendered code blocks, a clickable outline of long sessions, collapsed tool calls, a copyable resume command, light and dark themes. Never leaves localhost. |
 
 ```console
 $ session-atlas search "CORS preflight"

@@ -202,7 +202,16 @@ pub struct SessionRow {
     pub started: Option<String>,
     pub msg_count: i64,
     pub kind: String,
+    /// Tail of the conversation (last assistant message), so a list can show
+    /// how the session ended without opening it.
+    pub preview: Option<String>,
 }
+
+/// Correlated subquery for the preview column; messages.id preserves
+/// insertion order, which is message order.
+const PREVIEW_SQL: &str = "(SELECT substr(m2.text, 1, 280) FROM messages m2
+    WHERE m2.session_id = f.session_id AND m2.role = 'assistant'
+    ORDER BY m2.id DESC LIMIT 1)";
 
 pub fn recent(
     conn: &Connection,
@@ -211,8 +220,9 @@ pub fn recent(
     project: Option<&str>,
     include_subagents: bool,
 ) -> Result<Vec<SessionRow>> {
-    let mut sql = String::from(
-        "SELECT session_id, tool, path, project, title, started, msg_count, kind FROM files WHERE 1=1",
+    let mut sql = format!(
+        "SELECT session_id, tool, path, project, title, started, msg_count, kind, {PREVIEW_SQL}
+         FROM files f WHERE 1=1",
     );
     let mut args: Vec<String> = Vec::new();
     if !include_subagents {
@@ -239,6 +249,7 @@ pub fn recent(
             started: r.get(5)?,
             msg_count: r.get(6)?,
             kind: r.get(7)?,
+            preview: r.get(8)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -299,6 +310,7 @@ pub fn search(
                 started: r.get(5)?,
                 msg_count: r.get(6)?,
                 kind: r.get(7)?,
+                preview: None,
             },
             role: r.get(8)?,
             snippet: r.get(9)?,
@@ -323,6 +335,7 @@ pub fn resolve(conn: &Connection, id_prefix: &str) -> Result<Vec<SessionRow>> {
             started: r.get(5)?,
             msg_count: r.get(6)?,
             kind: r.get(7)?,
+            preview: None,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

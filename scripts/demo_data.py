@@ -120,6 +120,21 @@ claude_session(
      ("assistant", "With 8 workers the bench run drops from 212 to 31 minutes. I kept per-partition transactions so a failed partition retries alone without rolling back the others.")],
     7, 2)
 
+claude_session(
+    "-home-demo-projects-web-app", "/home/demo/projects/web-app",
+    "Checkout flow: validation, race condition, and a11y pass",
+    [("user", "The checkout form lets users submit twice if they double-click. Fix that first."),
+     ("assistant", "Disabling the button on first submit and guarding the handler with an in-flight flag. Also debouncing at the API layer so a retry after a network error still works."),
+     ("Bash", "npm test -- checkout.submit"),
+     ("user", "Good. Next: the coupon field accepts expired codes and only fails at the payment step."),
+     ("assistant", "Moved coupon validation to the field's blur event with a server check, so users see the error before they reach payment. Expired and exhausted codes now fail inline."),
+     ("user", "QA says screen readers skip the error messages entirely."),
+     ("assistant", "The errors were rendered outside the form's accessibility tree. Wrapped them in aria-live regions tied to each field with aria-describedby - VoiceOver and NVDA both announce them now."),
+     ("user", "Run the full suite and summarize what changed."),
+     ("Bash", "npm test"),
+     ("assistant", "All 84 tests pass. Summary: double-submit guard on the button and handler, inline server-side coupon validation on blur, and aria-live error regions wired to each field.")],
+    9, 10)
+
 codex_session(
     "/home/demo/projects/web-app",
     [("user", "Migrate the dashboard route to React Server Components. Keep the chart widgets client-side."),

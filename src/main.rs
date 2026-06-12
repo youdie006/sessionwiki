@@ -69,6 +69,9 @@ enum Command {
         /// Emit the parsed session as JSON
         #[arg(long)]
         json: bool,
+        /// Show a digest instead: every user turn plus how the session ended
+        #[arg(long)]
+        outline: bool,
     },
     /// Reopen a session in its original tool (claude --resume / codex resume)
     Resume {
@@ -102,7 +105,7 @@ fn main() {
             commands::search(&query, limit, tool.as_deref(), project.as_deref())
         }
         Command::Web { port, no_open } => web::serve(port, no_open),
-        Command::Show { id, full, json } => commands::show(&id, full, json),
+        Command::Show { id, full, json, outline } => commands::show(&id, full, json, outline),
         Command::Resume { id, print } => commands::resume_cmd(&id, print),
         Command::Brief { id, max_chars, tools } => commands::brief(&id, max_chars, tools),
     };

@@ -125,6 +125,7 @@ fn row_json(r: &index::SessionRow) -> serde_json::Value {
         "started": r.started,
         "msgs": r.msg_count,
         "kind": r.kind,
+        "preview": r.preview,
     })
 }
 
