@@ -50,7 +50,10 @@ session-atlas search "토큰 만료"          # CJK works (trigram index)
 session-atlas show 3f9c2a1b04e7         # readable transcript (id prefix is enough)
 session-atlas show 3f9c --full          # include full tool inputs
 session-atlas show 3f9c --json          # parsed session as JSON
+session-atlas web                       # browse it all in a local web UI
 ```
+
+`web` serves a read-only viewer on `127.0.0.1:7575`: recent sessions and full-text search with highlighted matches on the left, a readable transcript with collapsed tool calls on the right. It never leaves localhost.
 
 ## Supported tools
 
@@ -89,6 +92,7 @@ Sessions contain your code and your conversations. session-atlas:
 - `sync` — merge archives from multiple machines
 - `clean` — reclaim disk from huge old session stores, safely
 - `stats` — usage breakdown per tool, project, and month
+- prebuilt binaries, web UI screenshots with demo data
 - more adapters
 
 ## License
