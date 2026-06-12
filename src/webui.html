@@ -204,6 +204,15 @@
   }
   .doc-head .chips .chip { display: inline-flex; align-items: center; gap: 5px; }
   .doc-head .path { color: var(--ink-3); font-size: 11.5px; margin-top: 4px; overflow-wrap: anywhere; }
+  .doc-head .resume {
+    margin-top: 6px;
+    font-size: 11.5px;
+    color: var(--ink-2);
+  }
+  .doc-head .resume code {
+    cursor: pointer;
+  }
+  .doc-head .resume code:hover { border-color: var(--accent); color: var(--ink); }
 
   .doc { max-width: 800px; margin: 0 auto; padding: 26px 36px 90px; }
 
@@ -499,6 +508,22 @@ async function openSession(id) {
   chips.appendChild(el("span", "chip", s.messages.length + " messages"));
   head.appendChild(chips);
   head.appendChild(el("div", "path", s.path));
+  if (s.resume) {
+    const row = el("div", "resume");
+    row.appendChild(document.createTextNode("resume in terminal: "));
+    const code = el("code", "", s.resume);
+    code.title = "Click to copy";
+    code.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(s.resume);
+        const prev = code.textContent;
+        code.textContent = "copied";
+        setTimeout(() => { code.textContent = prev; }, 900);
+      } catch (e) { /* clipboard unavailable over plain http on some setups */ }
+    };
+    row.appendChild(code);
+    head.appendChild(row);
+  }
 
   const doc = el("div", "doc");
   for (const m of s.messages) {

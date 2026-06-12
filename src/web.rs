@@ -1,4 +1,4 @@
-use crate::{adapters, index};
+use crate::{adapters, index, resume};
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde_json::json;
@@ -107,8 +107,13 @@ fn api_session(conn: &Connection, id: &str) -> Result<Boxed> {
     let matches = index::resolve(conn, id)?;
     let row = matches.first().context("session not found")?;
     let adapter = adapters::by_name(&row.tool).context("unknown tool")?;
-    let session = adapter.parse(std::path::Path::new(&row.path))?;
-    json_response(serde_json::to_value(&session)?)
+    let path = std::path::Path::new(&row.path);
+    let session = adapter.parse(path)?;
+    let mut v = serde_json::to_value(&session)?;
+    if let Some(info) = resume::for_session(&row.tool, path, &row.project) {
+        v["resume"] = json!(info.command_line());
+    }
+    json_response(v)
 }
 
 fn row_json(r: &index::SessionRow) -> serde_json::Value {

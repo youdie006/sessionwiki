@@ -1,6 +1,7 @@
 use crate::adapters;
 use crate::index;
 use crate::model::Role;
+use crate::resume;
 use crate::util::*;
 use anyhow::{bail, Context, Result};
 
@@ -129,18 +130,7 @@ pub fn search(query: &str, limit: usize, tool: Option<&str>, project: Option<&st
 pub fn show(id: &str, full: bool, json: bool) -> Result<()> {
     let mut conn = index::open()?;
     index::sync(&mut conn, None)?;
-    let matches = index::resolve(&conn, id)?;
-    let row = match matches.len() {
-        0 => bail!("no session with id starting \"{id}\" (try: session-atlas list)"),
-        1 => &matches[0],
-        _ => {
-            eprintln!("ambiguous id, candidates:");
-            for m in &matches {
-                eprintln!("  {} {} {}", m.session_id, m.tool, truncate(&m.title, 60));
-            }
-            bail!("be more specific");
-        }
-    };
+    let row = resolve_one(&conn, id)?;
 
     let adapter = adapters::by_name(&row.tool).context("unknown tool in index")?;
     let session = adapter.parse(std::path::Path::new(&row.path))?;
@@ -182,6 +172,166 @@ pub fn show(id: &str, full: bool, json: bool) -> Result<()> {
         }
         println!();
     }
+    Ok(())
+}
+
+/// Resolve an id prefix to exactly one indexed session.
+fn resolve_one(conn: &rusqlite::Connection, id: &str) -> Result<index::SessionRow> {
+    let matches = index::resolve(conn, id)?;
+    match matches.len() {
+        0 => bail!("no session with id starting \"{id}\" (try: session-atlas list)"),
+        1 => Ok(matches.into_iter().next().unwrap()),
+        _ => {
+            eprintln!("ambiguous id, candidates:");
+            for m in &matches {
+                eprintln!("  {} {} {}", m.session_id, m.tool, truncate(&m.title, 60));
+            }
+            bail!("be more specific");
+        }
+    }
+}
+
+pub fn resume_cmd(id: &str, print_only: bool) -> Result<()> {
+    let mut conn = index::open()?;
+    index::sync(&mut conn, None)?;
+    let row = resolve_one(&conn, id)?;
+
+    let path = std::path::Path::new(&row.path);
+    if !path.exists() {
+        bail!(
+            "the session file is gone ({}) - the tool's own cleanup likely deleted it,\n\
+             so a native resume is not possible. Try: session-atlas brief {id}",
+            row.path
+        );
+    }
+    let Some(info) = resume::for_session(&row.tool, path, &row.project) else {
+        bail!(
+            "{} sessions cannot be resumed headlessly. For Gemini CLI, open `gemini` in\n\
+             the project and use /chat resume. You can still carry the context over:\n\
+             session-atlas brief {id}",
+            row.tool
+        );
+    };
+
+    println!("{}", bold(&truncate(&row.title, 80)));
+    if let Some(note) = &info.note {
+        println!("{}", dim(&format!("note: {note}")));
+    }
+    let cwd_display = info.cwd.as_ref().map(|c| c.display().to_string());
+    match (&info.cwd, cwd_display.as_deref()) {
+        (Some(c), Some(d)) if !c.exists() => {
+            println!("{}", dim(&format!("project dir not found on this machine: {d}")));
+            println!("run it where the project lives:");
+            println!("  {}", cyan(&info.command_line()));
+            return Ok(());
+        }
+        (Some(_), Some(d)) => println!("{} {}", dim("in"), d),
+        _ => {}
+    }
+    println!("  {}", cyan(&info.command_line()));
+    if print_only {
+        return Ok(());
+    }
+
+    let mut cmd = std::process::Command::new(info.program);
+    cmd.args(&info.args);
+    if let Some(c) = &info.cwd {
+        cmd.current_dir(c);
+    }
+    match cmd.status() {
+        Ok(status) => {
+            if !status.success() {
+                bail!("{} exited with {status}", info.program);
+            }
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            bail!("`{}` is not installed or not on PATH - run the command above manually", info.program)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn brief(id: &str, max_chars: usize, include_tools: bool) -> Result<()> {
+    let mut conn = index::open()?;
+    index::sync(&mut conn, None)?;
+    let row = resolve_one(&conn, id)?;
+    let adapter = adapters::by_name(&row.tool).context("unknown tool in index")?;
+    let session = adapter.parse(std::path::Path::new(&row.path))?;
+
+    let mut blocks: Vec<String> = Vec::new();
+    for m in &session.messages {
+        match m.role {
+            Role::User => blocks.push(format!("**User:**\n{}", m.text.trim())),
+            Role::Assistant => blocks.push(format!("**Assistant:**\n{}", m.text.trim())),
+            Role::Tool => {
+                if include_tools {
+                    blocks.push(format!("> [tool] {}", truncate(&m.text, 200)));
+                }
+            }
+        }
+    }
+
+    // Budgeting: keep the head and the tail, drop the middle. The opening
+    // frames the task and the tail holds the latest state - both matter
+    // more than the middle of a long session. Cap individual blocks first,
+    // or a single giant message starves both ends.
+    let block_cap = (max_chars / 4).max(400);
+    let blocks: Vec<String> = blocks
+        .into_iter()
+        .map(|b| {
+            if b.chars().count() > block_cap {
+                let cut: String = b.chars().take(block_cap).collect();
+                format!("{cut}\n*[... message truncated ...]*")
+            } else {
+                b
+            }
+        })
+        .collect();
+    let total: usize = blocks.iter().map(|b| b.len() + 2).sum();
+    let body = if total <= max_chars {
+        blocks.join("\n\n")
+    } else {
+        let half = max_chars / 2;
+        let mut head: Vec<&String> = Vec::new();
+        let mut used = 0;
+        for b in &blocks {
+            if used + b.len() > half {
+                break;
+            }
+            used += b.len() + 2;
+            head.push(b);
+        }
+        let mut tail: Vec<&String> = Vec::new();
+        let mut used_tail = 0;
+        for b in blocks.iter().rev() {
+            if used_tail + b.len() > half || head.len() + tail.len() >= blocks.len() {
+                break;
+            }
+            used_tail += b.len() + 2;
+            tail.push(b);
+        }
+        tail.reverse();
+        let omitted = blocks.len() - head.len() - tail.len();
+        let mut parts: Vec<String> = head.into_iter().cloned().collect();
+        if omitted > 0 {
+            parts.push(format!("*[... {omitted} messages omitted ...]*"));
+        }
+        parts.extend(tail.into_iter().cloned());
+        parts.join("\n\n")
+    };
+
+    println!("# Previous session: {}", session.title);
+    println!();
+    println!(
+        "- Tool: {} | Project: {} | Date: {}",
+        session.tool,
+        session.project,
+        fmt_date(session.started)
+    );
+    println!("- Source: {}", session.path.display());
+    println!();
+    println!("{body}");
     Ok(())
 }
 

@@ -2,6 +2,7 @@ mod adapters;
 mod commands;
 mod index;
 mod model;
+mod resume;
 mod util;
 mod web;
 
@@ -69,6 +70,25 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Reopen a session in its original tool (claude --resume / codex resume)
+    Resume {
+        /// Session id (prefix is enough), from list/search output
+        id: String,
+        /// Print the resume command instead of running it
+        #[arg(long)]
+        print: bool,
+    },
+    /// Emit a markdown briefing of a session, ready to paste into a new one
+    Brief {
+        /// Session id (prefix is enough), from list/search output
+        id: String,
+        /// Budget for the briefing body; the middle of long sessions is omitted
+        #[arg(long, default_value_t = 24000)]
+        max_chars: usize,
+        /// Include tool calls in the briefing
+        #[arg(long)]
+        tools: bool,
+    },
 }
 
 fn main() {
@@ -83,6 +103,8 @@ fn main() {
         }
         Command::Web { port, no_open } => web::serve(port, no_open),
         Command::Show { id, full, json } => commands::show(&id, full, json),
+        Command::Resume { id, print } => commands::resume_cmd(&id, print),
+        Command::Brief { id, max_chars, tools } => commands::brief(&id, max_chars, tools),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");

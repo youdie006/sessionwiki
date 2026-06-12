@@ -62,7 +62,9 @@ GB). After that, updates are incremental and take seconds.
 | `list` | Recent sessions across all tools in one timeline. `--tool codex`, `--project api`, `-n 50`, `--all` (include subagent transcripts). |
 | `search <query>` | Full-text search over every message of every tool. Substring matching, so partial identifiers and CJK text (Korean, Japanese, Chinese) work without any language setup. Minimum 3 characters. |
 | `show <id>` | One session as a readable transcript. The id prefix from `list`/`search` output is enough. `--full` expands tool calls, `--json` emits the parsed session. |
-| `web` | Local web viewer on `127.0.0.1:7575` &mdash; recent sessions grouped by day, live search with highlighted snippets, transcripts with rendered code blocks and collapsed tool calls, light and dark themes. Never leaves localhost. |
+| `resume <id>` | Reopen the session in its original tool: runs `claude --resume <uuid>` or `codex resume <uuid>` in the right project directory. `--print` to just show the command. For a subagent transcript it resumes the parent session. |
+| `brief <id>` | Emit the session as a markdown briefing (head and tail of long sessions, middle omitted) &mdash; paste it into any tool to carry the context over, including across tools. `--max-chars`, `--tools`. |
+| `web` | Local web viewer on `127.0.0.1:7575` &mdash; recent sessions grouped by day, live search with highlighted snippets, transcripts with rendered code blocks and collapsed tool calls, a copyable resume command per session, light and dark themes. Never leaves localhost. |
 
 ```console
 $ session-atlas search "CORS preflight"
@@ -78,6 +80,27 @@ system preference by default):
 <p align="center">
   <img src="docs/web-dark.png" width="760" alt="The same transcript in the dark theme">
 </p>
+
+## Pick up where you left off
+
+Finding an old session is half the point; the other half is continuing it.
+
+```console
+$ session-atlas search "rate limiter"
+76a614028a63 codex 2026-06-11 13:00 .../projects/api-server [assistant]
+  ...the bucket invariant 0 <= tokens <= capacity holds after every step...
+
+$ session-atlas resume 76a6           # reopens that conversation in Codex,
+                                      # in the right project directory
+
+$ session-atlas brief 76a6 | claude -p \
+    "Continue this work: add the missing edge-case tests"
+```
+
+`resume` uses each tool's native mechanism (`claude --resume`, `codex resume`),
+so it needs the original session file to still exist. `brief` works even
+across tools: it turns the session into a compact markdown briefing you can
+feed to any agent as context.
 
 ## Supported tools
 
@@ -132,6 +155,8 @@ Sessions contain your code and your conversations, so the bar is simple:
 
 ## Roadmap
 
+- archive mode &mdash; keep sessions in the atlas even after the tool's own
+  cleanup deletes the originals (install early, lose nothing)
 - `link` &mdash; connect sessions to the git commits they produced ("git blame for AI sessions")
 - `sync` &mdash; merge archives from multiple machines
 - `clean` &mdash; reclaim disk from huge old session stores, safely
