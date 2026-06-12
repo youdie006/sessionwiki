@@ -16,10 +16,23 @@ pub fn db_path() -> Result<PathBuf> {
     Ok(dir.join("index.db"))
 }
 
+/// Bump when the schema changes. The index is a disposable cache, so a
+/// mismatch simply drops and rebuilds it instead of migrating.
+const SCHEMA_VERSION: i64 = 2;
+
 pub fn open() -> Result<Connection> {
     let conn = Connection::open(db_path()?)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
+    let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if version != SCHEMA_VERSION {
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS msgs;
+             DROP TABLE IF EXISTS messages;
+             DROP TABLE IF EXISTS files;",
+        )?;
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    }
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS files(
             path       TEXT PRIMARY KEY,
@@ -35,10 +48,21 @@ pub fn open() -> Result<Connection> {
             kind       TEXT NOT NULL DEFAULT 'main'
         );
         CREATE INDEX IF NOT EXISTS idx_files_session ON files(session_id);
+        -- Plain rows + external-content FTS. Deleting a session is an
+        -- indexed lookup here; with session_id stored UNINDEXED inside the
+        -- FTS table it was a full scan per file, which made re-index runs
+        -- quadratic in practice.
+        CREATE TABLE IF NOT EXISTS messages(
+            id         INTEGER PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            role       TEXT NOT NULL,
+            text       TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
         CREATE VIRTUAL TABLE IF NOT EXISTS msgs USING fts5(
             text,
-            session_id UNINDEXED,
-            role UNINDEXED,
+            content='messages',
+            content_rowid='id',
             tokenize='trigram'
         );",
     )?;
@@ -103,7 +127,7 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
 
             let Ok(session) = adapter.parse(&path) else { continue };
             let key = path.to_string_lossy();
-            tx.execute("DELETE FROM msgs WHERE session_id = ?1", params![session.id])?;
+            delete_session_msgs(&tx, &session.id)?;
             tx.execute(
                 "INSERT OR REPLACE INTO files
                  (path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind)
@@ -122,15 +146,30 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
                     if session.subagent { "sub" } else { "main" },
                 ],
             )?;
-            let mut ins =
-                tx.prepare_cached("INSERT INTO msgs(text, session_id, role) VALUES (?1,?2,?3)")?;
+            let mut ins_row = tx.prepare_cached(
+                "INSERT INTO messages(session_id, role, text) VALUES (?1,?2,?3)",
+            )?;
+            let mut ins_fts =
+                tx.prepare_cached("INSERT INTO msgs(rowid, text) VALUES (?1,?2)")?;
             for m in &session.messages {
-                ins.execute(params![m.text, session.id, m.role.label()])?;
+                ins_row.execute(params![session.id, m.role.label(), m.text])?;
+                ins_fts.execute(params![tx.last_insert_rowid(), m.text])?;
             }
         }
         tx.commit()?;
         eprintln!("\r[{tool}] indexed {done}/{total}    ");
     }
+    Ok(())
+}
+
+/// External-content FTS5 requires handing back the old rows on delete.
+fn delete_session_msgs(conn: &Connection, session_id: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO msgs(msgs, rowid, text)
+         SELECT 'delete', id, text FROM messages WHERE session_id = ?1",
+        params![session_id],
+    )?;
+    conn.execute("DELETE FROM messages WHERE session_id = ?1", params![session_id])?;
     Ok(())
 }
 
@@ -140,12 +179,16 @@ fn prune_deleted(conn: &Connection, tool: &str, seen: &[String]) -> Result<()> {
         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
     })?;
     let seen: std::collections::HashSet<&str> = seen.iter().map(String::as_str).collect();
+    let mut gone: Vec<(String, String)> = Vec::new();
     for row in rows {
         let (path, sid) = row?;
         if !seen.contains(path.as_str()) {
-            conn.execute("DELETE FROM files WHERE path = ?1", params![path])?;
-            conn.execute("DELETE FROM msgs WHERE session_id = ?1", params![sid])?;
+            gone.push((path, sid));
         }
+    }
+    for (path, sid) in gone {
+        conn.execute("DELETE FROM files WHERE path = ?1", params![path])?;
+        delete_session_msgs(conn, &sid)?;
     }
     Ok(())
 }
@@ -220,13 +263,18 @@ pub fn search(
     // text, not query syntax.
     let fts_query = format!("\"{}\"", query.replace('"', "\"\""));
 
+    // snippet()/rank only work in a plain FTS5 query context, not under
+    // joins or GROUP BY, so match in a subquery and attach metadata outside.
     let mut sql = String::from(
         "SELECT f.session_id, f.tool, f.path, f.project, f.title, f.started, f.msg_count, f.kind,
-                m.role,
-                snippet(msgs, 0, char(2), char(3), char(8230), 18) AS snip,
-                min(rank) AS best
-         FROM msgs m JOIN files f ON f.session_id = m.session_id
-         WHERE msgs MATCH ?",
+                m.role, x.snip, min(x.rank) AS best
+         FROM (SELECT rowid AS mid,
+                      snippet(msgs, 0, char(2), char(3), char(8230), 18) AS snip,
+                      rank
+               FROM msgs WHERE msgs MATCH ? ORDER BY rank LIMIT 1000) x
+         JOIN messages m ON m.id = x.mid
+         JOIN files f ON f.session_id = m.session_id
+         WHERE 1=1",
     );
     let mut args: Vec<String> = vec![fts_query];
     if let Some(t) = tool {

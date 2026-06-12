@@ -25,10 +25,10 @@ impl Adapter for ClaudeCode {
 
     fn discover(&self) -> Vec<PathBuf> {
         // Main sessions live at <project>/<uuid>.jsonl; subagent transcripts
-        // at <project>/<uuid>/subagents/agent-*.jsonl. Both are sessions.
+        // at <project>/<uuid>/subagents/agent-*.jsonl and nest further when
+        // subagents spawn subagents, so no depth limit here.
         let Some(root) = self.root() else { return vec![] };
         WalkDir::new(root)
-            .max_depth(4)
             .into_iter()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
