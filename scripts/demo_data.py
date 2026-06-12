@@ -5,7 +5,7 @@ Creates fake-but-plausible Claude Code, Codex, and Gemini CLI sessions under
 a throwaway HOME so the web UI can be demoed without exposing real history:
 
     python3 scripts/demo_data.py /tmp/sa-demo
-    HOME=/tmp/sa-demo XDG_DATA_HOME=/tmp/sa-demo/.data session-atlas web
+    HOME=/tmp/sa-demo XDG_DATA_HOME=/tmp/sa-demo/.data sessiondex web
 
 No real session content is used; everything below is written for the demo.
 """

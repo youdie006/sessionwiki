@@ -48,7 +48,7 @@ pub fn scan() -> Result<()> {
             human_size(bytes)
         ))
     );
-    println!("{}", dim("Try: session-atlas search <query>"));
+    println!("{}", dim("Try: sessiondex search <query>"));
     Ok(())
 }
 
@@ -123,7 +123,7 @@ pub fn search(query: &str, limit: usize, tool: Option<&str>, project: Option<&st
         println!("  {snip}");
         println!();
     }
-    println!("{}", dim(&format!("{} sessions. Open one: session-atlas show <id>", hits.len())));
+    println!("{}", dim(&format!("{} sessions. Open one: sessiondex show <id>", hits.len())));
     Ok(())
 }
 
@@ -221,7 +221,7 @@ fn is_harness_noise(text: &str) -> bool {
 fn resolve_one(conn: &rusqlite::Connection, id: &str) -> Result<index::SessionRow> {
     let matches = index::resolve(conn, id)?;
     match matches.len() {
-        0 => bail!("no session with id starting \"{id}\" (try: session-atlas list)"),
+        0 => bail!("no session with id starting \"{id}\" (try: sessiondex list)"),
         1 => Ok(matches.into_iter().next().unwrap()),
         _ => {
             eprintln!("ambiguous id, candidates:");
@@ -242,7 +242,7 @@ pub fn resume_cmd(id: &str, print_only: bool) -> Result<()> {
     if !path.exists() {
         bail!(
             "the session file is gone ({}) - the tool's own cleanup likely deleted it,\n\
-             so a native resume is not possible. Try: session-atlas brief {id}",
+             so a native resume is not possible. Try: sessiondex brief {id}",
             row.path
         );
     }
@@ -250,7 +250,7 @@ pub fn resume_cmd(id: &str, print_only: bool) -> Result<()> {
         bail!(
             "{} sessions cannot be resumed headlessly. For Gemini CLI, open `gemini` in\n\
              the project and use /chat resume. You can still carry the context over:\n\
-             session-atlas brief {id}",
+             sessiondex brief {id}",
             row.tool
         );
     };
@@ -404,7 +404,7 @@ pub fn summarize(
 
     let cmd = cmd
         .map(String::from)
-        .or_else(|| std::env::var("SESSION_ATLAS_SUMMARIZER").ok())
+        .or_else(|| std::env::var("SESSIONDEX_SUMMARIZER").ok())
         .unwrap_or_else(|| "claude -p".to_string());
     eprintln!(
         "{}",

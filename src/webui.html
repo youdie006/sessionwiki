@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:,">
-<title>session-atlas</title>
+<title>sessiondex</title>
 <style>
   :root {
     --bg: #faf9f6;
@@ -168,19 +168,19 @@
   .sidefoot {
     padding: 10px 14px;
     border-top: 1px solid var(--line);
-    display: flex; justify-content: space-between; align-items: center;
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
   }
-  .sidefoot .hint { color: var(--ink-3); font-size: 11px; }
-  .themebtn {
-    font: 500 11.5px/1 inherit;
+  .sidefoot .hint { color: var(--ink-3); font-size: 11px; flex: 1; }
+  .themebtn, .sidefoot select {
+    font: 500 11.5px/1.2 inherit;
     color: var(--ink-2);
     background: var(--card);
     border: 1px solid var(--line);
     border-radius: 8px;
-    padding: 6px 10px;
+    padding: 6px 8px;
     cursor: pointer;
   }
-  .themebtn:hover { color: var(--ink); border-color: var(--line-strong); }
+  .themebtn:hover, .sidefoot select:hover { color: var(--ink); border-color: var(--line-strong); }
 
   /* ---------- main ---------- */
   main { flex: 1; overflow-y: auto; background: var(--bg); }
@@ -352,7 +352,7 @@
 <div class="layout">
   <aside>
     <div class="brand">
-      <h1>session-atlas</h1>
+      <h1>sessiondex</h1>
       <div class="stats" id="stats">loading index&hellip;</div>
     </div>
     <div class="controls">
@@ -367,16 +367,22 @@
     </div>
     <nav id="list"></nav>
     <div class="sidefoot">
-      <span class="hint">read-only view &middot; refresh: <code style="font-family:inherit">session-atlas list</code></span>
+      <span class="hint" id="hint">read-only view &middot; refresh: sessiondex list</span>
+      <select id="lang" aria-label="Language">
+        <option value="en">EN</option>
+        <option value="ko">한국어</option>
+        <option value="ja">日本語</option>
+        <option value="zh">中文</option>
+      </select>
       <button class="themebtn" id="theme">Dark</button>
     </div>
   </aside>
   <main id="main">
     <div class="placeholder">
-      <h2>Pick a session on the left</h2>
-      <p>Everything your coding agents ever said, in one place. Search works across
+      <h2 id="ph-title">Pick a session on the left</h2>
+      <p id="ph-p1">Everything your coding agents ever said, in one place. Search works across
          every tool at once &mdash; partial words and CJK included.</p>
-      <p>The index updates when you run <code>session-atlas list</code> or
+      <p id="ph-p2">The index updates when you run <code>sessiondex list</code> or
          <code>search</code> in a terminal; reload this page afterwards.</p>
     </div>
   </main>
@@ -385,17 +391,129 @@
 const $ = (id) => document.getElementById(id);
 let activeEl = null;
 
+/* ---------- i18n ---------- */
+const I18N = {
+  en: {
+    loading: "loading index…",
+    searchPh: "Search sessions",
+    allTools: "all tools",
+    groups: { today: "Today", yesterday: "Yesterday", week: "This week", month: "This month", earlier: "Earlier" },
+    msgs: (n) => `${n} msgs`,
+    subagent: "subagent",
+    untitled: "(untitled)",
+    noMatches: "No matches.",
+    emptyIndex: "Index is empty - run: sessiondex list",
+    phTitle: "Pick a session on the left",
+    phP1: "Everything your coding agents ever said, in one place. Search works across every tool at once - partial words and CJK included.",
+    phP2: "The index updates when you run `sessiondex list` or `search` in a terminal; reload this page afterwards.",
+    messages: (n) => `${n} messages`,
+    resumeLabel: "resume in terminal: ",
+    copied: "copied",
+    clickToCopy: "Click to copy",
+    outline: (n) => `Outline · ${n} turns`,
+    hint: "read-only view · refresh: sessiondex list",
+    themeDark: "Dark", themeLight: "Light",
+    stats: (s, t, b) => `${s} sessions · ${t} tools · ${b}`,
+  },
+  ko: {
+    loading: "인덱스 불러오는 중…",
+    searchPh: "세션 검색",
+    allTools: "모든 툴",
+    groups: { today: "오늘", yesterday: "어제", week: "이번 주", month: "이번 달", earlier: "이전" },
+    msgs: (n) => `메시지 ${n}`,
+    subagent: "서브에이전트",
+    untitled: "(제목 없음)",
+    noMatches: "결과가 없습니다.",
+    emptyIndex: "인덱스가 비어 있습니다 - 터미널에서 sessiondex list 실행",
+    phTitle: "왼쪽에서 세션을 선택하세요",
+    phP1: "에이전트와 나눈 모든 대화를 한곳에서. 검색은 모든 툴을 한 번에 훑습니다 - 부분 단어, 한국어 모두 지원.",
+    phP2: "터미널에서 `sessiondex list`나 `search`를 실행하면 인덱스가 갱신됩니다. 이후 이 페이지를 새로고침하세요.",
+    messages: (n) => `메시지 ${n}개`,
+    resumeLabel: "터미널에서 이어가기: ",
+    copied: "복사됨",
+    clickToCopy: "클릭하여 복사",
+    outline: (n) => `목차 · 질문 ${n}개`,
+    hint: "읽기 전용 · 갱신: sessiondex list",
+    themeDark: "다크", themeLight: "라이트",
+    stats: (s, t, b) => `세션 ${s} · 툴 ${t} · ${b}`,
+  },
+  ja: {
+    loading: "インデックスを読み込み中…",
+    searchPh: "セッションを検索",
+    allTools: "すべてのツール",
+    groups: { today: "今日", yesterday: "昨日", week: "今週", month: "今月", earlier: "それ以前" },
+    msgs: (n) => `${n}件`,
+    subagent: "サブエージェント",
+    untitled: "(無題)",
+    noMatches: "該当なし。",
+    emptyIndex: "インデックスが空です - ターミナルで sessiondex list を実行",
+    phTitle: "左からセッションを選択",
+    phP1: "エージェントとのすべての会話を一箇所で。検索は全ツールを一度に探します - 部分一致も日本語も対応。",
+    phP2: "ターミナルで `sessiondex list` または `search` を実行するとインデックスが更新されます。その後このページを再読み込みしてください。",
+    messages: (n) => `${n}件のメッセージ`,
+    resumeLabel: "ターミナルで再開: ",
+    copied: "コピー済み",
+    clickToCopy: "クリックでコピー",
+    outline: (n) => `目次 · ${n}ターン`,
+    hint: "読み取り専用 · 更新: sessiondex list",
+    themeDark: "ダーク", themeLight: "ライト",
+    stats: (s, t, b) => `セッション ${s} · ツール ${t} · ${b}`,
+  },
+  zh: {
+    loading: "正在加载索引…",
+    searchPh: "搜索会话",
+    allTools: "全部工具",
+    groups: { today: "今天", yesterday: "昨天", week: "本周", month: "本月", earlier: "更早" },
+    msgs: (n) => `${n}条`,
+    subagent: "子代理",
+    untitled: "(无标题)",
+    noMatches: "没有匹配结果。",
+    emptyIndex: "索引为空 - 请在终端运行 sessiondex list",
+    phTitle: "从左侧选择一个会话",
+    phP1: "与代理的所有对话，尽在一处。搜索一次覆盖所有工具 - 支持部分匹配和中文。",
+    phP2: "在终端运行 `sessiondex list` 或 `search` 后索引会更新，然后刷新本页。",
+    messages: (n) => `${n}条消息`,
+    resumeLabel: "在终端继续: ",
+    copied: "已复制",
+    clickToCopy: "点击复制",
+    outline: (n) => `大纲 · ${n}轮`,
+    hint: "只读视图 · 刷新: sessiondex list",
+    themeDark: "深色", themeLight: "浅色",
+    stats: (s, t, b) => `${s} 个会话 · ${t} 个工具 · ${b}`,
+  },
+};
+const lang = localStorage.getItem("sdx-lang")
+  || ((navigator.language || "en").slice(0, 2) in I18N ? (navigator.language || "en").slice(0, 2) : "en");
+const L = I18N[lang] || I18N.en;
+document.documentElement.lang = lang;
+
+function applyStaticStrings() {
+  $("q").placeholder = L.searchPh;
+  $("tool").options[0].textContent = L.allTools;
+  $("hint").textContent = L.hint;
+  $("ph-title").textContent = L.phTitle;
+  $("ph-p1").textContent = L.phP1;
+  $("ph-p2").textContent = L.phP2.replace(/`/g, "");
+  $("stats").textContent = L.loading;
+  $("lang").value = lang;
+}
+applyStaticStrings();
+$("lang").onchange = () => {
+  localStorage.setItem("sdx-lang", $("lang").value);
+  location.reload();
+};
+
 /* ---------- theme ---------- */
 function applyTheme(t) {
   document.documentElement.dataset.theme = t;
-  $("theme").textContent = t === "dark" ? "Light" : "Dark";
+  $("theme").textContent = t === "dark" ? L.themeLight : L.themeDark;
 }
-const savedTheme = localStorage.getItem("sa-theme")
+const savedTheme = localStorage.getItem("sdx-theme")
   || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
 applyTheme(savedTheme);
 $("theme").onclick = () => {
   const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-  localStorage.setItem("sa-theme", next);
+  localStorage.setItem("sdx-theme", next);
   applyTheme(next);
 };
 
@@ -419,17 +537,17 @@ function fmtDate(iso) {
 }
 
 function dayGroup(iso) {
-  if (!iso) return "Earlier";
+  if (!iso) return "earlier";
   const d = new Date(iso);
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const that = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   const diff = Math.round((today - that) / 86400000);
-  if (diff <= 0) return "Today";
-  if (diff === 1) return "Yesterday";
-  if (diff < 7) return "This week";
-  if (diff < 31) return "This month";
-  return "Earlier";
+  if (diff <= 0) return "today";
+  if (diff === 1) return "yesterday";
+  if (diff < 7) return "week";
+  if (diff < 31) return "month";
+  return "earlier";
 }
 
 const el = (tag, cls, text) => {
@@ -499,8 +617,7 @@ function renderItems(rows, isSearch) {
   const list = $("list");
   list.replaceChildren();
   if (!rows.length) {
-    list.appendChild(el("div", "empty",
-      isSearch ? "No matches." : "Index is empty - run: session-atlas list"));
+    list.appendChild(el("div", "empty", isSearch ? L.noMatches : L.emptyIndex));
     return;
   }
   let lastGroup = null;
@@ -508,16 +625,16 @@ function renderItems(rows, isSearch) {
     if (!isSearch) {
       const g = dayGroup(r.started);
       if (g !== lastGroup) {
-        list.appendChild(el("div", "group", g));
+        list.appendChild(el("div", "group", L.groups[g]));
         lastGroup = g;
       }
     }
     const item = el("div", "item");
-    item.appendChild(el("div", "title", r.title || "(untitled)"));
+    item.appendChild(el("div", "title", r.title || L.untitled));
     const meta = el("div", "meta");
     meta.appendChild(el("span", "dot " + r.tool));
-    const sub = r.kind === "sub" ? " · subagent" : "";
-    meta.appendChild(el("span", "", `${r.tool} · ${fmtDate(r.started)} · ${r.msgs} msgs${sub}`));
+    const sub = r.kind === "sub" ? ` · ${L.subagent}` : "";
+    meta.appendChild(el("span", "", `${r.tool} · ${fmtDate(r.started)} · ${L.msgs(r.msgs)}${sub}`));
     item.appendChild(meta);
     if (isSearch && r.snippet) {
       const snip = el("div", "snip");
@@ -542,7 +659,7 @@ async function openSession(id) {
   const s = await jget("/api/session/" + encodeURIComponent(id));
 
   const head = el("div", "doc-head");
-  head.appendChild(el("h2", "", s.title || "(untitled)"));
+  head.appendChild(el("h2", "", s.title || L.untitled));
   const chips = el("div", "chips");
   const toolChip = el("span", "chip");
   toolChip.appendChild(el("span", "dot " + s.tool));
@@ -550,7 +667,7 @@ async function openSession(id) {
   chips.appendChild(toolChip);
   chips.appendChild(el("span", "chip", s.project || "-"));
   chips.appendChild(el("span", "chip", fmtDate(s.started)));
-  chips.appendChild(el("span", "chip", s.messages.length + " messages"));
+  chips.appendChild(el("span", "chip", L.messages(s.messages.length)));
   head.appendChild(chips);
   head.appendChild(el("div", "path", s.path));
   if (s.summary) {
@@ -558,14 +675,14 @@ async function openSession(id) {
   }
   if (s.resume) {
     const row = el("div", "resume");
-    row.appendChild(document.createTextNode("resume in terminal: "));
+    row.appendChild(document.createTextNode(L.resumeLabel));
     const code = el("code", "", s.resume);
-    code.title = "Click to copy";
+    code.title = L.clickToCopy;
     code.onclick = async () => {
       try {
         await navigator.clipboard.writeText(s.resume);
         const prev = code.textContent;
-        code.textContent = "copied";
+        code.textContent = L.copied;
         setTimeout(() => { code.textContent = prev; }, 900);
       } catch (e) { /* clipboard unavailable over plain http on some setups */ }
     };
@@ -585,7 +702,7 @@ async function openSession(id) {
   const anchors = {};
   if (userTurns.length >= 3) {
     const det = el("details", "outline");
-    det.appendChild(el("summary", "", `Outline · ${userTurns.length} turns`));
+    det.appendChild(el("summary", "", L.outline(userTurns.length)));
     const ol = el("ol");
     for (const i of userTurns) {
       const li = el("li", "", s.messages[i].text.replace(/\s+/g, " ").slice(0, 110));
@@ -664,7 +781,7 @@ document.addEventListener("keydown", (e) => {
     $("tool").appendChild(opt);
   }
   $("stats").textContent =
-    `${sessions.toLocaleString()} sessions · ${stats.tools.length} tools · ${fmtBytes(bytes)}`;
+    L.stats(sessions.toLocaleString(), stats.tools.length, fmtBytes(bytes));
   await refresh();
 })();
 </script>

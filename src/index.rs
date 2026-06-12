@@ -6,12 +6,21 @@ use std::io::Write;
 use std::path::PathBuf;
 
 /// The index lives outside the session stores and never touches them.
-/// Default: ~/.local/share/session-atlas/index.db (platform equivalent).
+/// Default: ~/.local/share/sessiondex/index.db (platform equivalent).
 pub fn db_path() -> Result<PathBuf> {
-    let dir = std::env::var_os("SESSION_ATLAS_DATA")
+    let dir = std::env::var_os("SESSIONDEX_DATA")
         .map(PathBuf::from)
-        .or_else(|| dirs::data_dir().map(|d| d.join("session-atlas")))
+        .or_else(|| dirs::data_dir().map(|d| d.join("sessiondex")))
         .context("cannot determine a data directory")?;
+    // One-time migration from the project's pre-rename data dir, so an
+    // existing index (and its cached summaries) carries over.
+    if !dir.exists() {
+        if let Some(old) = dirs::data_dir().map(|d| d.join("session-atlas")) {
+            if old.exists() {
+                let _ = std::fs::rename(&old, &dir);
+            }
+        }
+    }
     std::fs::create_dir_all(&dir)?;
     Ok(dir.join("index.db"))
 }

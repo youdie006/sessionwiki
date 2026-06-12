@@ -2,19 +2,21 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg">
-  <img src="docs/logo-light.svg" width="84" alt="session-atlas logo: an atlas globe with a location pin">
+  <img src="docs/logo-light.svg" width="84" alt="sessiondex logo: an atlas globe with a location pin">
 </picture>
 
-# session-atlas
+# sessiondex
 
-Every AI coding session you've ever had &mdash; found, indexed, searchable, resumable.<br>
+The index of every AI session you've ever had &mdash; searchable, summarized, resumable.<br>
 Claude Code &middot; Codex CLI &middot; Gemini CLI &nbsp;&middot;&nbsp; one command, 100% local
 
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
-<a href="https://github.com/youdie006/session-atlas/tags"><img src="https://img.shields.io/github/v/tag/youdie006/session-atlas?label=version&color=355bd0" alt="Latest version"></a>
-<img src="https://img.shields.io/github/last-commit/youdie006/session-atlas?color=555" alt="Last commit">
+<a href="https://github.com/youdie006/sessiondex/tags"><img src="https://img.shields.io/github/v/tag/youdie006/sessiondex?label=version&color=355bd0" alt="Latest version"></a>
+<img src="https://img.shields.io/github/last-commit/youdie006/sessiondex?color=555" alt="Last commit">
 <img src="https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-555" alt="Platforms: Linux, macOS, Windows">
 <a href="#adding-an-adapter"><img src="https://img.shields.io/badge/adapters-PRs%20welcome-2ea44f" alt="Adapter PRs welcome"></a>
+
+<b>English</b> &middot; <a href="README.ko.md">한국어</a>
 
 <a href="#install">Install</a> &middot;
 <a href="#quick-start">Quick start</a> &middot;
@@ -25,17 +27,17 @@ Claude Code &middot; Codex CLI &middot; Gemini CLI &nbsp;&middot;&nbsp; one comm
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/hero-dark.png">
-  <img src="docs/hero-light.png" width="920" alt="session-atlas web UI: searching across Claude Code and Codex sessions, with an LLM synopsis, a resume command, and a clickable outline on the open transcript">
+  <img src="docs/hero-light.png" width="920" alt="sessiondex web UI: searching across Claude Code and Codex sessions, with an LLM synopsis, a resume command, and a clickable outline on the open transcript">
 </picture>
 
 </div>
 
 That conversation where Claude fixed your CORS bug three weeks ago? It is still on your disk &mdash; you just can't find it. Every AI coding agent writes its sessions to disk: each tool in its own format, in its own folder, on every machine you use. After a few months that is thousands of conversations full of solved problems, and no way to get back to any of them.
 
-**session-atlas reads the traces your tools already leave and turns them into one searchable, resumable archive.** No daemon, no logging habit to build, no cloud. It indexes what is already there.
+**sessiondex reads the traces your tools already leave and turns them into one searchable, resumable archive.** No daemon, no logging habit to build, no cloud. It indexes what is already there.
 
 ```console
-$ session-atlas scan
+$ sessiondex scan
 TOOL            SESSIONS       SIZE  OLDEST       NEWEST        PATH
 claude-code         1763     1.1 GB  2026-03-27   2026-06-12    ~/.claude/projects
 codex               2340    45.9 GB  2025-08-21   2026-06-12    ~/.codex/sessions
@@ -60,7 +62,7 @@ That is one real machine. Run it on yours &mdash; the number is usually a surpri
 With Rust (stable) installed:
 
 ```console
-cargo install --git https://github.com/youdie006/session-atlas
+cargo install --git https://github.com/youdie006/sessiondex
 ```
 
 Prebuilt binaries are on the roadmap.
@@ -68,10 +70,10 @@ Prebuilt binaries are on the roadmap.
 ## Quick start
 
 ```console
-session-atlas scan                # where are my sessions?
-session-atlas search "jwt retry"  # full-text search across every tool
-session-atlas show 3f9c           # read the matching conversation
-session-atlas web                 # or browse everything in a local web UI
+sessiondex scan                # where are my sessions?
+sessiondex search "jwt retry"  # full-text search across every tool
+sessiondex show 3f9c           # read the matching conversation
+sessiondex web                 # or browse everything in a local web UI
 ```
 
 The first `search` or `list` builds the index; expect a few minutes per
@@ -86,31 +88,31 @@ GB). After that, updates are incremental and take seconds.
 | `list` | Recent sessions across all tools in one timeline. `--tool codex`, `--project api`, `-n 50`, `--all` (include subagent transcripts). |
 | `search <query>` | Full-text search over every message of every tool. Minimum 3 characters. |
 | `show <id>` | One session as a readable transcript. `--full` expands tool calls, `--json` emits the parsed session, `--outline` prints a digest: every question you asked plus how it ended. |
-| `summarize [id]` | Generate 1&ndash;2 sentence synopses with **your own LLM CLI** (`claude -p` by default, `--cmd` / `SESSION_ATLAS_SUMMARIZER` to change) and cache them in the index. Without an id, batches over the `--recent N` newest sessions. Summaries survive reindexing and show up in `show`, `--outline`, and the web sidebar. |
+| `summarize [id]` | Generate 1&ndash;2 sentence synopses with **your own LLM CLI** (`claude -p` by default, `--cmd` / `SESSIONDEX_SUMMARIZER` to change) and cache them in the index. Without an id, batches over the `--recent N` newest sessions. Summaries survive reindexing and show up in `show`, `--outline`, and the web sidebar. |
 | `resume <id>` | Reopen the session in its original tool: `claude --resume` / `codex resume`, run in the right project directory. Subagent transcripts resume their parent. `--print` to just show the command. |
 | `brief <id>` | Emit the session as a markdown briefing (head and tail, middle omitted) to carry context into any tool &mdash; including across tools. `--max-chars`, `--tools`. |
-| `web` | Local viewer on `127.0.0.1:7575`: day-grouped sessions with synopsis previews, live search with highlighted snippets, rendered transcripts with outlines and resume commands, light and dark themes. Never leaves localhost. |
+| `web` | Local viewer on `127.0.0.1:7575`: day-grouped sessions with synopsis previews, live search with highlighted snippets, rendered transcripts with outlines and resume commands, light and dark themes, UI in English, Korean, Japanese, and Chinese (auto-detected). Never leaves localhost. |
 
 ## Pick up where you left off
 
 Finding an old session is half the point; the other half is continuing it.
 
 ```console
-$ session-atlas search "rate limiter"
+$ sessiondex search "rate limiter"
 76a614028a63 codex 2026-06-11 13:00 .../projects/api-server [assistant]
   ...the bucket invariant 0 <= tokens <= capacity holds after every step...
 
-$ session-atlas resume 76a6           # reopens that conversation in Codex
+$ sessiondex resume 76a6           # reopens that conversation in Codex
 
-$ session-atlas brief 76a6 | claude -p \
+$ sessiondex brief 76a6 | claude -p \
     "Continue this work: add the missing edge-case tests"
 
-$ session-atlas summarize --recent 20  # synopses for your latest sessions
+$ sessiondex summarize --recent 20  # synopses for your latest sessions
 ```
 
 `resume` uses each tool's native mechanism, so it needs the original session
 file to still exist. `brief` works even across tools. `summarize` runs your
-LLM, on your machine, at your command &mdash; session-atlas itself never makes a
+LLM, on your machine, at your command &mdash; sessiondex itself never makes a
 network call.
 
 ## How it works
@@ -130,8 +132,8 @@ flowchart LR
 
 - `scan` walks the filesystem and reports; it touches no index.
 - Everything else maintains an incremental index at
-  `~/.local/share/session-atlas/index.db` (platform equivalent; override with
-  `SESSION_ATLAS_DATA`). Only files whose mtime or size changed are re-parsed.
+  `~/.local/share/sessiondex/index.db` (platform equivalent; override with
+  `SESSIONDEX_DATA`). Only files whose mtime or size changed are re-parsed.
 - Original session files are never modified &mdash; the index is a disposable
   cache. Cached summaries survive schema upgrades on purpose: rebuilding an
   index is cheap, re-running an LLM over your history is not.
@@ -173,7 +175,7 @@ they survive.
 <summary><b>FAQ: what about sessions my tool already deleted?</b></summary>
 <br>
 
-Gone is gone &mdash; session-atlas reads what is on disk, and some tools clean up
+Gone is gone &mdash; sessiondex reads what is on disk, and some tools clean up
 old sessions on a schedule (Claude Code's retention setting, for example).
 That is exactly what the planned archive mode fixes: keep a copy inside the
 atlas so the tool's cleanup stops being your memory's expiry date. Install
@@ -240,8 +242,8 @@ Issues and PRs are welcome. The most valuable contributions right now:
 <div align="center">
 <br>
 
-<a href="https://github.com/youdie006/session-atlas/issues/new">Report a bug</a> &middot;
-<a href="https://github.com/youdie006/session-atlas/issues/new">Request an adapter</a> &middot;
+<a href="https://github.com/youdie006/sessiondex/issues/new">Report a bug</a> &middot;
+<a href="https://github.com/youdie006/sessiondex/issues/new">Request an adapter</a> &middot;
 <a href="#roadmap">Roadmap</a>
 
 </div>

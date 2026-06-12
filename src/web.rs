@@ -12,8 +12,8 @@ pub fn serve(port: u16, no_open: bool) -> Result<()> {
     let addr = format!("127.0.0.1:{port}");
     let server = Server::http(&addr).map_err(|e| anyhow::anyhow!("bind {addr}: {e}"))?;
     let url = format!("http://{addr}");
-    println!("session-atlas web: {url}");
-    println!("(read-only view of the index; run `session-atlas list` to refresh it)");
+    println!("sessiondex web: {url}");
+    println!("(read-only view of the index; run `sessiondex list` to refresh it)");
     if !no_open {
         open_browser(&url);
     }

@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand};
 /// Find, search, and read every AI coding session on your machine -
 /// across Claude Code, Codex, and Gemini CLI. 100% local.
 #[derive(Parser)]
-#[command(name = "session-atlas", version, about, max_term_width = 100)]
+#[command(name = "sessiondex", version, about, max_term_width = 100)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -92,7 +92,7 @@ enum Command {
         #[arg(long)]
         tool: Option<String>,
         /// Summarizer command reading the session on stdin (default: `claude -p`,
-        /// or the SESSION_ATLAS_SUMMARIZER environment variable)
+        /// or the SESSIONDEX_SUMMARIZER environment variable)
         #[arg(long)]
         cmd: Option<String>,
         /// Re-summarize even if a cached summary exists
