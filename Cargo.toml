@@ -1,0 +1,23 @@
+[package]
+name = "session-atlas"
+version = "0.1.0"
+edition = "2021"
+description = "Find, search, and read every AI coding session you've ever had - across Claude Code, Codex, and Gemini CLI."
+license = "MIT"
+repository = "https://github.com/youdie006/session-atlas"
+keywords = ["claude-code", "codex", "gemini-cli", "sessions", "search"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+walkdir = "2"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+dirs = "5"
+
+[profile.release]
+lto = true
+strip = true

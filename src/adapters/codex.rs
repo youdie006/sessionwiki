@@ -1,0 +1,154 @@
+use super::{parse_ts, title_from_messages, Adapter};
+use crate::model::{Message, Role, Session};
+use crate::util::{short_id, truncate};
+use anyhow::{Context, Result};
+use serde_json::Value;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use walkdir::WalkDir;
+
+/// Codex CLI stores one JSONL rollout per session under
+/// `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`.
+/// Lines carry a `type` plus a `payload`; the schema has shifted across
+/// versions, so both `response_item` and `event_msg` shapes are handled.
+pub struct Codex;
+
+impl Adapter for Codex {
+    fn name(&self) -> &'static str {
+        "codex"
+    }
+
+    fn root(&self) -> Option<PathBuf> {
+        Some(dirs::home_dir()?.join(".codex").join("sessions"))
+    }
+
+    fn discover(&self) -> Vec<PathBuf> {
+        let Some(root) = self.root() else { return vec![] };
+        WalkDir::new(root)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy();
+                name.starts_with("rollout-") && name.ends_with(".jsonl")
+            })
+            .map(|e| e.into_path())
+            .collect()
+    }
+
+    fn parse(&self, path: &Path) -> Result<Session> {
+        let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+        let reader = BufReader::new(file);
+
+        let mut messages: Vec<Message> = Vec::new();
+        let mut cwd: Option<String> = None;
+        let mut started = None;
+        let mut ended = None;
+
+        for line in reader.lines() {
+            let Ok(line) = line else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+
+            let ts = v.get("timestamp").and_then(Value::as_str).and_then(parse_ts);
+            if let Some(t) = ts {
+                if started.is_none() {
+                    started = Some(t);
+                }
+                ended = Some(t);
+            }
+
+            match v.get("type").and_then(Value::as_str) {
+                Some("session_meta") => {
+                    if cwd.is_none() {
+                        cwd = v.pointer("/payload/cwd").and_then(Value::as_str).map(String::from);
+                    }
+                }
+                Some("response_item") => {
+                    match v.pointer("/payload/type").and_then(Value::as_str) {
+                        Some("message") => {
+                            let role = match v.pointer("/payload/role").and_then(Value::as_str) {
+                                Some("user") => Role::User,
+                                Some("assistant") => Role::Assistant,
+                                _ => continue,
+                            };
+                            let Some(Value::Array(blocks)) = v.pointer("/payload/content") else {
+                                continue;
+                            };
+                            for b in blocks {
+                                let Some(text) = b.get("text").and_then(Value::as_str) else {
+                                    continue;
+                                };
+                                if role == Role::User && is_boilerplate(text) {
+                                    continue;
+                                }
+                                push(&mut messages, role, text, ts);
+                            }
+                        }
+                        Some("function_call") => {
+                            let name =
+                                v.pointer("/payload/name").and_then(Value::as_str).unwrap_or("?");
+                            let args = v
+                                .pointer("/payload/arguments")
+                                .and_then(Value::as_str)
+                                .unwrap_or("");
+                            let text = format!("{name} {}", truncate(args, 300));
+                            push(&mut messages, Role::Tool, &text, ts);
+                        }
+                        // function_call_output and reasoning are skipped on
+                        // purpose: they dominate file size and pollute search.
+                        _ => {}
+                    }
+                }
+                Some("event_msg") => match v.pointer("/payload/type").and_then(Value::as_str) {
+                    Some("user_message") => {
+                        if let Some(t) = v.pointer("/payload/message").and_then(Value::as_str) {
+                            if !is_boilerplate(t) {
+                                push(&mut messages, Role::User, t, ts);
+                            }
+                        }
+                    }
+                    Some("agent_message") => {
+                        if let Some(t) = v.pointer("/payload/message").and_then(Value::as_str) {
+                            push(&mut messages, Role::Assistant, t, ts);
+                        }
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+
+        let project = cwd.unwrap_or_default();
+        let title = title_from_messages(&messages);
+
+        Ok(Session {
+            id: short_id(&path.to_string_lossy()),
+            tool: self.name(),
+            path: path.to_path_buf(),
+            project,
+            started,
+            ended,
+            title,
+            subagent: false,
+            messages,
+        })
+    }
+}
+
+/// Codex wraps instructions and environment dumps in pseudo-XML tags and
+/// repeats them in every session. Indexing them buries real matches.
+fn is_boilerplate(text: &str) -> bool {
+    let t = text.trim_start();
+    t.starts_with("<user_instructions>")
+        || t.starts_with("<environment_context>")
+        || t.starts_with("<ENVIRONMENT_CONTEXT>")
+        || t.starts_with("<turn_context>")
+}
+
+fn push(messages: &mut Vec<Message>, role: Role, text: &str, ts: Option<chrono::DateTime<chrono::Utc>>) {
+    let text = text.trim();
+    if !text.is_empty() {
+        messages.push(Message { role, text: text.to_string(), ts });
+    }
+}
