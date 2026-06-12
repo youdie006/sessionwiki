@@ -113,6 +113,9 @@ fn api_session(conn: &Connection, id: &str) -> Result<Boxed> {
     if let Some(info) = resume::for_session(&row.tool, path, &row.project) {
         v["resume"] = json!(info.command_line());
     }
+    if let Some(s) = &row.summary {
+        v["summary"] = json!(s);
+    }
     json_response(v)
 }
 
@@ -126,6 +129,7 @@ fn row_json(r: &index::SessionRow) -> serde_json::Value {
         "msgs": r.msg_count,
         "kind": r.kind,
         "preview": r.preview,
+        "summary": r.summary,
     })
 }
 

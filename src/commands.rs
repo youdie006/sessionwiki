@@ -154,6 +154,9 @@ pub fn show(id: &str, full: bool, json: bool, outline: bool) -> Result<()> {
                 session.messages.len()
             ))
         );
+        if let Some(s) = &row.summary {
+            println!("{}", s);
+        }
         println!();
         let mut n = 0;
         for m in &session.messages {
@@ -182,6 +185,9 @@ pub fn show(id: &str, full: bool, json: bool, outline: bool) -> Result<()> {
         ))
     );
     println!("{}", dim(&session.path.display().to_string()));
+    if let Some(s) = &row.summary {
+        println!("{}", s);
+    }
     println!();
 
     for m in &session.messages {
@@ -294,7 +300,12 @@ pub fn brief(id: &str, max_chars: usize, include_tools: bool) -> Result<()> {
     let row = resolve_one(&conn, id)?;
     let adapter = adapters::by_name(&row.tool).context("unknown tool in index")?;
     let session = adapter.parse(std::path::Path::new(&row.path))?;
+    print!("{}", brief_text(&session, max_chars, include_tools));
+    Ok(())
+}
 
+/// The markdown briefing used by `brief` and as LLM input for `summarize`.
+fn brief_text(session: &crate::model::Session, max_chars: usize, include_tools: bool) -> String {
     let mut blocks: Vec<String> = Vec::new();
     for m in &session.messages {
         match m.role {
@@ -357,18 +368,104 @@ pub fn brief(id: &str, max_chars: usize, include_tools: bool) -> Result<()> {
         parts.join("\n\n")
     };
 
-    println!("# Previous session: {}", session.title);
-    println!();
-    println!(
-        "- Tool: {} | Project: {} | Date: {}",
+    format!(
+        "# Previous session: {}\n\n- Tool: {} | Project: {} | Date: {}\n- Source: {}\n\n{}\n",
+        session.title,
         session.tool,
         session.project,
-        fmt_date(session.started)
+        fmt_date(session.started),
+        session.path.display(),
+        body
+    )
+}
+
+const SUMMARIZE_INSTRUCTION: &str = "You are summarizing a transcript of an AI coding session. \
+Reply with ONLY the summary, 1-2 sentences: what was asked and what the outcome was. \
+Write it in the same language the session is in.";
+
+pub fn summarize(
+    id: Option<&str>,
+    recent: usize,
+    tool: Option<&str>,
+    cmd: Option<&str>,
+    force: bool,
+) -> Result<()> {
+    let mut conn = index::open()?;
+    index::sync(&mut conn, tool)?;
+
+    let targets = match id {
+        Some(id) => vec![resolve_one(&conn, id)?],
+        None => index::unsummarized(&conn, recent, tool)?,
+    };
+    if targets.is_empty() {
+        println!("Nothing to summarize - the most recent sessions already have summaries.");
+        return Ok(());
+    }
+
+    let cmd = cmd
+        .map(String::from)
+        .or_else(|| std::env::var("SESSION_ATLAS_SUMMARIZER").ok())
+        .unwrap_or_else(|| "claude -p".to_string());
+    eprintln!(
+        "{}",
+        dim(&format!("summarizer: `{cmd}` ({} session(s); your LLM, your cost)", targets.len()))
     );
-    println!("- Source: {}", session.path.display());
-    println!();
-    println!("{body}");
+
+    let total = targets.len();
+    for (i, row) in targets.iter().enumerate() {
+        if row.summary.is_some() && !force {
+            println!("{} already summarized (use --force to redo)", yellow(&row.session_id));
+            continue;
+        }
+        let adapter = adapters::by_name(&row.tool).context("unknown tool in index")?;
+        let session = match adapter.parse(std::path::Path::new(&row.path)) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{} parse failed: {e:#}", yellow(&row.session_id));
+                continue;
+            }
+        };
+        eprintln!("{}", dim(&format!("[{}/{}] {}", i + 1, total, truncate(&row.title, 70))));
+        let input = format!(
+            "{SUMMARIZE_INSTRUCTION}\n\n{}",
+            brief_text(&session, 16000, false)
+        );
+        match run_summarizer(&cmd, &input) {
+            Ok(summary) => {
+                index::set_summary(&conn, &row.session_id, &summary)?;
+                println!("{} {}", yellow(&row.session_id), summary);
+            }
+            Err(e) => eprintln!("{} summarizer failed: {e:#}", yellow(&row.session_id)),
+        }
+    }
     Ok(())
+}
+
+fn run_summarizer(cmd: &str, input: &str) -> Result<String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("spawn summarizer")?;
+    child
+        .stdin
+        .take()
+        .context("summarizer stdin")?
+        .write_all(input.as_bytes())?;
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        bail!("exited with {}", out.status);
+    }
+    let summary = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if summary.is_empty() {
+        bail!("summarizer printed nothing");
+    }
+    Ok(truncate(&summary, 600))
 }
 
 /// Long absolute paths make poor labels; keep the tail.

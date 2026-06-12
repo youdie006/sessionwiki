@@ -81,6 +81,24 @@ enum Command {
         #[arg(long)]
         print: bool,
     },
+    /// Generate and cache LLM synopses for sessions (uses your own LLM CLI)
+    Summarize {
+        /// Session id to summarize; omit to batch over recent sessions
+        id: Option<String>,
+        /// How many recent unsummarized sessions to process in batch mode
+        #[arg(long, default_value_t = 10)]
+        recent: usize,
+        /// Filter batch mode by tool
+        #[arg(long)]
+        tool: Option<String>,
+        /// Summarizer command reading the session on stdin (default: `claude -p`,
+        /// or the SESSION_ATLAS_SUMMARIZER environment variable)
+        #[arg(long)]
+        cmd: Option<String>,
+        /// Re-summarize even if a cached summary exists
+        #[arg(long)]
+        force: bool,
+    },
     /// Emit a markdown briefing of a session, ready to paste into a new one
     Brief {
         /// Session id (prefix is enough), from list/search output
@@ -107,6 +125,9 @@ fn main() {
         Command::Web { port, no_open } => web::serve(port, no_open),
         Command::Show { id, full, json, outline } => commands::show(&id, full, json, outline),
         Command::Resume { id, print } => commands::resume_cmd(&id, print),
+        Command::Summarize { id, recent, tool, cmd, force } => {
+            commands::summarize(id.as_deref(), recent, tool.as_deref(), cmd.as_deref(), force)
+        }
         Command::Brief { id, max_chars, tools } => commands::brief(&id, max_chars, tools),
     };
     if let Err(e) = result {

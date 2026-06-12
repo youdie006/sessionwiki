@@ -26,6 +26,8 @@ pub fn open() -> Result<Connection> {
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     if version != SCHEMA_VERSION {
+        // The summaries table deliberately survives this: rebuilding the
+        // index is cheap, re-running an LLM over every session is not.
         conn.execute_batch(
             "DROP TABLE IF EXISTS msgs;
              DROP TABLE IF EXISTS messages;
@@ -64,6 +66,11 @@ pub fn open() -> Result<Connection> {
             content='messages',
             content_rowid='id',
             tokenize='trigram'
+        );
+        CREATE TABLE IF NOT EXISTS summaries(
+            session_id TEXT PRIMARY KEY,
+            summary    TEXT NOT NULL,
+            created    TEXT NOT NULL
         );",
     )?;
     Ok(conn)
@@ -205,6 +212,8 @@ pub struct SessionRow {
     /// Tail of the conversation (last assistant message), so a list can show
     /// how the session ended without opening it.
     pub preview: Option<String>,
+    /// Cached LLM synopsis, if `summarize` has been run for this session.
+    pub summary: Option<String>,
 }
 
 /// Correlated subquery for the preview column; messages.id preserves
@@ -212,6 +221,9 @@ pub struct SessionRow {
 const PREVIEW_SQL: &str = "(SELECT substr(m2.text, 1, 280) FROM messages m2
     WHERE m2.session_id = f.session_id AND m2.role = 'assistant'
     ORDER BY m2.id DESC LIMIT 1)";
+
+const SUMMARY_SQL: &str =
+    "(SELECT s.summary FROM summaries s WHERE s.session_id = f.session_id)";
 
 pub fn recent(
     conn: &Connection,
@@ -221,7 +233,7 @@ pub fn recent(
     include_subagents: bool,
 ) -> Result<Vec<SessionRow>> {
     let mut sql = format!(
-        "SELECT session_id, tool, path, project, title, started, msg_count, kind, {PREVIEW_SQL}
+        "SELECT session_id, tool, path, project, title, started, msg_count, kind, {PREVIEW_SQL}, {SUMMARY_SQL}
          FROM files f WHERE 1=1",
     );
     let mut args: Vec<String> = Vec::new();
@@ -250,6 +262,7 @@ pub fn recent(
             msg_count: r.get(6)?,
             kind: r.get(7)?,
             preview: r.get(8)?,
+            summary: r.get(9)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -311,6 +324,7 @@ pub fn search(
                 msg_count: r.get(6)?,
                 kind: r.get(7)?,
                 preview: None,
+                summary: None,
             },
             role: r.get(8)?,
             snippet: r.get(9)?,
@@ -321,10 +335,10 @@ pub fn search(
 
 /// Resolve a (possibly abbreviated) session id to its file row.
 pub fn resolve(conn: &Connection, id_prefix: &str) -> Result<Vec<SessionRow>> {
-    let mut stmt = conn.prepare(
-        "SELECT session_id, tool, path, project, title, started, msg_count, kind
-         FROM files WHERE session_id LIKE ?1 LIMIT 10",
-    )?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT session_id, tool, path, project, title, started, msg_count, kind, {SUMMARY_SQL}
+         FROM files f WHERE session_id LIKE ?1 LIMIT 10",
+    ))?;
     let rows = stmt.query_map(params![format!("{id_prefix}%")], |r| {
         Ok(SessionRow {
             session_id: r.get(0)?,
@@ -336,6 +350,49 @@ pub fn resolve(conn: &Connection, id_prefix: &str) -> Result<Vec<SessionRow>> {
             msg_count: r.get(6)?,
             kind: r.get(7)?,
             preview: None,
+            summary: r.get(8)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Store (or replace) the cached synopsis for a session.
+pub fn set_summary(conn: &Connection, session_id: &str, summary: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO summaries(session_id, summary, created)
+         VALUES (?1, ?2, datetime('now'))",
+        params![session_id, summary],
+    )?;
+    Ok(())
+}
+
+/// Most recent main sessions that have no cached summary yet.
+pub fn unsummarized(conn: &Connection, limit: usize, tool: Option<&str>) -> Result<Vec<SessionRow>> {
+    let mut sql = format!(
+        "SELECT session_id, tool, path, project, title, started, msg_count, kind, {PREVIEW_SQL}, {SUMMARY_SQL}
+         FROM files f
+         WHERE kind = 'main' AND NOT EXISTS
+               (SELECT 1 FROM summaries s WHERE s.session_id = f.session_id)",
+    );
+    let mut args: Vec<String> = Vec::new();
+    if let Some(t) = tool {
+        sql.push_str(" AND tool = ?");
+        args.push(t.to_string());
+    }
+    sql.push_str(&format!(" ORDER BY started DESC LIMIT {limit}"));
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(args), |r| {
+        Ok(SessionRow {
+            session_id: r.get(0)?,
+            tool: r.get(1)?,
+            path: r.get(2)?,
+            project: r.get(3)?,
+            title: r.get(4)?,
+            started: r.get(5)?,
+            msg_count: r.get(6)?,
+            kind: r.get(7)?,
+            preview: r.get(8)?,
+            summary: r.get(9)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
