@@ -235,7 +235,7 @@ Issues and PRs are welcome. The most valuable contributions right now:
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). Use it, fork it, ship it inside your own tools &mdash; just keep the notice.
 
 <div align="center">
 <br>
