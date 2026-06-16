@@ -1,64 +1,91 @@
 #!/usr/bin/env python3
-"""Assemble docs/demo-web.gif from captured web-UI keyframes.
+"""Assemble docs/demo-web.webp from captured web-UI keyframes.
 
-The keyframes (wf01..wf07) are screenshots of `sessionwiki web` driven through
-a short product tour: home, search, an open transcript (summary/tags/note/
-resume), related sessions, tag filter, dark theme, language menu. Each frame
-gets a caption strip; the result is stitched into a looping GIF with a gentle
-breathing zoom.
+The keyframes (wf1..wf7) are 1440x900 screenshots of `sessionwiki web` driven
+through a short product tour: home, search, an open transcript (tags/note/
+resume), related sessions, tag filter, dark theme, language menu.
 
-    # 1. run `sessionwiki web` against a demo store, drive the tour, save
-    #    wf01.png .. wf07.png (see scripts/demo_data.py for the store)
+Each scene zooms to an EXACT element region measured from the live DOM with
+getBoundingClientRect (see FOCUS below, in screenshot pixels) - so the camera
+lands on the search box, the transcript header, the see-also panel, the tag bar
+and the language popup, never on dead space. The move between scenes is a fixed
+short cubic ease-in-out at a high frame rate, then the camera holds dead still
+for reading - a clean screencast push, not a drifting Ken Burns. The caption is
+a fixed bar below the (zoomed) UI so the focus can reach a corner without
+cropping the narration.
+
+    # 1. capture wf1.png .. wf7.png with the playwright tour (DPR 1, 1440x900)
     # 2. python3 scripts/make_web_gif.py <dir-with-wfNN.png>
 
-Output: docs/demo-web.gif
+Output: docs/demo-web.webp
 """
 
 import os
-import shutil
 import sys
 
 from PIL import Image, ImageDraw, ImageFont
 
 SRC = sys.argv[1] if len(sys.argv) > 1 else "."
+
 CAPTIONS = [
     "One wiki for every AI coding session",
-    "Search across every tool — even partial words and CJK",
-    "Summary, tags, a note, and a one-command resume",
+    "Search across every tool - even partial words and CJK",
+    "Tags, a note, and a one-command resume",
     "Jump to related sessions",
     "Filter by tag",
     "Light and dark",
-    "UI in English · 한국어 · 日本語 · 中文",
+    "UI in English / 한국어 / 日本語 / 中文",
 ]
-HOLDS = [1500, 1900, 2300, 1900, 1700, 1600, 2100]
+HOLDS = [1500, 2000, 2200, 1900, 1800, 1500, 2000]  # ms the camera sits still
 
-# Per-scene focus target on the UI screenshot, as (center_x_frac, center_y_frac,
-# zoom). The camera glides toward this so the zoom lands on the part of the UI
-# the scene is about - the search box, the transcript header, the tag-filter
-# bar, the language popup - instead of scaling the whole frame.
+# Exact focal region per scene as (x, y, w, h) in screenshot pixels, measured
+# from the live DOM. None = establishing shot (no zoom, whole frame).
 FOCUS = [
-    (0.50, 0.42, 1.00),  # 1 home - establishing
-    (0.13, 0.34, 1.45),  # 2 search box + results (left column)
-    (0.58, 0.17, 1.42),  # 3 transcript header (summary/tags/note/resume)
-    (0.58, 0.60, 1.42),  # 4 see-also (scrolled)
-    (0.13, 0.22, 1.60),  # 5 tag-filter bar + filtered sidebar
-    (0.50, 0.45, 1.05),  # 6 dark theme - establishing
-    (0.09, 0.82, 1.95),  # 7 language popup (bottom-left)
+    None,                     # 1 home
+    (0, 73, 347, 411),        # 2 search box + top results (left column)
+    (348, 0, 1092, 194),      # 3 transcript header: title, tags, note, resume
+    (530, 420, 728, 207),     # 4 see-also panel
+    (0, 116, 347, 360),       # 5 tag bar + filtered list (left column)
+    None,                     # 6 dark theme
+    (12, 719, 132, 170),      # 7 language popup (bottom-left)
 ]
 
-BAR_H = 44
+PAD = 70          # breathing room added around each focal rect, px
+ZMAX = 1.9        # cap zoom so upscaled crops stay sharp
+FPS = 50
+MOVE_MS = 680     # duration of the ease between two scenes
+
+BAR_H = 46
 BAR_BG = (24, 23, 28)
 TXT = (236, 236, 240)
 ACCENT = (147, 167, 239)
 
 FR = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 FK = "/home/xncb135/.local/share/fonts/NanumGothic-Bold.ttf"
-font = ImageFont.truetype(FR, 18)
-font_k = ImageFont.truetype(FK, 18) if os.path.exists(FK) else font
+font = ImageFont.truetype(FR, 19)
+font_k = ImageFont.truetype(FK, 19) if os.path.exists(FK) else font
+
+W, H = 1440, 900
 
 
 def has_cjk(s):
-    return any(ord(c) > 0x2E00 for c in s)
+    return any(0x2E00 < ord(c) < 0xFFE0 for c in s)
+
+
+def cam_for(rect):
+    """Map a focal rect (px) to a camera (cx_frac, cy_frac, zoom)."""
+    if rect is None:
+        return (0.5, 0.5, 1.0)
+    x, y, w, h = rect
+    rw, rh = w + 2 * PAD, h + 2 * PAD
+    z = min(W / rw, H / rh)
+    z = max(1.0, min(ZMAX, z))
+    return ((x + w / 2) / W, (y + h / 2) / H, z)
+
+
+def ease(t):
+    """Cubic ease-in-out on [0,1]."""
+    return 4 * t * t * t if t < 0.5 else 1 - (-2 * t + 2) ** 3 / 2
 
 
 def caption_bar(width, text):
@@ -66,63 +93,68 @@ def caption_bar(width, text):
     d = ImageDraw.Draw(bar)
     f = font_k if has_cjk(text) else font
     tw = d.textlength(text, font=f)
-    d.text(((width - tw) // 2, (BAR_H - 21) // 2), text, font=f, fill=TXT)
-    d.ellipse([(width - tw) // 2 - 17, BAR_H // 2 - 3, (width - tw) // 2 - 11, BAR_H // 2 + 3], fill=ACCENT)
+    x = (width - tw) / 2
+    d.text((x, (BAR_H - 23) // 2), text, font=f, fill=TXT)
+    d.ellipse([x - 18, BAR_H / 2 - 3, x - 12, BAR_H / 2 + 3], fill=ACCENT)
     return bar
 
 
 def main():
-    ui, holds, focus = [], [], []
+    cams = []
+    ui = []
     for i in range(1, 8):
-        p = os.path.join(SRC, f"wf{i:02d}.png")
+        p = os.path.join(SRC, f"wf{i}.png")
         if not os.path.exists(p):
             raise SystemExit(f"missing {p}")
-        ui.append(Image.open(p).convert("RGB"))  # raw UI screenshot, no caption
-        holds.append(HOLDS[i - 1])
-        focus.append(FOCUS[i - 1])
+        im = Image.open(p).convert("RGB")
+        if im.size != (W, H):
+            raise SystemExit(f"{p} is {im.size}, expected {(W, H)}")
+        ui.append(im)
+        cams.append(cam_for(FOCUS[i - 1]))
 
-    # The caption is a fixed bar below the UI - it is NOT part of the zoom, so
-    # the focus push can land on the top-left search box or the bottom-left
-    # language popup without cropping the narration away. A virtual camera
-    # glides toward each scene's focus target (exponential ease), so the zoom
-    # follows the action like a screencast, not a whole-frame pan. Animated
-    # WebP keeps full color and stays small at a high frame rate.
-    fps = 24
-    out_scale = 0.66
-    w, h = ui[0].size
-    uw, uh = round(w * out_scale), round(h * out_scale)
+    out_scale = 0.56
+    uw, uh = round(W * out_scale), round(H * out_scale)
 
     def render(img, cam):
         cxf, cyf, z = cam
-        cw, ch = w / z, h / z
-        x0 = min(max(cxf * w - cw / 2, 0), w - cw)
-        y0 = min(max(cyf * h - ch / 2, 0), h - ch)
+        cw, ch = W / z, H / z
+        x0 = min(max(cxf * W - cw / 2, 0), W - cw)
+        y0 = min(max(cyf * H - ch / 2, 0), H - ch)
         crop = img.crop((round(x0), round(y0), round(x0 + cw), round(y0 + ch)))
         canvas = Image.new("RGB", (uw, uh + BAR_H), BAR_BG)
         canvas.paste(crop.resize((uw, uh), Image.LANCZOS), (0, 0))
         return canvas
 
+    move_n = max(2, round(MOVE_MS / 1000 * FPS))
     frames, captions = [], []
-    cam = list(focus[0])
-    k = 0.16
-    for idx, (img, hold_ms, tgt) in enumerate(zip(ui, holds, focus)):
-        n = max(2, round(hold_ms / 1000 * fps))
-        for _ in range(n):
-            for d in range(3):
-                cam[d] += (tgt[d] - cam[d]) * k
-            frames.append(render(img, tuple(cam)))
+
+    for idx, (img, cam) in enumerate(zip(ui, cams)):
+        # ease from the previous scene's camera into this one (skip on scene 1).
+        # The content swaps to this scene up front; the camera then glides from
+        # the old framing to the new focus over the new screenshot - a clean
+        # screencast push, no mid-move content cut.
+        if idx > 0:
+            prev = cams[idx - 1]
+            for f in range(1, move_n + 1):
+                e = ease(f / move_n)
+                c = tuple(prev[d] + (cam[d] - prev[d]) * e for d in range(3))
+                frames.append(render(img, c))
+                captions.append(CAPTIONS[idx])
+        # hold dead still
+        hold_n = max(2, round(HOLDS[idx] / 1000 * FPS))
+        for _ in range(hold_n):
+            frames.append(render(img, cam))
             captions.append(CAPTIONS[idx])
 
-    # paste the (fixed, un-zoomed) caption bar onto each frame
     for fr, cap in zip(frames, captions):
         fr.paste(caption_bar(uw, cap), (0, uh))
 
     out = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "docs", "demo-web.webp"))
     frames[0].save(
         out, save_all=True, append_images=frames[1:], format="WEBP",
-        duration=round(1000 / fps), loop=0, quality=72, method=6,
+        duration=round(1000 / FPS), loop=0, quality=70, method=6,
     )
-    secs = len(frames) / fps
+    secs = len(frames) / FPS
     print(f"wrote {out} ({os.path.getsize(out) / 1024:.0f} KB, {len(frames)} frames, ~{secs:.1f}s)")
 
 
