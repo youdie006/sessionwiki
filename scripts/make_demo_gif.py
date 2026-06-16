@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
-"""Render docs/demo-cli.gif: a narrated terminal recording of the sessionwiki CLI.
+"""Render docs/demo-cli.webp: a narrated terminal recording of the sessionwiki CLI.
 
 Reproducible, headless, no external recorder. Renders typed commands, a short
-caption that explains each step, and the tool's real output (matching its
-format and ANSI colors) to PNG frames, then stitches them into a looping GIF
-with a gentle breathing zoom (ffmpeg zoompan) for life.
+caption that explains each step, and the tool's real output (format and ANSI
+colors matched) to PIL frames, then assembles a looping animated WebP. A
+virtual camera follows the action - it pushes into the command line while it's
+typed and eases back out to frame the answer (a screencast focus zoom, not a
+whole-frame pan).
 
     python3 scripts/make_demo_gif.py
 
-Output: docs/demo-cli.gif
+Output: docs/demo-cli.webp
 """
 
-import math
 import os
-import shutil
-import subprocess
-import tempfile
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -146,73 +144,101 @@ BEATS = [
 ]
 
 
-def build_frames():
-    frames = []  # (PIL image, duration_ms)
+def row_center_y(row):
+    return TITLE_H + PAD + row * CH + CH // 2
 
-    def emit(screen, ms, cursor=None):
-        frames.append((draw_screen(screen, cursor), ms))
+
+# Camera = (center_x, center_y, zoom). The renderer crops a region of size
+# (W/zoom, H/zoom) around the center and scales it to a fixed output, so a
+# higher zoom focuses on a smaller area - the screencast "push into the part
+# that's happening" effect, not a whole-frame Ken Burns.
+CX = round(W * 0.42)  # text is left-aligned; bias the focus left
+
+
+def fit_zoom(nrows):
+    # zoom so the active block (plus breathing room) fills the height
+    block = (nrows + 2.2) * CH
+    return max(1.04, min(1.22, H / block))
+
+
+def build_frames():
+    frames = []  # (image, duration_ms, target_cam)
+
+    def emit(screen, ms, cam, cursor=None):
+        frames.append((draw_screen(screen, cursor), ms, cam))
 
     for beat in BEATS:
         screen = []
-        # caption types in (fast)
         cap = beat["cap"]
+        cap_cam = (CX, row_center_y(0), 1.22)
         for i in range(0, len(cap) + 1, 3):
             screen = [[(cap[:i], CAPTION, False)]]
-            emit(screen, 16)
+            emit(screen, 16, cap_cam)
         screen = [[(cap, CAPTION, False)], [("", FG, False)]]
-        emit(screen, 320)
-        # command types in
+        emit(screen, 320, cap_cam)
+        # command types in -> push the camera into the command line
         cmd = beat["cmd"]
+        cmd_cam = (CX, row_center_y(1) - CH // 4, 1.62)
         for i in range(len(cmd) + 1):
             screen[1] = prompt_segs(cmd[:i])
-            emit(screen, 46, cursor=(1, 2 + i))
-        emit(screen, 260)
-        # output reveals
-        for segs in beat["out"]:
+            emit(screen, 46, cmd_cam, cursor=(1, 2 + i))
+        emit(screen, 260, cmd_cam)
+        # output reveals -> ease back out to frame the whole answer
+        for j, segs in enumerate(beat["out"]):
             screen.append(segs)
-            emit(screen, 75)
-        emit(screen, beat["hold"])
+            nrows = len(screen)
+            cam = (CX, row_center_y((nrows - 1) / 2), fit_zoom(nrows))
+            emit(screen, 75, cam)
+        nrows = len(screen)
+        hold_cam = (CX, row_center_y((nrows - 1) / 2), fit_zoom(nrows))
+        emit(screen, beat["hold"], hold_cam)
 
     return frames
 
 
+def crop_to_cam(img, cam, out_size):
+    cx, cy, z = cam
+    cw, ch = W / z, H / z
+    x0 = min(max(cx - cw / 2, 0), W - cw)
+    y0 = min(max(cy - ch / 2, 0), H - ch)
+    region = img.crop((round(x0), round(y0), round(x0 + cw), round(y0 + ch)))
+    return region.resize(out_size, Image.LANCZOS)
+
+
 def main():
-    if not shutil.which("ffmpeg"):
-        raise SystemExit("ffmpeg is required")
-    frames = build_frames()
+    logical = build_frames()  # (image, ms, target_cam)
 
-    # Output animated WebP, not GIF: GitHub renders it in <img>, it is full
-    # color (no 256-palette banding), and it compresses far better - so we can
-    # run a high frame rate for smooth motion without the file ballooning.
+    # Expand the logical timeline to a fixed frame rate and glide a virtual
+    # camera toward each frame's focus target (exponential ease). The camera
+    # zooms into the command line while it's typed, then eases back out to
+    # frame the answer - the screencast/ad focus zoom, not a whole-frame pan.
     fps = 30
-    total_out = int(sum(ms for _, ms in frames) / 1000 * fps)
+    out_size = (W // 2, H // 2)
+    dt = 1000 / fps
 
-    tmp = tempfile.mkdtemp(prefix="swgif-")
-    concat = os.path.join(tmp, "list.txt")
-    with open(concat, "w") as f:
-        for i, (img, ms) in enumerate(frames):
-            p = os.path.join(tmp, f"f{i:04d}.png")
-            img.save(p)
-            f.write(f"file '{p}'\nduration {ms/1000:.3f}\n")
-        f.write(f"file '{os.path.join(tmp, f'f{len(frames)-1:04d}.png')}'\n")
+    # current camera state, eased per output frame
+    cam = list(logical[0][2])
+    k = 0.18
+
+    frames = []
+    t, idx, acc = 0.0, 0, logical[0][1]
+    total_ms = sum(ms for _, ms, _ in logical)
+    while t < total_ms:
+        while t >= acc and idx < len(logical) - 1:
+            idx += 1
+            acc += logical[idx][1]
+        img, _, target = logical[idx]
+        for d in range(3):
+            cam[d] += (target[d] - cam[d]) * k
+        frames.append(crop_to_cam(img, tuple(cam), out_size))
+        t += dt
 
     out = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "docs", "demo-cli.webp"))
-    # breathing zoom: one full sine cycle over the clip so the loop is seamless
-    z = f"1.012+0.012*sin(2*PI*on/{total_out})"
-    zoom = (
-        f"zoompan=z='{z}':"
-        f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-        f"d=1:fps={fps}:s={W}x{H}"
+    frames[0].save(
+        out, save_all=True, append_images=frames[1:], format="WEBP",
+        duration=round(dt), loop=0, quality=72, method=6,
     )
-    subprocess.run(
-        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat,
-         "-vf", f"fps={fps},{zoom},scale={W // 2}:-1:flags=lanczos",
-         "-c:v", "libwebp_anim", "-lossless", "0", "-q:v", "72", "-compression_level", "6",
-         "-loop", "0", out],
-        check=True, capture_output=True)
-    shutil.rmtree(tmp, ignore_errors=True)
-    secs = sum(ms for _, ms in frames) / 1000
-    print(f"wrote {out} ({os.path.getsize(out) / 1024:.0f} KB, {total_out} frames, ~{secs:.1f}s)")
+    print(f"wrote {out} ({os.path.getsize(out) / 1024:.0f} KB, {len(frames)} frames, ~{total_ms/1000:.1f}s)")
 
 
 if __name__ == "__main__":
