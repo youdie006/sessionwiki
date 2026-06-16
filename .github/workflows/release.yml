@@ -19,10 +19,13 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: macos-13
-            target: x86_64-apple-darwin
+          # Both macOS targets build on the Apple Silicon runner: the macOS SDK
+          # is universal, so it cross-compiles x86_64 reliably. The dedicated
+          # Intel runner (macos-13) is being deprecated and queues for hours.
           - os: macos-14
             target: aarch64-apple-darwin
+          - os: macos-14
+            target: x86_64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
     steps:
