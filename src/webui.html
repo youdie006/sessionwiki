@@ -166,21 +166,63 @@
   .empty { padding: 22px 14px; color: var(--ink-2); font-size: 13px; }
 
   .sidefoot {
-    padding: 10px 14px;
+    padding: 9px 12px 11px;
     border-top: 1px solid var(--line);
-    display: flex; justify-content: space-between; align-items: center; gap: 8px;
   }
-  .sidefoot .hint { color: var(--ink-3); font-size: 11px; flex: 1; }
-  .themebtn, .sidefoot select {
+  .sidefoot .hint { display: block; color: var(--ink-3); font-size: 10.5px; margin-bottom: 7px; padding: 0 2px; }
+  .footrow { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .themebtn {
     font: 500 11.5px/1.2 inherit;
     color: var(--ink-2);
     background: var(--card);
     border: 1px solid var(--line);
     border-radius: 8px;
-    padding: 6px 8px;
+    padding: 7px 11px;
     cursor: pointer;
   }
-  .themebtn:hover, .sidefoot select:hover { color: var(--ink); border-color: var(--line-strong); }
+  .themebtn:hover { color: var(--ink); border-color: var(--line-strong); }
+
+  /* language picker */
+  .langctl { position: relative; }
+  .langbtn {
+    display: inline-flex; align-items: center; gap: 6px;
+    font: 500 11.5px/1.2 inherit;
+    color: var(--ink-2);
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 7px 10px;
+    cursor: pointer;
+  }
+  .langbtn:hover { color: var(--ink); border-color: var(--line-strong); }
+  .langbtn svg { color: var(--ink-3); flex: none; }
+  .langbtn .chev { transition: transform .15s; }
+  .langctl.open .langbtn .chev { transform: rotate(180deg); }
+  .langctl.open .langbtn { border-color: var(--accent); color: var(--ink); }
+  .langmenu {
+    position: absolute; bottom: calc(100% + 6px); left: 0;
+    min-width: 132px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: 0 6px 24px rgba(20, 18, 14, .14);
+    padding: 4px;
+    z-index: 5;
+  }
+  [data-theme="dark"] .langmenu { box-shadow: 0 6px 24px rgba(0, 0, 0, .5); }
+  .langmenu button {
+    display: flex; align-items: center; justify-content: space-between;
+    width: 100%;
+    font: 500 12.5px/1.3 inherit;
+    color: var(--ink-2);
+    background: none; border: 0; border-radius: 7px;
+    padding: 7px 10px;
+    cursor: pointer;
+    text-align: left;
+  }
+  .langmenu button:hover { background: var(--bg-sunken); color: var(--ink); }
+  .langmenu button[aria-selected="true"] { color: var(--accent); }
+  .langmenu button[aria-selected="true"]::after { content: "\2713"; font-size: 11px; }
 
   /* ---------- main ---------- */
   main { flex: 1; overflow-y: auto; background: var(--bg); }
@@ -411,13 +453,24 @@
     <nav id="list"></nav>
     <div class="sidefoot">
       <span class="hint" id="hint">read-only view &middot; refresh: sessionwiki list</span>
-      <select id="lang" aria-label="Language">
-        <option value="en">EN</option>
-        <option value="ko">한국어</option>
-        <option value="ja">日本語</option>
-        <option value="zh">中文</option>
-      </select>
-      <button class="themebtn" id="theme">Dark</button>
+      <div class="footrow">
+        <div class="langctl" id="langctl">
+          <button class="langbtn" id="langbtn" aria-haspopup="listbox" aria-expanded="false">
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4">
+              <circle cx="8" cy="8" r="6.4"/><path d="M1.6 8h12.8M8 1.6c1.9 2 1.9 10.8 0 12.8M8 1.6c-1.9 2-1.9 10.8 0 12.8"/>
+            </svg>
+            <span id="langlabel">한국어</span>
+            <svg class="chev" viewBox="0 0 10 10" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4l3 3 3-3"/></svg>
+          </button>
+          <div class="langmenu" id="langmenu" role="listbox" hidden>
+            <button role="option" data-lang="en">English</button>
+            <button role="option" data-lang="ko">한국어</button>
+            <button role="option" data-lang="ja">日本語</button>
+            <button role="option" data-lang="zh">中文</button>
+          </div>
+        </div>
+        <button class="themebtn" id="theme">Dark</button>
+      </div>
     </div>
   </aside>
   <main id="main">
@@ -535,6 +588,8 @@ const lang = localStorage.getItem("sdx-lang")
 const L = I18N[lang] || I18N.en;
 document.documentElement.lang = lang;
 
+const LANG_NAMES = { en: "English", ko: "한국어", ja: "日本語", zh: "中文" };
+
 function applyStaticStrings() {
   $("q").placeholder = L.searchPh;
   $("tool").options[0].textContent = L.allTools;
@@ -543,13 +598,32 @@ function applyStaticStrings() {
   $("ph-p1").textContent = L.phP1;
   $("ph-p2").textContent = L.phP2.replace(/`/g, "");
   $("stats").textContent = L.loading;
-  $("lang").value = lang;
+  $("langlabel").textContent = LANG_NAMES[lang] || "English";
+  for (const b of $("langmenu").children) {
+    b.setAttribute("aria-selected", b.dataset.lang === lang ? "true" : "false");
+  }
 }
 applyStaticStrings();
-$("lang").onchange = () => {
-  localStorage.setItem("sdx-lang", $("lang").value);
-  location.reload();
+
+// Custom language popup (a styled control instead of a raw <select>).
+const langctl = $("langctl");
+$("langbtn").onclick = (e) => {
+  e.stopPropagation();
+  const open = langctl.classList.toggle("open");
+  $("langmenu").hidden = !open;
+  $("langbtn").setAttribute("aria-expanded", String(open));
 };
+for (const b of $("langmenu").children) {
+  b.onclick = () => {
+    localStorage.setItem("sdx-lang", b.dataset.lang);
+    location.reload();
+  };
+}
+document.addEventListener("click", () => {
+  langctl.classList.remove("open");
+  $("langmenu").hidden = true;
+  $("langbtn").setAttribute("aria-expanded", "false");
+});
 
 /* ---------- theme ---------- */
 function applyTheme(t) {

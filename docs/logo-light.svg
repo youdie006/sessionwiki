@@ -1,11 +1,16 @@
-<svg width="84" height="84" viewBox="0 0 84 84" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <!-- sessiondex mark: an atlas globe with a "found it" pin -->
-  <g stroke="#1e1d1a" stroke-width="3.2" stroke-linecap="round">
-    <circle cx="42" cy="42" r="30"/>
-    <ellipse cx="42" cy="42" rx="13.5" ry="30"/>
-    <path d="M15.5 30.5h53"/>
-    <path d="M15.5 53.5h53"/>
+<svg width="96" height="96" viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- sessionwiki: linked session nodes forming a wiki graph -->
+  <rect x="6" y="6" width="84" height="84" rx="22" fill="#1e1d1a"/>
+  <g stroke="#5b6b86" stroke-width="3.2" stroke-linecap="round">
+    <path d="M31 33 L31 63"/>
+    <path d="M31 33 L62 26"/>
+    <path d="M31 63 L60 70"/>
+    <path d="M62 26 L60 70"/>
+    <path d="M31 33 L60 70"/>
   </g>
-  <circle cx="56" cy="24" r="7.5" fill="#faf9f6" stroke="#1e1d1a" stroke-width="3.2"/>
-  <circle cx="56" cy="24" r="3" fill="#3b5bd6"/>
+  <circle cx="31" cy="33" r="8.5" fill="#f4f2ec"/>
+  <circle cx="31" cy="63" r="6.5" fill="#f4f2ec"/>
+  <circle cx="60" cy="70" r="6.5" fill="#f4f2ec"/>
+  <circle cx="62" cy="26" r="9" fill="#5b7cf0"/>
+  <circle cx="62" cy="26" r="3.4" fill="#f4f2ec"/>
 </svg>
