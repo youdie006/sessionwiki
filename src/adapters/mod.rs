@@ -61,7 +61,14 @@ pub fn report(adapter: &dyn Adapter) -> Option<StoreReport> {
             }
         }
     }
-    Some(StoreReport { tool: adapter.name(), root, files: count, bytes, oldest, newest })
+    Some(StoreReport {
+        tool: adapter.name(),
+        root,
+        files: count,
+        bytes,
+        oldest,
+        newest,
+    })
 }
 
 /// Shared helper: pick a session title from messages when the tool does not
@@ -79,5 +86,7 @@ pub(crate) fn title_from_messages(messages: &[crate::model::Message]) -> String 
 }
 
 pub(crate) fn parse_ts(s: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s).ok().map(|t| t.with_timezone(&Utc))
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|t| t.with_timezone(&Utc))
 }

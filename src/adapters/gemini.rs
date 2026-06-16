@@ -21,7 +21,9 @@ impl Adapter for Gemini {
     }
 
     fn discover(&self) -> Vec<PathBuf> {
-        let Some(root) = self.root() else { return vec![] };
+        let Some(root) = self.root() else {
+            return vec![];
+        };
         WalkDir::new(root)
             .max_depth(3)
             .into_iter()
@@ -29,18 +31,29 @@ impl Adapter for Gemini {
             .filter(|e| e.file_type().is_file())
             .filter(|e| {
                 e.path().extension().is_some_and(|x| x == "json")
-                    && e.path().parent().and_then(|p| p.file_name()).is_some_and(|d| d == "chats")
+                    && e.path()
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .is_some_and(|d| d == "chats")
             })
             .map(|e| e.into_path())
             .collect()
     }
 
     fn parse(&self, path: &Path) -> Result<Session> {
-        let raw = std::fs::read_to_string(path).with_context(|| format!("open {}", path.display()))?;
-        let v: Value = serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
+        let raw =
+            std::fs::read_to_string(path).with_context(|| format!("open {}", path.display()))?;
+        let v: Value =
+            serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
 
-        let started = v.get("startTime").and_then(Value::as_str).and_then(parse_ts);
-        let ended = v.get("lastUpdated").and_then(Value::as_str).and_then(parse_ts);
+        let started = v
+            .get("startTime")
+            .and_then(Value::as_str)
+            .and_then(parse_ts);
+        let ended = v
+            .get("lastUpdated")
+            .and_then(Value::as_str)
+            .and_then(parse_ts);
 
         let mut messages: Vec<Message> = Vec::new();
         if let Some(Value::Array(items)) = v.get("messages") {
@@ -50,7 +63,10 @@ impl Adapter for Gemini {
                     Some("gemini") | Some("assistant") | Some("model") => Role::Assistant,
                     _ => continue,
                 };
-                let ts = m.get("timestamp").and_then(Value::as_str).and_then(parse_ts);
+                let ts = m
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .and_then(parse_ts);
                 let text = match m.get("content") {
                     Some(Value::String(s)) => s.clone(),
                     Some(Value::Array(blocks)) => blocks
@@ -62,7 +78,11 @@ impl Adapter for Gemini {
                 };
                 let text = text.trim();
                 if !text.is_empty() {
-                    messages.push(Message { role, text: text.to_string(), ts });
+                    messages.push(Message {
+                        role,
+                        text: text.to_string(),
+                        ts,
+                    });
                 }
             }
         }

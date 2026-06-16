@@ -33,8 +33,12 @@ pub fn scan() -> Result<()> {
             cyan(r.tool),
             r.files,
             human_size(r.bytes),
-            r.oldest.map(|t| t.format("%Y-%m-%d").to_string()).unwrap_or_else(|| "-".into()),
-            r.newest.map(|t| t.format("%Y-%m-%d").to_string()).unwrap_or_else(|| "-".into()),
+            r.oldest
+                .map(|t| t.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| "-".into()),
+            r.newest
+                .map(|t| t.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| "-".into()),
             dim(&r.root.display().to_string()),
         );
     }
@@ -104,7 +108,11 @@ pub fn search(query: &str, limit: usize, tool: Option<&str>, project: Option<&st
             .as_deref()
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|t| t.with_timezone(&chrono::Utc));
-        let marker = if h.row.kind == "sub" { " [subagent]" } else { "" };
+        let marker = if h.row.kind == "sub" {
+            " [subagent]"
+        } else {
+            ""
+        };
         println!(
             "{} {} {} {} {}",
             yellow(&h.row.session_id),
@@ -116,14 +124,21 @@ pub fn search(query: &str, limit: usize, tool: Option<&str>, project: Option<&st
         // snippet() wraps matches in \x02 .. \x03; swap for ANSI here.
         let snip = h.snippet.replace('\n', " ");
         let snip = if color_enabled() {
-            snip.replace('\u{2}', "\x1b[1;33m").replace('\u{3}', "\x1b[0m")
+            snip.replace('\u{2}', "\x1b[1;33m")
+                .replace('\u{3}', "\x1b[0m")
         } else {
-            snip.replace('\u{2}', "").replace('\u{3}', "")
+            snip.replace(['\u{2}', '\u{3}'], "")
         };
         println!("  {snip}");
         println!();
     }
-    println!("{}", dim(&format!("{} sessions. Open one: sessiondex show <id>", hits.len())));
+    println!(
+        "{}",
+        dim(&format!(
+            "{} sessions. Open one: sessiondex show <id>",
+            hits.len()
+        ))
+    );
     Ok(())
 }
 
@@ -165,7 +180,12 @@ pub fn show(id: &str, full: bool, json: bool, outline: bool) -> Result<()> {
                 println!("{:>3}. {}", n, truncate(&m.text, 110));
             }
         }
-        if let Some(last) = session.messages.iter().rev().find(|m| m.role == Role::Assistant) {
+        if let Some(last) = session
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::Assistant)
+        {
             println!();
             println!("{}", bold("ended with:"));
             println!("{}", truncate(&last.text, 400));
@@ -203,7 +223,11 @@ pub fn show(id: &str, full: bool, json: bool, outline: bool) -> Result<()> {
             }
         }
         if full || m.role != Role::Tool {
-            let text = if full { m.text.clone() } else { truncate(&m.text, 2000) };
+            let text = if full {
+                m.text.clone()
+            } else {
+                truncate(&m.text, 2000)
+            };
             println!("{text}");
         }
         println!();
@@ -262,7 +286,10 @@ pub fn resume_cmd(id: &str, print_only: bool) -> Result<()> {
     let cwd_display = info.cwd.as_ref().map(|c| c.display().to_string());
     match (&info.cwd, cwd_display.as_deref()) {
         (Some(c), Some(d)) if !c.exists() => {
-            println!("{}", dim(&format!("project dir not found on this machine: {d}")));
+            println!(
+                "{}",
+                dim(&format!("project dir not found on this machine: {d}"))
+            );
             println!("run it where the project lives:");
             println!("  {}", cyan(&info.command_line()));
             return Ok(());
@@ -288,7 +315,10 @@ pub fn resume_cmd(id: &str, print_only: bool) -> Result<()> {
             Ok(())
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            bail!("`{}` is not installed or not on PATH - run the command above manually", info.program)
+            bail!(
+                "`{}` is not installed or not on PATH - run the command above manually",
+                info.program
+            )
         }
         Err(e) => Err(e.into()),
     }
@@ -408,13 +438,19 @@ pub fn summarize(
         .unwrap_or_else(|| "claude -p".to_string());
     eprintln!(
         "{}",
-        dim(&format!("summarizer: `{cmd}` ({} session(s); your LLM, your cost)", targets.len()))
+        dim(&format!(
+            "summarizer: `{cmd}` ({} session(s); your LLM, your cost)",
+            targets.len()
+        ))
     );
 
     let total = targets.len();
     for (i, row) in targets.iter().enumerate() {
         if row.summary.is_some() && !force {
-            println!("{} already summarized (use --force to redo)", yellow(&row.session_id));
+            println!(
+                "{} already summarized (use --force to redo)",
+                yellow(&row.session_id)
+            );
             continue;
         }
         let adapter = adapters::by_name(&row.tool).context("unknown tool in index")?;
@@ -425,7 +461,15 @@ pub fn summarize(
                 continue;
             }
         };
-        eprintln!("{}", dim(&format!("[{}/{}] {}", i + 1, total, truncate(&row.title, 70))));
+        eprintln!(
+            "{}",
+            dim(&format!(
+                "[{}/{}] {}",
+                i + 1,
+                total,
+                truncate(&row.title, 70)
+            ))
+        );
         let input = format!(
             "{SUMMARIZE_INSTRUCTION}\n\n{}",
             brief_text(&session, 16000, false)
@@ -472,7 +516,10 @@ fn run_summarizer(cmd: &str, input: &str) -> Result<String> {
 fn project_label(p: &str) -> String {
     if p.len() > 28 && p.contains('/') {
         let tail: Vec<&str> = p.rsplit('/').take(2).collect();
-        format!("\u{2026}/{}", tail.into_iter().rev().collect::<Vec<_>>().join("/"))
+        format!(
+            "\u{2026}/{}",
+            tail.into_iter().rev().collect::<Vec<_>>().join("/")
+        )
     } else {
         p.to_string()
     }

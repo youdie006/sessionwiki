@@ -10,9 +10,9 @@
 The index of every AI session you've ever had &mdash; searchable, summarized, resumable.<br>
 Claude Code &middot; Codex CLI &middot; Gemini CLI &nbsp;&middot;&nbsp; one command, 100% local
 
+<a href="https://github.com/youdie006/sessiondex/actions/workflows/ci.yml"><img src="https://github.com/youdie006/sessiondex/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
-<a href="https://github.com/youdie006/sessiondex/tags"><img src="https://img.shields.io/github/v/tag/youdie006/sessiondex?label=version&color=355bd0" alt="Latest version"></a>
-<img src="https://img.shields.io/github/last-commit/youdie006/sessiondex?color=555" alt="Last commit">
+<a href="https://github.com/youdie006/sessiondex/releases"><img src="https://img.shields.io/github/v/release/youdie006/sessiondex?label=release&color=355bd0" alt="Latest release"></a>
 <img src="https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-555" alt="Platforms: Linux, macOS, Windows">
 <a href="#adding-an-adapter"><img src="https://img.shields.io/badge/adapters-PRs%20welcome-2ea44f" alt="Adapter PRs welcome"></a>
 
@@ -25,10 +25,7 @@ Claude Code &middot; Codex CLI &middot; Gemini CLI &nbsp;&middot;&nbsp; one comm
 <a href="#how-it-works">How it works</a> &middot;
 <a href="#adding-an-adapter">Add your tool</a>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/hero-dark.png">
-  <img src="docs/hero-light.png" width="920" alt="sessiondex web UI: searching across Claude Code and Codex sessions, with an LLM synopsis, a resume command, and a clickable outline on the open transcript">
-</picture>
+<img src="docs/demo.gif" width="760" alt="Terminal recording: sessiondex scan reports 47 GB of sessions across three tools, search finds a past conversation by keyword, and resume reopens it in its original tool">
 
 </div>
 
@@ -57,15 +54,33 @@ That is one real machine. Run it on yours &mdash; the number is usually a surpri
 - **Resume** a session in its original tool, in the right project directory, with one command.
 - **Carry context across tools**: brief a Claude Code session into Codex, or anywhere else.
 
+And a web UI when you would rather read than grep &mdash; `sessiondex web`:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/hero-dark.png">
+  <img src="docs/hero-light.png" width="900" alt="sessiondex web UI: searching across Claude Code and Codex sessions, with an LLM synopsis, a resume command, and a clickable outline on the open transcript">
+</picture>
+
 ## Install
 
-With Rust (stable) installed:
+**Prebuilt binary** (no toolchain needed). macOS / Linux:
+
+```console
+curl -sSL https://raw.githubusercontent.com/youdie006/sessiondex/main/scripts/install.sh | sh
+```
+
+The script downloads the right archive for your platform from the
+[latest release](https://github.com/youdie006/sessiondex/releases/latest) and
+installs it to `~/.local/bin`. On Windows, download the `.zip` from the
+releases page.
+
+**With Rust** (stable):
 
 ```console
 cargo install --git https://github.com/youdie006/sessiondex
 ```
 
-Prebuilt binaries are on the roadmap.
+Either way it is a single binary with no runtime dependencies.
 
 ## Quick start
 
@@ -196,6 +211,17 @@ read-only. See the FAQ above.
 | Codex CLI | `~/.codex/sessions/**/rollout-*.jsonl` | supported |
 | Gemini CLI | `~/.gemini/tmp/*/chats/*.json` | supported |
 | Cursor, OpenCode, Aider, OpenClaw, ... | | planned &mdash; PRs welcome |
+
+### How this differs from a single-tool history viewer
+
+There are good tools that browse one agent's history &mdash; a Claude Code
+session viewer, a Codex log reader. sessiondex is deliberately the layer above
+them: one index across **every** tool, so you search without first remembering
+which agent you used; a CLI and a local web UI rather than one or the other;
+and `resume` / `brief` so finding a session is a step toward continuing the
+work, not just reading it. If you only ever use one tool, a dedicated viewer
+may be all you need. If your history is scattered across three, that scatter is
+the problem this solves.
 
 ## Adding an adapter
 

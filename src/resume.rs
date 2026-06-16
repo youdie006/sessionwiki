@@ -24,8 +24,7 @@ impl ResumeInfo {
 }
 
 pub fn for_session(tool: &str, path: &Path, project: &str) -> Option<ResumeInfo> {
-    let cwd = (!project.is_empty() && project.starts_with('/'))
-        .then(|| PathBuf::from(project));
+    let cwd = (!project.is_empty() && project.starts_with('/')).then(|| PathBuf::from(project));
     match tool {
         "claude-code" => {
             let p = path.to_string_lossy();
@@ -46,9 +45,7 @@ pub fn for_session(tool: &str, path: &Path, project: &str) -> Option<ResumeInfo>
                     program: "claude",
                     args: vec!["--resume".into(), parent],
                     cwd,
-                    note: Some(
-                        "this is a subagent transcript; resuming its parent session".into(),
-                    ),
+                    note: Some("this is a subagent transcript; resuming its parent session".into()),
                 });
             }
             let id = path.file_stem()?.to_string_lossy().into_owned();

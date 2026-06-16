@@ -29,7 +29,9 @@ pub fn serve(port: u16, no_open: bool) -> Result<()> {
             p if p.starts_with("/api/session/") => {
                 api_session(&conn, p.trim_start_matches("/api/session/"))
             }
-            _ => Ok(Response::from_string("not found").with_status_code(404).boxed()),
+            _ => Ok(Response::from_string("not found")
+                .with_status_code(404)
+                .boxed()),
         };
         let response = match result {
             Ok(r) => r,
@@ -46,15 +48,20 @@ type Boxed = Response<Box<dyn std::io::Read + Send>>;
 
 fn html(body: &str) -> Result<Boxed> {
     Ok(Response::from_string(body)
-        .with_header(Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap())
+        .with_header(
+            Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
+        )
         .boxed())
 }
 
 fn json_response(v: serde_json::Value) -> Result<Boxed> {
     Ok(Response::from_string(v.to_string())
         .with_header(
-            Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..])
-                .unwrap(),
+            Header::from_bytes(
+                &b"Content-Type"[..],
+                &b"application/json; charset=utf-8"[..],
+            )
+            .unwrap(),
         )
         .boxed())
 }
@@ -79,7 +86,9 @@ fn api_stats(conn: &Connection) -> Result<Boxed> {
 fn api_sessions(conn: &Connection, query: &str) -> Result<Boxed> {
     let tool = param(query, "tool");
     let project = param(query, "project");
-    let limit = param(query, "limit").and_then(|s| s.parse().ok()).unwrap_or(200);
+    let limit = param(query, "limit")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(200);
     let rows = index::recent(conn, limit, tool.as_deref(), project.as_deref(), false)?;
     json_response(json!(rows.iter().map(row_json).collect::<Vec<_>>()))
 }
@@ -90,7 +99,9 @@ fn api_search(conn: &Connection, query: &str) -> Result<Boxed> {
         return json_response(json!([]));
     }
     let tool = param(query, "tool");
-    let limit = param(query, "limit").and_then(|s| s.parse().ok()).unwrap_or(50);
+    let limit = param(query, "limit")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50);
     let hits = index::search(conn, &q, limit, tool.as_deref(), None)?;
     json_response(json!(hits
         .iter()

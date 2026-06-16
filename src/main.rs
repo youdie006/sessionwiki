@@ -1,12 +1,5 @@
-mod adapters;
-mod commands;
-mod index;
-mod model;
-mod resume;
-mod util;
-mod web;
-
 use clap::{Parser, Subcommand};
+use sessiondex::{commands, web};
 
 /// Find, search, and read every AI coding session on your machine -
 /// across Claude Code, Codex, and Gemini CLI. 100% local.
@@ -116,19 +109,44 @@ fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Scan => commands::scan(),
-        Command::List { limit, tool, project, all } => {
-            commands::list(limit, tool.as_deref(), project.as_deref(), all)
-        }
-        Command::Search { query, limit, tool, project } => {
-            commands::search(&query, limit, tool.as_deref(), project.as_deref())
-        }
+        Command::List {
+            limit,
+            tool,
+            project,
+            all,
+        } => commands::list(limit, tool.as_deref(), project.as_deref(), all),
+        Command::Search {
+            query,
+            limit,
+            tool,
+            project,
+        } => commands::search(&query, limit, tool.as_deref(), project.as_deref()),
         Command::Web { port, no_open } => web::serve(port, no_open),
-        Command::Show { id, full, json, outline } => commands::show(&id, full, json, outline),
+        Command::Show {
+            id,
+            full,
+            json,
+            outline,
+        } => commands::show(&id, full, json, outline),
         Command::Resume { id, print } => commands::resume_cmd(&id, print),
-        Command::Summarize { id, recent, tool, cmd, force } => {
-            commands::summarize(id.as_deref(), recent, tool.as_deref(), cmd.as_deref(), force)
-        }
-        Command::Brief { id, max_chars, tools } => commands::brief(&id, max_chars, tools),
+        Command::Summarize {
+            id,
+            recent,
+            tool,
+            cmd,
+            force,
+        } => commands::summarize(
+            id.as_deref(),
+            recent,
+            tool.as_deref(),
+            cmd.as_deref(),
+            force,
+        ),
+        Command::Brief {
+            id,
+            max_chars,
+            tools,
+        } => commands::brief(&id, max_chars, tools),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");

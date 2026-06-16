@@ -1,0 +1,11 @@
+{
+  "sessionId": "abcd1234-0000-0000-0000-000000000000",
+  "projectHash": "demo",
+  "startTime": "2026-06-08T10:00:00.000Z",
+  "lastUpdated": "2026-06-08T10:00:30.000Z",
+  "messages": [
+    { "id": "m1", "timestamp": "2026-06-08T10:00:01.000Z", "type": "user", "content": "Playwright나 Cypress 중 iframe 많은 앱엔 뭐가 나아?" },
+    { "id": "m2", "timestamp": "2026-06-08T10:00:05.000Z", "type": "gemini", "content": [ { "text": "Playwright. 프레임 로케이터가 iframe을 1급 스코프로 다룹니다." } ] },
+    { "id": "m3", "timestamp": "2026-06-08T10:00:10.000Z", "type": "system", "content": "ignored role" }
+  ]
+}

@@ -46,7 +46,10 @@ pub fn rel_time(ts: Option<DateTime<Utc>>) -> String {
 }
 
 pub fn truncate(s: &str, max: usize) -> String {
-    let clean: String = s.chars().map(|c| if c == '\n' || c == '\t' { ' ' } else { c }).collect();
+    let clean: String = s
+        .chars()
+        .map(|c| if c == '\n' || c == '\t' { ' ' } else { c })
+        .collect();
     let clean = clean.trim();
     if clean.chars().count() <= max {
         clean.to_string()

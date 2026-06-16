@@ -24,7 +24,9 @@ impl Adapter for Codex {
     }
 
     fn discover(&self) -> Vec<PathBuf> {
-        let Some(root) = self.root() else { return vec![] };
+        let Some(root) = self.root() else {
+            return vec![];
+        };
         WalkDir::new(root)
             .into_iter()
             .filter_map(|e| e.ok())
@@ -48,9 +50,14 @@ impl Adapter for Codex {
 
         for line in reader.lines() {
             let Ok(line) = line else { continue };
-            let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
 
-            let ts = v.get("timestamp").and_then(Value::as_str).and_then(parse_ts);
+            let ts = v
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(parse_ts);
             if let Some(t) = ts {
                 if started.is_none() {
                     started = Some(t);
@@ -61,7 +68,10 @@ impl Adapter for Codex {
             match v.get("type").and_then(Value::as_str) {
                 Some("session_meta") => {
                     if cwd.is_none() {
-                        cwd = v.pointer("/payload/cwd").and_then(Value::as_str).map(String::from);
+                        cwd = v
+                            .pointer("/payload/cwd")
+                            .and_then(Value::as_str)
+                            .map(String::from);
                     }
                 }
                 Some("response_item") => {
@@ -86,8 +96,10 @@ impl Adapter for Codex {
                             }
                         }
                         Some("function_call") => {
-                            let name =
-                                v.pointer("/payload/name").and_then(Value::as_str).unwrap_or("?");
+                            let name = v
+                                .pointer("/payload/name")
+                                .and_then(Value::as_str)
+                                .unwrap_or("?");
                             let args = v
                                 .pointer("/payload/arguments")
                                 .and_then(Value::as_str)
@@ -146,9 +158,18 @@ fn is_boilerplate(text: &str) -> bool {
         || t.starts_with("<turn_context>")
 }
 
-fn push(messages: &mut Vec<Message>, role: Role, text: &str, ts: Option<chrono::DateTime<chrono::Utc>>) {
+fn push(
+    messages: &mut Vec<Message>,
+    role: Role,
+    text: &str,
+    ts: Option<chrono::DateTime<chrono::Utc>>,
+) {
     let text = text.trim();
     if !text.is_empty() {
-        messages.push(Message { role, text: text.to_string(), ts });
+        messages.push(Message {
+            role,
+            text: text.to_string(),
+            ts,
+        });
     }
 }

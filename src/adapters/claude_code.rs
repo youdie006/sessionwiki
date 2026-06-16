@@ -27,7 +27,9 @@ impl Adapter for ClaudeCode {
         // Main sessions live at <project>/<uuid>.jsonl; subagent transcripts
         // at <project>/<uuid>/subagents/agent-*.jsonl and nest further when
         // subagents spawn subagents, so no depth limit here.
-        let Some(root) = self.root() else { return vec![] };
+        let Some(root) = self.root() else {
+            return vec![];
+        };
         WalkDir::new(root)
             .into_iter()
             .filter_map(|e| e.ok())
@@ -49,14 +51,20 @@ impl Adapter for ClaudeCode {
 
         for line in reader.lines() {
             let Ok(line) = line else { continue };
-            let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
 
             if cwd.is_none() {
                 if let Some(c) = v.get("cwd").and_then(Value::as_str) {
                     cwd = Some(c.to_string());
                 }
             }
-            if let Some(ts) = v.get("timestamp").and_then(Value::as_str).and_then(parse_ts) {
+            if let Some(ts) = v
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(parse_ts)
+            {
                 if started.is_none() {
                     started = Some(ts);
                 }
@@ -74,8 +82,13 @@ impl Adapter for ClaudeCode {
                     if v.get("isMeta").and_then(Value::as_bool) == Some(true) {
                         continue;
                     }
-                    let ts = v.get("timestamp").and_then(Value::as_str).and_then(parse_ts);
-                    let Some(content) = v.pointer("/message/content") else { continue };
+                    let ts = v
+                        .get("timestamp")
+                        .and_then(Value::as_str)
+                        .and_then(parse_ts);
+                    let Some(content) = v.pointer("/message/content") else {
+                        continue;
+                    };
                     match content {
                         Value::String(s) => push(&mut messages, Role::User, s, ts),
                         Value::Array(blocks) => {
@@ -100,7 +113,10 @@ impl Adapter for ClaudeCode {
                     }
                 }
                 Some("assistant") => {
-                    let ts = v.get("timestamp").and_then(Value::as_str).and_then(parse_ts);
+                    let ts = v
+                        .get("timestamp")
+                        .and_then(Value::as_str)
+                        .and_then(parse_ts);
                     let Some(Value::Array(blocks)) = v.pointer("/message/content") else {
                         continue;
                     };
@@ -113,7 +129,8 @@ impl Adapter for ClaudeCode {
                             }
                             Some("tool_use") => {
                                 let name = b.get("name").and_then(Value::as_str).unwrap_or("?");
-                                let input = b.get("input").map(|i| i.to_string()).unwrap_or_default();
+                                let input =
+                                    b.get("input").map(|i| i.to_string()).unwrap_or_default();
                                 let text = format!("{name} {}", truncate(&input, 300));
                                 push(&mut messages, Role::Tool, &text, ts);
                             }
@@ -132,7 +149,9 @@ impl Adapter for ClaudeCode {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default()
         });
-        let title = summary.map(|s| truncate(&s, 80)).unwrap_or_else(|| title_from_messages(&messages));
+        let title = summary
+            .map(|s| truncate(&s, 80))
+            .unwrap_or_else(|| title_from_messages(&messages));
         let subagent = path.to_string_lossy().contains("/subagents/");
 
         Ok(Session {
@@ -149,10 +168,19 @@ impl Adapter for ClaudeCode {
     }
 }
 
-fn push(messages: &mut Vec<Message>, role: Role, text: &str, ts: Option<chrono::DateTime<chrono::Utc>>) {
+fn push(
+    messages: &mut Vec<Message>,
+    role: Role,
+    text: &str,
+    ts: Option<chrono::DateTime<chrono::Utc>>,
+) {
     let text = text.trim();
     if !text.is_empty() {
-        messages.push(Message { role, text: text.to_string(), ts });
+        messages.push(Message {
+            role,
+            text: text.to_string(),
+            ts,
+        });
     }
 }
 

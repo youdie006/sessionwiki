@@ -10,18 +10,15 @@
 지금까지의 모든 AI 세션을 모은 인덱스 &mdash; 검색하고, 요약하고, 이어서 작업하세요.<br>
 Claude Code &middot; Codex CLI &middot; Gemini CLI &nbsp;&middot;&nbsp; 명령 하나, 100% 로컬
 
+<a href="https://github.com/youdie006/sessiondex/actions/workflows/ci.yml"><img src="https://github.com/youdie006/sessiondex/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT 라이선스"></a>
-<a href="https://github.com/youdie006/sessiondex/tags"><img src="https://img.shields.io/github/v/tag/youdie006/sessiondex?label=version&color=355bd0" alt="최신 버전"></a>
-<img src="https://img.shields.io/github/last-commit/youdie006/sessiondex?color=555" alt="마지막 커밋">
+<a href="https://github.com/youdie006/sessiondex/releases"><img src="https://img.shields.io/github/v/release/youdie006/sessiondex?label=release&color=355bd0" alt="최신 릴리스"></a>
 <img src="https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-555" alt="플랫폼: Linux, macOS, Windows">
 <a href="README.md#adding-an-adapter"><img src="https://img.shields.io/badge/adapters-PRs%20welcome-2ea44f" alt="어댑터 PR 환영"></a>
 
 <a href="README.md">English</a> &middot; <b>한국어</b>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/hero-dark.png">
-  <img src="docs/hero-light.png" width="920" alt="sessiondex 웹 UI: Claude Code와 Codex 세션을 가로질러 검색하고, 열린 트랜스크립트에 LLM 요약·resume 명령·목차가 표시된 화면">
-</picture>
+<img src="docs/demo.gif" width="760" alt="터미널 녹화: sessiondex scan이 세 툴에 걸친 47GB 세션을 보여주고, search가 과거 대화를 키워드로 찾고, resume이 원래 툴에서 다시 엽니다">
 
 </div>
 
@@ -41,6 +38,13 @@ gemini                50     1.2 MB  2026-04-02   2026-06-10    ~/.gemini/tmp
 
 실제 머신 한 대의 결과입니다. 본인 머신에서 돌려보세요 &mdash; 숫자에 보통 놀랍니다.
 
+읽는 게 더 편하면 웹 UI도 있습니다 &mdash; `sessiondex web`:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/hero-dark.png">
+  <img src="docs/hero-light.png" width="900" alt="sessiondex 웹 UI: Claude Code와 Codex 세션을 가로질러 검색하고, 열린 트랜스크립트에 LLM 요약·resume 명령·목차가 표시된 화면">
+</picture>
+
 ## 무엇을 할 수 있나
 
 - **찾기** &mdash; 이 머신의 모든 세션 저장소: 어떤 툴이, 어디에, 몇 개, 몇 GB &mdash; 즉시.
@@ -52,13 +56,21 @@ gemini                50     1.2 MB  2026-04-02   2026-06-10    ~/.gemini/tmp
 
 ## 설치
 
-Rust(stable)가 설치돼 있다면:
+**빌드된 바이너리** (툴체인 불필요). macOS / Linux:
+
+```console
+curl -sSL https://raw.githubusercontent.com/youdie006/sessiondex/main/scripts/install.sh | sh
+```
+
+스크립트가 플랫폼에 맞는 아카이브를 [최신 릴리스](https://github.com/youdie006/sessiondex/releases/latest)에서 받아 `~/.local/bin`에 설치합니다. Windows는 릴리스 페이지에서 `.zip`을 받으세요.
+
+**Rust(stable)** 가 있다면:
 
 ```console
 cargo install --git https://github.com/youdie006/sessiondex
 ```
 
-빌드된 바이너리 배포는 로드맵에 있습니다.
+어느 쪽이든 런타임 의존성 없는 단일 바이너리입니다.
 
 ## 빠른 시작
 

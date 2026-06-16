@@ -97,7 +97,10 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
     {
         let mut stmt = conn.prepare("SELECT path, mtime, size FROM files")?;
         let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
+            Ok((
+                r.get::<_, String>(0)?,
+                (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?),
+            ))
         })?;
         for row in rows {
             let (path, ms) = row?;
@@ -141,7 +144,9 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
             eprint!("\r[{tool}] indexing {done}/{total}");
             std::io::stderr().flush().ok();
 
-            let Ok(session) = adapter.parse(&path) else { continue };
+            let Ok(session) = adapter.parse(&path) else {
+                continue;
+            };
             let key = path.to_string_lossy();
             delete_session_msgs(&tx, &session.id)?;
             tx.execute(
@@ -162,11 +167,9 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
                     if session.subagent { "sub" } else { "main" },
                 ],
             )?;
-            let mut ins_row = tx.prepare_cached(
-                "INSERT INTO messages(session_id, role, text) VALUES (?1,?2,?3)",
-            )?;
-            let mut ins_fts =
-                tx.prepare_cached("INSERT INTO msgs(rowid, text) VALUES (?1,?2)")?;
+            let mut ins_row = tx
+                .prepare_cached("INSERT INTO messages(session_id, role, text) VALUES (?1,?2,?3)")?;
+            let mut ins_fts = tx.prepare_cached("INSERT INTO msgs(rowid, text) VALUES (?1,?2)")?;
             for m in &session.messages {
                 ins_row.execute(params![session.id, m.role.label(), m.text])?;
                 ins_fts.execute(params![tx.last_insert_rowid(), m.text])?;
@@ -185,7 +188,10 @@ fn delete_session_msgs(conn: &Connection, session_id: &str) -> Result<()> {
          SELECT 'delete', id, text FROM messages WHERE session_id = ?1",
         params![session_id],
     )?;
-    conn.execute("DELETE FROM messages WHERE session_id = ?1", params![session_id])?;
+    conn.execute(
+        "DELETE FROM messages WHERE session_id = ?1",
+        params![session_id],
+    )?;
     Ok(())
 }
 
@@ -231,8 +237,7 @@ const PREVIEW_SQL: &str = "(SELECT substr(m2.text, 1, 280) FROM messages m2
     WHERE m2.session_id = f.session_id AND m2.role = 'assistant'
     ORDER BY m2.id DESC LIMIT 1)";
 
-const SUMMARY_SQL: &str =
-    "(SELECT s.summary FROM summaries s WHERE s.session_id = f.session_id)";
+const SUMMARY_SQL: &str = "(SELECT s.summary FROM summaries s WHERE s.session_id = f.session_id)";
 
 pub fn recent(
     conn: &Connection,
@@ -318,7 +323,9 @@ pub fn search(
         sql.push_str(" AND f.project LIKE ?");
         args.push(format!("%{p}%"));
     }
-    sql.push_str(&format!(" GROUP BY f.session_id ORDER BY best LIMIT {limit}"));
+    sql.push_str(&format!(
+        " GROUP BY f.session_id ORDER BY best LIMIT {limit}"
+    ));
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(args), |r| {
@@ -376,7 +383,11 @@ pub fn set_summary(conn: &Connection, session_id: &str, summary: &str) -> Result
 }
 
 /// Most recent main sessions that have no cached summary yet.
-pub fn unsummarized(conn: &Connection, limit: usize, tool: Option<&str>) -> Result<Vec<SessionRow>> {
+pub fn unsummarized(
+    conn: &Connection,
+    limit: usize,
+    tool: Option<&str>,
+) -> Result<Vec<SessionRow>> {
     let mut sql = format!(
         "SELECT session_id, tool, path, project, title, started, msg_count, kind, {PREVIEW_SQL}, {SUMMARY_SQL}
          FROM files f
