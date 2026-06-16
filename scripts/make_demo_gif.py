@@ -3,10 +3,8 @@
 
 Reproducible, headless, no external recorder. Renders typed commands, a short
 caption that explains each step, and the tool's real output (format and ANSI
-colors matched) to PIL frames, then assembles a looping animated WebP. A
-virtual camera follows the action - it pushes into the command line while it's
-typed and eases back out to frame the answer (a screencast focus zoom, not a
-whole-frame pan).
+colors matched) to PIL frames, then assembles a looping animated WebP. The
+camera stays put - it is a clean full-frame terminal, the typing is the motion.
 
     python3 scripts/make_demo_gif.py
 
@@ -31,7 +29,7 @@ TAG = (147, 167, 239)
 
 SCALE = 2
 FONT_SIZE = 15 * SCALE
-COLS, ROWS = 84, 23
+COLS, ROWS = 84, 11  # height fits the tallest beat without dead space
 PAD = 18 * SCALE
 TITLE_H = 32 * SCALE
 
@@ -84,7 +82,7 @@ def prompt_segs(typed):
 # Each beat: a caption (narration), the command, and its output lines.
 BEATS = [
     {
-        "cap": "# every AI session you've had — found, across every tool",
+        "cap": "# every AI session you've had - found, across every tool",
         "cmd": "sessionwiki scan",
         "out": [
             [("TOOL          SESSIONS      SIZE  OLDEST      NEWEST", DIM, False)],
@@ -124,7 +122,7 @@ BEATS = [
         "hold": 1700,
     },
     {
-        "cap": "# tag and organize — it never touches the originals",
+        "cap": "# tag and organize - it never touches the originals",
         "cmd": "sessionwiki tag 76a6 perf flaky",
         "out": [
             [("76a614028a63 ", YELLOW, False), ("#perf #flaky", TAG, False)],
@@ -144,99 +142,57 @@ BEATS = [
 ]
 
 
-def row_center_y(row):
-    return TITLE_H + PAD + row * CH + CH // 2
-
-
-# Camera = (center_x, center_y, zoom). The renderer crops a region of size
-# (W/zoom, H/zoom) around the center and scales it to a fixed output, so a
-# higher zoom focuses on a smaller area - the screencast "push into the part
-# that's happening" effect, not a whole-frame Ken Burns.
-CX = round(W * 0.42)  # text is left-aligned; bias the focus left
-
-
-def fit_zoom(nrows):
-    # zoom so the active block (plus breathing room) fills the height
-    block = (nrows + 2.2) * CH
-    return max(1.04, min(1.22, H / block))
-
-
 def build_frames():
-    frames = []  # (image, duration_ms, target_cam)
+    """Logical timeline as (image, duration_ms). No camera - full frame."""
+    frames = []
 
-    def emit(screen, ms, cam, cursor=None):
-        frames.append((draw_screen(screen, cursor), ms, cam))
+    def emit(screen, ms, cursor=None):
+        frames.append((draw_screen(screen, cursor), ms))
 
     for beat in BEATS:
-        screen = []
         cap = beat["cap"]
-        cap_cam = (CX, row_center_y(0), 1.22)
         for i in range(0, len(cap) + 1, 3):
-            screen = [[(cap[:i], CAPTION, False)]]
-            emit(screen, 16, cap_cam)
+            emit([[(cap[:i], CAPTION, False)]], 16)
         screen = [[(cap, CAPTION, False)], [("", FG, False)]]
-        emit(screen, 320, cap_cam)
-        # command types in -> push the camera into the command line
+        emit(screen, 320)
+        # command types in
         cmd = beat["cmd"]
-        cmd_cam = (CX, row_center_y(1) - CH // 4, 1.62)
         for i in range(len(cmd) + 1):
             screen[1] = prompt_segs(cmd[:i])
-            emit(screen, 46, cmd_cam, cursor=(1, 2 + i))
-        emit(screen, 260, cmd_cam)
-        # output reveals -> ease back out to frame the whole answer
-        for j, segs in enumerate(beat["out"]):
+            emit(screen, 45, cursor=(1, 2 + i))
+        emit(screen, 260)
+        # output reveals line by line
+        for segs in beat["out"]:
             screen.append(segs)
-            nrows = len(screen)
-            cam = (CX, row_center_y((nrows - 1) / 2), fit_zoom(nrows))
-            emit(screen, 75, cam)
-        nrows = len(screen)
-        hold_cam = (CX, row_center_y((nrows - 1) / 2), fit_zoom(nrows))
-        emit(screen, beat["hold"], hold_cam)
+            emit(screen, 80)
+        emit(screen, beat["hold"])
 
     return frames
 
 
-def crop_to_cam(img, cam, out_size):
-    cx, cy, z = cam
-    cw, ch = W / z, H / z
-    x0 = min(max(cx - cw / 2, 0), W - cw)
-    y0 = min(max(cy - ch / 2, 0), H - ch)
-    region = img.crop((round(x0), round(y0), round(x0 + cw), round(y0 + ch)))
-    return region.resize(out_size, Image.LANCZOS)
-
-
 def main():
-    logical = build_frames()  # (image, ms, target_cam)
+    logical = build_frames()  # (image, ms)
 
-    # Expand the logical timeline to a fixed frame rate and glide a virtual
-    # camera toward each frame's focus target (exponential ease). The camera
-    # zooms into the command line while it's typed, then eases back out to
-    # frame the answer - the screencast/ad focus zoom, not a whole-frame pan.
+    # Resample the logical timeline to a fixed frame rate so the typing reads
+    # smoothly. Full frame, downscaled once to the output size - no zoom.
     fps = 30
     out_size = (W // 2, H // 2)
     dt = 1000 / fps
 
-    # current camera state, eased per output frame
-    cam = list(logical[0][2])
-    k = 0.18
-
     frames = []
     t, idx, acc = 0.0, 0, logical[0][1]
-    total_ms = sum(ms for _, ms, _ in logical)
+    total_ms = sum(ms for _, ms in logical)
     while t < total_ms:
         while t >= acc and idx < len(logical) - 1:
             idx += 1
             acc += logical[idx][1]
-        img, _, target = logical[idx]
-        for d in range(3):
-            cam[d] += (target[d] - cam[d]) * k
-        frames.append(crop_to_cam(img, tuple(cam), out_size))
+        frames.append(logical[idx][0].resize(out_size, Image.LANCZOS))
         t += dt
 
     out = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "docs", "demo-cli.webp"))
     frames[0].save(
         out, save_all=True, append_images=frames[1:], format="WEBP",
-        duration=round(dt), loop=0, quality=72, method=6,
+        duration=round(dt), loop=0, quality=80, method=6,
     )
     print(f"wrote {out} ({os.path.getsize(out) / 1024:.0f} KB, {len(frames)} frames, ~{total_ms/1000:.1f}s)")
 
