@@ -75,42 +75,41 @@ def main():
     # ease-in-out curve so the motion reads as natural rather than mechanical -
     # the easing principle from the motion-craft skill, applied to a raster
     # zoom. Rendered in PIL by cropping a smoothly shrinking/growing centered
-    # window and resizing back, so text stays crisp; per-frame quantization
-    # keeps the light<->dark switch from sharing a washed-out palette. Modest
-    # fps and downscale keep the file small despite every frame being unique.
-    fps = 10
-    scale = 0.6
-    zmax = 0.042  # gentle push
+    # window and resizing back, so text stays crisp.
+    #
+    # Output is animated WebP, not GIF: GitHub renders it in <img>, it is full
+    # color (no 256-palette banding on the light<->dark switch), and it
+    # compresses far better - so we can run a high frame rate for smooth motion
+    # at a fraction of a GIF's size.
+    fps = 24
+    scale = 0.72
+    zmax = 0.05
     w, h = scenes[0].size
     out_size = (round(w * scale), round(h * scale))
 
     def smoothstep(t):
         return t * t * (3 - 2 * t)
 
-    frames, durations = [], []
+    frames = []
     for idx, (scene, hold_ms) in enumerate(zip(scenes, holds)):
         n = max(2, round(hold_ms / 1000 * fps))
         push_in = idx % 2 == 0  # alternate: in, out, in, ...
         for k in range(n):
             e = smoothstep(k / (n - 1))
-            frac = (e if push_in else 1 - e) * zmax  # 0..zmax along the ease
+            frac = (e if push_in else 1 - e) * zmax
             z = 1.0 + frac
             cw, ch = w / z, h / z
             x0, y0 = (w - cw) / 2, (h - ch) / 2
             crop = scene.crop((round(x0), round(y0), round(x0 + cw), round(y0 + ch)))
-            frame = crop.resize(out_size, Image.LANCZOS).quantize(
-                colors=256, method=Image.MEDIANCUT, dither=Image.Dither.NONE
-            )
-            frames.append(frame)
-            durations.append(round(1000 / fps))
+            frames.append(crop.resize(out_size, Image.LANCZOS))
 
-    out = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "docs", "demo-web.gif"))
+    out = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "docs", "demo-web.webp"))
     frames[0].save(
-        out, save_all=True, append_images=frames[1:],
-        duration=durations, loop=0, disposal=2, optimize=True,
+        out, save_all=True, append_images=frames[1:], format="WEBP",
+        duration=round(1000 / fps), loop=0, quality=70, method=6,
     )
-    secs = sum(durations) / 1000
-    print(f"wrote {out} ({os.path.getsize(out)/1024:.0f} KB, {len(frames)} frames, ~{secs:.1f}s)")
+    secs = len(frames) / fps
+    print(f"wrote {out} ({os.path.getsize(out) / 1024:.0f} KB, {len(frames)} frames, ~{secs:.1f}s)")
 
 
 if __name__ == "__main__":

@@ -181,7 +181,10 @@ def main():
         raise SystemExit("ffmpeg is required")
     frames = build_frames()
 
-    fps = 20
+    # Output animated WebP, not GIF: GitHub renders it in <img>, it is full
+    # color (no 256-palette banding), and it compresses far better - so we can
+    # run a high frame rate for smooth motion without the file ballooning.
+    fps = 30
     total_out = int(sum(ms for _, ms in frames) / 1000 * fps)
 
     tmp = tempfile.mkdtemp(prefix="swgif-")
@@ -193,7 +196,7 @@ def main():
             f.write(f"file '{p}'\nduration {ms/1000:.3f}\n")
         f.write(f"file '{os.path.join(tmp, f'f{len(frames)-1:04d}.png')}'\n")
 
-    out = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "docs", "demo-cli.gif"))
+    out = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "docs", "demo-cli.webp"))
     # breathing zoom: one full sine cycle over the clip so the loop is seamless
     z = f"1.012+0.012*sin(2*PI*on/{total_out})"
     zoom = (
@@ -201,19 +204,15 @@ def main():
         f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
         f"d=1:fps={fps}:s={W}x{H}"
     )
-    pal = os.path.join(tmp, "pal.png")
     subprocess.run(
         ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat,
-         "-vf", f"fps={fps},{zoom},scale={W//2}:-1:flags=lanczos,palettegen=stats_mode=diff", pal],
-        check=True, capture_output=True)
-    subprocess.run(
-        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat, "-i", pal,
-         "-lavfi", f"fps={fps},{zoom},scale={W//2}:-1:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=3",
+         "-vf", f"fps={fps},{zoom},scale={W // 2}:-1:flags=lanczos",
+         "-c:v", "libwebp_anim", "-lossless", "0", "-q:v", "72", "-compression_level", "6",
          "-loop", "0", out],
         check=True, capture_output=True)
     shutil.rmtree(tmp, ignore_errors=True)
     secs = sum(ms for _, ms in frames) / 1000
-    print(f"wrote {out} ({os.path.getsize(out)/1024:.0f} KB, {len(frames)} frames, ~{secs:.1f}s)")
+    print(f"wrote {out} ({os.path.getsize(out) / 1024:.0f} KB, {total_out} frames, ~{secs:.1f}s)")
 
 
 if __name__ == "__main__":
