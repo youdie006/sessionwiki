@@ -35,7 +35,9 @@ gemini                50     1.2 MB  2026-04-02   2026-06-10    ~/.gemini/tmp
 
 읽는 게 더 편하면 웹 UI도 있습니다 &mdash; `sessionwiki web`:
 
-<img src="docs/demo-web.webp" width="900" alt="sessionwiki 웹 UI: 툴을 가로지른 검색, 요약·태그·노트·resume 명령이 달린 트랜스크립트, 관련 세션, 태그 필터, 라이트/다크 테마, 4개국어 UI">
+<a href="docs/demo-web.mp4"><img src="docs/demo-web-poster.png" width="900" alt="sessionwiki 웹 UI: 툴을 가로지른 검색, 태그·resume 명령이 달린 트랜스크립트, 파일 프로비넌스, 태그 필터, 라이트/다크 테마, 4개국어 UI"></a>
+
+<sub><b><a href="docs/demo-web.mp4">&#9654; 18초 데모 보기</a></b> &mdash; 검색창 실제 타이핑, 태그와 원커맨드 resume이 달린 트랜스크립트, 파일 프로비넌스, 다크 모드, 그리고 UI가 한국어로 전환되는 장면.</sub>
 
 ## 무엇을 할 수 있나
 
