@@ -49,6 +49,7 @@ That is one real machine. Run it on yours &mdash; the number is usually a surpri
 - **Resume** a session in its original tool, in the right project directory, with one command.
 - **Carry context across tools**: brief a Claude Code session into Codex, or anywhere else.
 - **Trace a file back to the sessions that edited it** &mdash; `trace src/auth.rs` lists the AI conversations behind a file, across every tool. The link between your sessions and the code they produced. See [provenance](#trace-code-back-to-its-session).
+- **Keep what your tools delete** &mdash; sessions are [archived](#nothing-gets-lost-archive-mode) when the tool prunes them, so search and trace never go dark on old work.
 - **Curate and connect**: tag and annotate sessions, jump to related ones, and see where your agent time goes &mdash; [session engineering](#session-engineering), not just search.
 
 And a web UI when you would rather read than grep &mdash; `sessionwiki web`:
@@ -115,8 +116,9 @@ a navigable, maintained one. They read the index, so they are instant.
 | `trace <path>` | The AI sessions that touched a file, newest first. Matches a relative path against the absolute one on disk, so `trace src/auth.rs` just works. See [below](#trace-code-back-to-its-session). |
 | `tag <id> <tag>...` | Tag a session (`--rm` to remove). No id lists every tag in use. Filter with `list --tag`. Tags are stored in the index and survive reindexing &mdash; the original session files are never touched. |
 | `note <id> "text"` | Pin a freeform note on a session; omit the text to read it back. |
+| `forget <id>` | Permanently drop a session from the index and archive. The escape hatch for [archive mode](#nothing-gets-lost-archive-mode) when you want a kept session gone. |
 | `projects` | One row per project: session count, message volume, last activity. A page per codebase. |
-| `stats` | Totals plus a breakdown by tool, by month, and how many files are linked to a session. |
+| `stats` | Totals plus a breakdown by tool, by month, files linked to sessions, and how many sessions were kept after the tools deleted them. |
 
 ### Trace code back to its session
 
@@ -139,6 +141,31 @@ later edit may have replaced the code, so `trace` is a way back to the relevant
 discussion, not a claim that a given line came from one session. In the web UI,
 the files a session touched are chips in its header &mdash; click one to see
 every other session that touched it.
+
+### Nothing gets lost (archive mode)
+
+Claude Code and Codex prune old sessions over time. The first time `trace`
+comes up empty for a file you *know* an agent wrote &mdash; because the session
+behind it was deleted &mdash; the whole link is worthless. So once sessionwiki
+has indexed a session, it keeps it: when a tool deletes the original, the
+session is **archived**, not dropped, and `search`, `trace`, and `brief` keep
+working for it.
+
+```console
+$ sessionwiki list          # after Claude pruned an old session
+archived 1 session(s) the tool removed (1 kept that your tools have deleted)
+...
+a1b2c3d4  claude-code  3w ago  12  …/api-server  Fix CORS preflight…  [archived]
+```
+
+It is automatic and silent (no copy step to remember), costs almost nothing
+(the distilled transcript was already in the index), and is reversible:
+`forget <id>` drops an archived session for good, and a session that reappears
+on disk un-archives itself. The original tool can no longer reopen it, but you
+can still read it, `brief` it into a new session, and `trace` the code back to
+it. This is the part a generation-time hook can't do: it works for the
+thousands of sessions that already exist, and for the ones the tool already
+deleted while you weren't looking.
 
 ## Pick up where you left off
 
@@ -214,19 +241,20 @@ does so by running a CLI you chose, locally, only when you invoke it.
 
 Expect a low double-digit percentage of your stores' size; tens of GB of
 history produce a few GB of index. It is a cache &mdash; delete it whenever you
-want and the next run rebuilds it. Cached summaries are kept separately so
-they survive.
+want and the next run rebuilds it. Cached summaries, curation, and archived
+sessions are kept separately so they survive.
 </details>
 
 <details>
-<summary><b>FAQ: what about sessions my tool already deleted?</b></summary>
+<summary><b>FAQ: what about sessions my tool deletes?</b></summary>
 <br>
 
-Gone is gone &mdash; sessionwiki reads what is on disk, and some tools clean up
-old sessions on a schedule (Claude Code's retention setting, for example).
-That is exactly what the planned archive mode fixes: keep a copy inside the
-atlas so the tool's cleanup stops being your memory's expiry date. Install
-early, lose nothing.
+Sessions sessionwiki already indexed are kept: when a tool prunes the original,
+the session is [archived](#nothing-gets-lost-archive-mode), not lost, so
+`search`/`trace`/`brief` keep working for it. Sessions that were deleted
+*before* you ever ran sessionwiki are gone &mdash; it can only keep what it has
+seen, so install early. Archiving is automatic; `forget <id>` drops one for
+good.
 </details>
 
 ## Privacy
@@ -287,16 +315,16 @@ drift between tool versions, so parse defensively and return what you can.
 
 ## Roadmap
 
-- archive mode &mdash; keep a session in sessionwiki even after the tool's own
-  cleanup deletes the original, so search, `brief`, and `trace` keep working
-  for it. Install early, lose nothing &mdash; and trace code back to
-  conversations the tool has long since pruned.
+- more adapters &mdash; Cursor, Cline, OpenCode, Aider, ... the #1 thing PRs
+  help with (see [adding an adapter](#adding-an-adapter))
 - richer provenance &mdash; correlate a session's edits with the file's git
   history so `trace` can narrow to the commits and line ranges around it
 - `sync` &mdash; merge indexes from multiple machines
 - `clean` &mdash; reclaim disk from huge old session stores, safely
-- prebuilt binaries
-- more adapters (tell us which tool you want next in an issue)
+- prebuilt binaries for every platform
+
+Shipped recently: [provenance](#trace-code-back-to-its-session) (`trace` /
+`files`) and [archive mode](#nothing-gets-lost-archive-mode).
 
 ## Contributing
 

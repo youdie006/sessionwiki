@@ -17,6 +17,15 @@ semantic versioning once it reaches 1.0.
   projects; `stats` reports the count of files linked to a session.
 - Web UI: a session's touched files appear as chips in its header; clicking one
   lists every session that touched it (new `/api/trace` endpoint).
+- Archive mode: when a tool deletes a session's original file, sessionwiki
+  keeps the indexed copy instead of dropping it, so `search`, `trace`, and
+  `brief` keep working for it. A durable `archive` table survives schema
+  rebuilds; archived sessions are served from the index (`show`/`brief`/web),
+  flagged `[archived]` in `list`/`show`/web, and counted in `stats`. `sync`
+  reports how many were kept. New `forget <id>` purges a session for good;
+  re-appearing files un-archive automatically; `SESSIONWIKI_NO_ARCHIVE` reverts
+  to delete-on-prune. A store that vanishes wholesale (uninstall, unmount) is
+  not mass-archived.
 
 ### Changed
 - CLI demo is a clean static full-frame terminal (no camera zoom). The web demo
