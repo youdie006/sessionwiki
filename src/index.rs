@@ -186,6 +186,11 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
                     if session.subagent { "sub" } else { "main" },
                 ],
             )?;
+            // Contract: messages of a session are inserted in transcript order
+            // within one transaction, so the autoincrement `messages.id` is a
+            // monotonic proxy for message order. `preview` (last assistant
+            // message) and the web transcript rely on this. Keep the insert
+            // sequential and in order if you touch this loop.
             let mut ins_row = tx
                 .prepare_cached("INSERT INTO messages(session_id, role, text) VALUES (?1,?2,?3)")?;
             let mut ins_fts = tx.prepare_cached("INSERT INTO msgs(rowid, text) VALUES (?1,?2)")?;
@@ -335,13 +340,18 @@ pub fn search(
 
     // snippet()/rank only work in a plain FTS5 query context, not under
     // joins or GROUP BY, so match in a subquery and attach metadata outside.
+    //
+    // Tradeoff: we take the top 1000 message hits by rank, then group to
+    // sessions. For a very common term this can miss sessions whose only hits
+    // fall past rank 1000 - a deliberate choice that keeps the query fast on a
+    // multi-million-message index. Narrow the query to surface the long tail.
     let mut sql = String::from(
         "SELECT f.session_id, f.tool, f.path, f.project, f.title, f.started, f.msg_count, f.kind,
                 m.role, x.snip, min(x.rank) AS best
          FROM (SELECT rowid AS mid,
                       snippet(msgs, 0, char(2), char(3), char(8230), 18) AS snip,
                       rank
-               FROM msgs WHERE msgs MATCH ? ORDER BY rank LIMIT 1000) x
+               FROM msgs WHERE msgs MATCH ? ORDER BY rank LIMIT 4000) x
          JOIN messages m ON m.id = x.mid
          JOIN files f ON f.session_id = m.session_id
          WHERE 1=1",

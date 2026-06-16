@@ -4,7 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning once it reaches 1.0.
 
-## [Unreleased]
+## [0.7.0] - 2026-06-16
+
+### Changed
+- Renamed the project from `sessiondex` to **sessionwiki**, reframed around
+  "session engineering": a session is a unit of context, and once you have
+  hundreds they need curating, not just searching. The data directory migrates
+  newest-name-first (`sessiondex` then `session-atlas`), carrying the index and
+  curated tags/notes/summaries over.
+
+### Added
+- Curation layer (the editable "wiki" part): `tag` / `note`, stored in the
+  index and surviving reindexing; the original session files are never touched.
+- `related`: sessions about the same thing — same project first, then anything
+  sharing a tag — surfaced in `show` and as a "see also" panel in the web UI.
+- `projects` and `stats`: per-project and per-tool/per-month rollups.
+- Web UI: clickable tag chips and a tag-filter bar, notes, a "see also" panel,
+  a node-graph logo, and a globe-button language picker.
+- Two demo GIFs: a narrated CLI recording (`docs/demo-cli.gif`) and a web UI
+  tour (`docs/demo-web.gif`). `SECURITY.md`.
+
+## [0.6.0] - 2026-06-16
 
 ### Added
 - Library + binary split (`src/lib.rs`): the adapter and index logic is now a
@@ -16,13 +36,12 @@ semantic versioning once it reaches 1.0.
   prebuilt binaries for Linux, macOS (x86_64 + arm64), and Windows on tag push.
 - `scripts/install.sh` one-line installer that fetches the right prebuilt
   binary for the platform.
-- Animated terminal demo (`docs/demo.gif`) and a "how this differs from a
-  single-tool viewer" section in the README.
+- A "how this differs from a single-tool viewer" section in the README.
 
 ## [0.5.0] - 2026-06-12
 
 ### Changed
-- Renamed the project from `session-atlas` to **sessionwiki**. The data
+- Renamed the project from `session-atlas` to **sessiondex**. The data
   directory migrates automatically on first run, carrying the existing index
   and cached summaries over.
 
@@ -59,7 +78,8 @@ semantic versioning once it reaches 1.0.
   incremental SQLite FTS5 index. Adapters for Claude Code, Codex, and Gemini
   CLI. 100% local, no telemetry.
 
-[Unreleased]: https://github.com/youdie006/sessionwiki/compare/v0.5.0...HEAD
+[0.7.0]: https://github.com/youdie006/sessionwiki/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/youdie006/sessionwiki/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/youdie006/sessionwiki/releases/tag/v0.5.0
 [0.4.0]: https://github.com/youdie006/sessionwiki/releases/tag/v0.4.0
 [0.3.0]: https://github.com/youdie006/sessionwiki/releases/tag/v0.3.0

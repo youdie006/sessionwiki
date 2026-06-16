@@ -54,6 +54,10 @@ enum Command {
         /// Do not open the browser automatically
         #[arg(long)]
         no_open: bool,
+        /// Refresh the index once before serving (otherwise it reflects the
+        /// last `list`/`search`)
+        #[arg(long)]
+        sync: bool,
     },
     /// Print one session as a readable transcript
     Show {
@@ -162,7 +166,11 @@ fn main() {
             tool,
             project,
         } => commands::search(&query, limit, tool.as_deref(), project.as_deref()),
-        Command::Web { port, no_open } => web::serve(port, no_open),
+        Command::Web {
+            port,
+            no_open,
+            sync,
+        } => web::serve(port, no_open, sync),
         Command::Show {
             id,
             full,

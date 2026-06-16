@@ -6,8 +6,10 @@ posture is deliberately small:
 
 - **No network calls.** There is not a single one in the codebase. You can
   verify this with one grep over `src/`. The only feature that touches an LLM
-  is `summarize`, and it does so by running a CLI **you** configure and invoke,
-  on your machine.
+  is `summarize`, which runs a shell command **you** supply (`--cmd` or the
+  `SESSIONWIKI_SUMMARIZER` env var, default `claude -p`) with the session text
+  on stdin. It runs exactly what you configured, on your machine; do not point
+  it at a command you would not run yourself.
 - **No telemetry, no accounts.**
 - **The web UI binds to `127.0.0.1` only** and is read-only with respect to
   your session stores.

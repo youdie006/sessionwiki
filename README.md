@@ -16,7 +16,7 @@ Claude Code &middot; Codex CLI &middot; Gemini CLI &nbsp;&middot;&nbsp; one comm
 <img src="https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-555" alt="Platforms: Linux, macOS, Windows">
 <a href="#adding-an-adapter"><img src="https://img.shields.io/badge/adapters-PRs%20welcome-2ea44f" alt="Adapter PRs welcome"></a>
 
-<b>English</b> &middot; <a href="README.ko.md">한국어</a>
+<img src="https://img.shields.io/badge/English-3b5bd6?style=for-the-badge" alt="English (current)">&nbsp;<a href="README.ko.md"><img src="https://img.shields.io/badge/%ED%95%9C%EA%B5%AD%EC%96%B4-eceae3?style=for-the-badge&labelColor=eceae3&color=6e6b62" alt="한국어"></a>
 
 <a href="#install">Install</a> &middot;
 <a href="#quick-start">Quick start</a> &middot;
@@ -104,7 +104,7 @@ GB). After that, updates are incremental and take seconds.
 | `summarize [id]` | Generate 1&ndash;2 sentence synopses with **your own LLM CLI** (`claude -p` by default, `--cmd` / `SESSIONWIKI_SUMMARIZER` to change) and cache them in the index. Without an id, batches over the `--recent N` newest sessions. Summaries survive reindexing and show up in `show`, `--outline`, and the web sidebar. |
 | `resume <id>` | Reopen the session in its original tool: `claude --resume` / `codex resume`, run in the right project directory. Subagent transcripts resume their parent. `--print` to just show the command. |
 | `brief <id>` | Emit the session as a markdown briefing (head and tail, middle omitted) to carry context into any tool &mdash; including across tools. `--max-chars`, `--tools`. |
-| `web` | Local viewer on `127.0.0.1:7575`: day-grouped sessions with synopsis previews, live search with highlighted snippets, rendered transcripts with outlines, tags, and "see also" related sessions, resume commands, light and dark themes, UI in English, Korean, Japanese, and Chinese (auto-detected). Never leaves localhost. |
+| `web` | Local viewer on `127.0.0.1:7575`: day-grouped sessions with synopsis previews, live search with highlighted snippets, rendered transcripts with outlines, tags, and "see also" related sessions, resume commands, light and dark themes, UI in English, Korean, Japanese, and Chinese (auto-detected). It reads the existing index (sessions created after your last `list`/`search` show up once you refresh); `web --sync` refreshes first. Never leaves localhost. |
 
 ### Session engineering
 

@@ -4,16 +4,23 @@ use rusqlite::Connection;
 use serde_json::json;
 use tiny_http::{Header, Response, Server};
 
-/// Local read-only viewer over the index. It never syncs by itself, so it
-/// stays snappy and can run while a CLI index pass is in progress (WAL
-/// allows concurrent readers).
-pub fn serve(port: u16, no_open: bool) -> Result<()> {
-    let conn = index::open()?;
+/// Local read-only viewer over the index. By default it does not sync, so it
+/// stays snappy and can run while a CLI index pass is in progress (WAL allows
+/// concurrent readers) - which means sessions created after the last
+/// `list`/`search` won't show until the index is refreshed. Pass `sync` to
+/// bring the index up to date once before serving.
+pub fn serve(port: u16, no_open: bool, sync: bool) -> Result<()> {
+    let mut conn = index::open()?;
+    if sync {
+        index::sync(&mut conn, None)?;
+    }
     let addr = format!("127.0.0.1:{port}");
     let server = Server::http(&addr).map_err(|e| anyhow::anyhow!("bind {addr}: {e}"))?;
     let url = format!("http://{addr}");
     println!("sessionwiki web: {url}");
-    println!("(read-only view of the index; run `sessionwiki list` to refresh it)");
+    if !sync {
+        println!("(read-only view; run `sessionwiki list` or `web --sync` to refresh the index)");
+    }
     if !no_open {
         open_browser(&url);
     }
