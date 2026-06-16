@@ -48,6 +48,7 @@ That is one real machine. Run it on yours &mdash; the number is usually a surpri
 - **Summarize** sessions into cached one-line synopses using your own LLM CLI &mdash; then never wonder "what was this one about" again.
 - **Resume** a session in its original tool, in the right project directory, with one command.
 - **Carry context across tools**: brief a Claude Code session into Codex, or anywhere else.
+- **Trace a file back to the sessions that edited it** &mdash; `trace src/auth.rs` lists the AI conversations behind a file, across every tool. The link between your sessions and the code they produced. See [provenance](#trace-code-back-to-its-session).
 - **Curate and connect**: tag and annotate sessions, jump to related ones, and see where your agent time goes &mdash; [session engineering](#session-engineering), not just search.
 
 And a web UI when you would rather read than grep &mdash; `sessionwiki web`:
@@ -109,11 +110,35 @@ a navigable, maintained one. They read the index, so they are instant.
 
 | Command | What it does |
 |---|---|
-| `related <id>` | Sessions about the same thing: same project first, then anything sharing a tag. The "see also" for your work. |
+| `related <id>` | Sessions about the same thing: same project first, then sessions that edited the same files, then anything sharing a tag. The "see also" for your work. |
+| `files <id>` | The files a session edited or created &mdash; its side of the provenance link. |
+| `trace <path>` | The AI sessions that touched a file, newest first. Matches a relative path against the absolute one on disk, so `trace src/auth.rs` just works. See [below](#trace-code-back-to-its-session). |
 | `tag <id> <tag>...` | Tag a session (`--rm` to remove). No id lists every tag in use. Filter with `list --tag`. Tags are stored in the index and survive reindexing &mdash; the original session files are never touched. |
 | `note <id> "text"` | Pin a freeform note on a session; omit the text to read it back. |
 | `projects` | One row per project: session count, message volume, last activity. A page per codebase. |
-| `stats` | Totals plus a breakdown by tool and by month. Where your agent time actually goes. |
+| `stats` | Totals plus a breakdown by tool, by month, and how many files are linked to a session. |
+
+### Trace code back to its session
+
+AI writes most of the code now, so the question is no longer "who wrote this
+line" but "which conversation produced it, and why." sessionwiki reads the file
+edits out of each session's tool calls &mdash; Claude's `Edit`/`Write`, Codex's
+`apply_patch` &mdash; and links every session to the files it changed.
+
+```console
+$ sessionwiki trace src/middleware/mod.rs
+2 session(s) touched "src/middleware/mod.rs", newest first:
+35a59790  claude-code  2026-06-09  Fix CORS preflight failing on /auth routes
+4fd0ce37  claude-code  2026-06-08  Add retry with backoff to the payment webhook handler
+```
+
+It works retroactively, with no hooks or setup, over every session already on
+disk &mdash; nothing to install before the fact. The honest scope: this points
+you at the conversations that *touched* a file, not at line-level authorship; a
+later edit may have replaced the code, so `trace` is a way back to the relevant
+discussion, not a claim that a given line came from one session. In the web UI,
+the files a session touched are chips in its header &mdash; click one to see
+every other session that touched it.
 
 ## Pick up where you left off
 
@@ -222,8 +247,12 @@ read-only. See the FAQ above.
 ### Where sessionwiki fits
 
 Browsing AI session history is an active space &mdash; there are native GUI apps
-and other multi-tool CLIs. sessionwiki makes three specific bets:
+and other multi-tool CLIs. sessionwiki makes a few specific bets:
 
+- **It links sessions to the code they produced.** [`trace <file>`](#trace-code-back-to-its-session)
+  goes from a file to the conversations that edited it &mdash; retroactively,
+  with no hooks, over sessions that already exist. Other tools show you the
+  conversation; this connects it to your codebase.
 - **Cross-platform, CLI _and_ web, one static binary.** It runs the same on
   Linux, macOS, and Windows, over SSH, in a container &mdash; not a single-OS app.
 - **CJK search with zero setup.** The trigram index searches Korean, Japanese,
@@ -239,7 +268,7 @@ care about CJK, or want one binary that works everywhere, this is built for you.
 
 ## Adding an adapter
 
-If your agent writes sessions to disk, it belongs in the atlas. An adapter is
+If your agent writes sessions to disk, it belongs here. An adapter is
 one small Rust file implementing four methods:
 
 ```rust
@@ -258,10 +287,13 @@ drift between tool versions, so parse defensively and return what you can.
 
 ## Roadmap
 
-- archive mode &mdash; keep sessions in the atlas even after the tool's own
-  cleanup deletes the originals (install early, lose nothing)
-- `link` &mdash; connect sessions to the git commits they produced ("git blame for AI sessions")
-- `sync` &mdash; merge archives from multiple machines
+- archive mode &mdash; keep a session in sessionwiki even after the tool's own
+  cleanup deletes the original, so search, `brief`, and `trace` keep working
+  for it. Install early, lose nothing &mdash; and trace code back to
+  conversations the tool has long since pruned.
+- richer provenance &mdash; correlate a session's edits with the file's git
+  history so `trace` can narrow to the commits and line ranges around it
+- `sync` &mdash; merge indexes from multiple machines
 - `clean` &mdash; reclaim disk from huge old session stores, safely
 - prebuilt binaries
 - more adapters (tell us which tool you want next in an issue)

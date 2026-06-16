@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning once it reaches 1.0.
 
+## [Unreleased]
+
+### Added
+- Provenance: sessions are linked to the files they edited or created, read
+  from their tool calls (Claude's `Edit`/`Write`/`MultiEdit`, Codex's
+  `apply_patch`). New commands: `files <id>` (a session's edits) and
+  `trace <path>` (the sessions that touched a file, newest first, matched by
+  suffix so a relative path resolves to the absolute one on disk). The scope is
+  honest — sessions that *touched* a file, not line-level authorship.
+- `related` now also links sessions that edited the same file, even across
+  projects; `stats` reports the count of files linked to a session.
+- Web UI: a session's touched files appear as chips in its header; clicking one
+  lists every session that touched it (new `/api/trace` endpoint).
+
+### Changed
+- CLI demo is a clean static full-frame terminal (no camera zoom). The web demo
+  zooms to exact element regions measured from the live DOM, at 50fps with
+  cubic ease-in-out moves and still holds.
+
 ## [0.7.0] - 2026-06-16
 
 ### Changed
