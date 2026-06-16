@@ -147,6 +147,11 @@ enum Command {
         /// File path as it appears in your editor (e.g. src/auth.rs)
         path: String,
     },
+    /// Permanently drop an archived (or any) session from the index
+    Forget {
+        /// Session id (prefix is enough), from list/search output
+        id: String,
+    },
     /// List projects with session counts (a page per project)
     Projects,
     /// Usage breakdown across tools, projects, and months
@@ -211,6 +216,7 @@ fn main() {
         Command::Related { id, limit } => commands::related(&id, limit),
         Command::Files { id } => commands::files(&id),
         Command::Trace { path } => commands::trace(&path),
+        Command::Forget { id } => commands::forget(&id),
         Command::Projects => commands::projects(),
         Command::Stats => commands::stats(),
     };

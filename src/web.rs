@@ -173,10 +173,19 @@ fn api_trace(conn: &Connection, query: &str) -> Result<Boxed> {
 fn api_session(conn: &Connection, id: &str) -> Result<Boxed> {
     let matches = index::resolve(conn, id)?;
     let row = matches.first().context("session not found")?;
-    let adapter = adapters::by_name(&row.tool).context("unknown tool")?;
     let path = std::path::Path::new(&row.path);
-    let session = adapter.parse(path)?;
+    // Archived sessions (original deleted by the tool) are served from the
+    // index; live ones are re-parsed from the file for full fidelity.
+    let session = if path.exists() {
+        let adapter = adapters::by_name(&row.tool).context("unknown tool")?;
+        adapter.parse(path)?
+    } else {
+        index::session_from_index(conn, row)?
+    };
     let mut v = serde_json::to_value(&session)?;
+    if row.archived {
+        v["archived"] = json!(true);
+    }
     if let Some(info) = resume::for_session(&row.tool, path, &row.project) {
         v["resume"] = json!(info.command_line());
     }
@@ -204,6 +213,7 @@ fn row_json(r: &index::SessionRow) -> serde_json::Value {
         "preview": r.preview,
         "summary": r.summary,
         "tags": r.tags.as_ref().map(|t| t.split(',').collect::<Vec<_>>()),
+        "archived": r.archived,
     })
 }
 

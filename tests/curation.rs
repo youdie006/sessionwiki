@@ -44,7 +44,7 @@ fn fresh_index() -> Connection {
     let conn = index::open().unwrap();
     conn.execute_batch(
         "DELETE FROM files; DELETE FROM messages; DELETE FROM tags;
-         DELETE FROM notes; DELETE FROM touched;",
+         DELETE FROM notes; DELETE FROM touched; DELETE FROM archive;",
     )
     .unwrap();
     conn
@@ -275,4 +275,152 @@ fn projects_and_stats_rollups() {
     assert_eq!(st.projects, 2);
     assert!(st.per_tool.iter().any(|(t, n, _)| t == "codex" && *n == 2));
     assert!(st.per_month.iter().any(|(ym, _)| ym == "2026-06"));
+}
+
+// The crux of archive mode: the durable `archive` table must survive a schema
+// bump (which drops the disposable cache) and rehydrate the cache, or a version
+// bump would silently destroy exactly the sessions that cannot be re-derived
+// from disk. This test forces a bump and asserts an archived session comes back
+// fully - listable, traceable, searchable, readable.
+#[test]
+fn archive_survives_schema_bump_rehydration() {
+    let _g = LOCK.lock().unwrap();
+    let conn = fresh_index();
+    conn.execute(
+        "INSERT INTO archive
+         (session_id, path, mtime, size, tool, project, title, started, ended,
+          msg_count, kind, transcript, touched, archived_at)
+         VALUES ('arc1','/gone/s.jsonl',0,0,'codex','/proj/api','rate limiter fix',
+                 '2026-06-10T10:00:00+00:00','2026-06-10T10:05:00+00:00',2,'main',
+                 ?1, ?2, '2026-06-12T00:00:00Z')",
+        params![
+            r#"[["user","why does the rate limiter go negative"],["assistant","fixed the off-by-one in rate_limiter.rs"]]"#,
+            r#"["/proj/api/src/rate_limiter.rs"]"#
+        ],
+    )
+    .unwrap();
+    drop(conn);
+
+    // Pretend the on-disk schema is stale, forcing a drop-and-rebuild on reopen.
+    {
+        let conn = index::open().unwrap();
+        conn.pragma_update(None, "user_version", 0i64).unwrap();
+    }
+    let conn = index::open().unwrap();
+
+    // Back in the live cache, flagged archived.
+    let rows = index::resolve(&conn, "arc1").unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(
+        rows[0].archived,
+        "rehydrated session must be flagged archived"
+    );
+    assert_eq!(rows[0].title, "rate limiter fix");
+
+    // Provenance survived: trace still finds it.
+    assert_eq!(
+        index::files_for(&conn, "arc1").unwrap(),
+        ["/proj/api/src/rate_limiter.rs"]
+    );
+    let hits = index::sessions_for_file(&conn, "src/rate_limiter.rs", 10).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].0.session_id, "arc1");
+
+    // Transcript survived: search still finds it, and it reads back.
+    let s = index::search(&conn, "negative", 10, None, None).unwrap();
+    assert!(
+        s.iter().any(|h| h.row.session_id == "arc1"),
+        "archived transcript must stay searchable after a rebuild"
+    );
+    let sess = index::session_from_index(&conn, &rows[0]).unwrap();
+    assert_eq!(sess.messages.len(), 2);
+    assert_eq!(sess.tool, "codex");
+}
+
+// End-to-end: a real session on disk is indexed, the tool deletes it, the next
+// sync archives it (does not lose it), it stays traceable/searchable/readable
+// from the index, and `forget` finally removes it.
+#[test]
+fn archive_on_prune_serves_and_forgets() {
+    let _g = LOCK.lock().unwrap();
+    let home = std::env::temp_dir().join("sessionwiki-test-arc-home");
+    let _ = std::fs::remove_dir_all(&home);
+    let proj = home.join(".claude/projects/myproj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let sess = proj.join("aaaaaaaa-0000-4000-8000-000000000abc.jsonl");
+    std::fs::write(
+        &sess,
+        concat!(
+            r#"{"type":"summary","summary":"Fix the login bug","leafUuid":"x"}"#,
+            "\n",
+            r#"{"type":"user","cwd":"/home/dev/app","timestamp":"2026-06-10T10:00:00.000Z","message":{"role":"user","content":"login throws on empty password"}}"#,
+            "\n",
+            r#"{"type":"assistant","cwd":"/home/dev/app","timestamp":"2026-06-10T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/home/dev/app/src/login.rs"}}]}}"#,
+            "\n",
+            r#"{"type":"assistant","cwd":"/home/dev/app","timestamp":"2026-06-10T10:00:10.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Guarded the empty-password case."}]}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+
+    std::env::set_var("HOME", &home);
+    let data = std::env::temp_dir().join("sessionwiki-test-arc-data");
+    let _ = std::fs::remove_dir_all(&data);
+    std::fs::create_dir_all(&data).unwrap();
+    std::env::set_var("SESSIONWIKI_DATA", &data);
+
+    let mut conn = index::open().unwrap();
+    index::sync(&mut conn, Some("claude-code")).unwrap();
+
+    let rows = index::recent(&conn, 50, None, None, None, false).unwrap();
+    let sid = rows
+        .iter()
+        .find(|r| r.title.contains("login"))
+        .map(|r| r.session_id.clone())
+        .expect("session indexed");
+    assert!(!rows.iter().find(|r| r.session_id == sid).unwrap().archived);
+    assert_eq!(
+        index::files_for(&conn, &sid).unwrap(),
+        ["/home/dev/app/src/login.rs"]
+    );
+
+    // The tool prunes the session.
+    std::fs::remove_file(&sess).unwrap();
+    index::sync(&mut conn, Some("claude-code")).unwrap();
+
+    // Kept, flagged archived; trace and search still work.
+    let r = index::resolve(&conn, &sid)
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    assert!(r.archived, "pruned session must be archived, not deleted");
+    assert!(
+        index::sessions_for_file(&conn, "src/login.rs", 10)
+            .unwrap()
+            .iter()
+            .any(|(s, _)| s.session_id == sid),
+        "trace must survive the prune"
+    );
+    assert!(
+        index::search(&conn, "empty password", 10, None, None)
+            .unwrap()
+            .iter()
+            .any(|h| h.row.session_id == sid),
+        "search must survive the prune"
+    );
+
+    // Readable from the index even though the file is gone.
+    let obj = index::session_from_index(&conn, &r).unwrap();
+    assert!(obj
+        .messages
+        .iter()
+        .any(|m| m.text.contains("empty-password")));
+
+    // forget removes it for good.
+    index::forget(&mut conn, &sid).unwrap();
+    assert!(index::resolve(&conn, &sid).unwrap().is_empty());
+
+    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&data);
 }

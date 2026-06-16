@@ -30,18 +30,24 @@ pub fn db_path() -> Result<PathBuf> {
     Ok(dir.join("index.db"))
 }
 
-/// Bump when the schema changes. The index is a disposable cache, so a
-/// mismatch simply drops and rebuilds it instead of migrating.
-const SCHEMA_VERSION: i64 = 3;
+/// Bump when the schema changes. The index is a disposable cache of what is on
+/// disk, so a mismatch drops and rebuilds the derived tables instead of
+/// migrating. The exceptions are the durable tables (summaries, tags, notes,
+/// archive): they hold things that cannot be re-derived from the session files
+/// - LLM output, user curation, and sessions whose originals the tool deleted.
+const SCHEMA_VERSION: i64 = 4;
 
 pub fn open() -> Result<Connection> {
     let conn = Connection::open(db_path()?)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    if version != SCHEMA_VERSION {
-        // The summaries table deliberately survives this: rebuilding the
-        // index is cheap, re-running an LLM over every session is not.
+    let bumped = version != SCHEMA_VERSION;
+    if bumped {
+        // Drop only the derived cache. The durable tables (summaries, tags,
+        // notes, archive) are never dropped: rebuilding the index is cheap,
+        // re-running an LLM or recovering a session the tool already deleted is
+        // not. Archived sessions are rehydrated into the cache below.
         conn.execute_batch(
             "DROP TABLE IF EXISTS msgs;
              DROP TABLE IF EXISTS messages;
@@ -62,7 +68,10 @@ pub fn open() -> Result<Connection> {
             started    TEXT,
             ended      TEXT,
             msg_count  INTEGER NOT NULL DEFAULT 0,
-            kind       TEXT NOT NULL DEFAULT 'main'
+            kind       TEXT NOT NULL DEFAULT 'main',
+            -- Set when the tool deleted the original session file but we kept
+            -- the indexed copy (archive mode). NULL for live sessions.
+            archived_at TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_files_session ON files(session_id);
         -- Plain rows + external-content FTS. Deleting a session is an
@@ -101,10 +110,32 @@ pub fn open() -> Result<Connection> {
             note       TEXT NOT NULL,
             updated    TEXT NOT NULL
         );
+        -- Archive (durable, never dropped on a schema bump). When the tool
+        -- deletes a session's original file, we keep a self-contained copy
+        -- here - the distilled transcript and provenance plus the metadata
+        -- needed to reconstruct the files row. This is the only table that is
+        -- not re-derivable from disk, so on a schema bump the cache tables are
+        -- rehydrated from it. Live sessions are NOT stored here.
+        CREATE TABLE IF NOT EXISTS archive(
+            session_id  TEXT PRIMARY KEY,
+            path        TEXT NOT NULL,
+            mtime       INTEGER NOT NULL,
+            size        INTEGER NOT NULL,
+            tool        TEXT NOT NULL,
+            project     TEXT NOT NULL DEFAULT '',
+            title       TEXT NOT NULL DEFAULT '',
+            started     TEXT,
+            ended       TEXT,
+            msg_count   INTEGER NOT NULL DEFAULT 0,
+            kind        TEXT NOT NULL DEFAULT 'main',
+            transcript  TEXT NOT NULL,  -- JSON [[role,text],...] in order
+            touched     TEXT NOT NULL,  -- JSON [path,...]
+            archived_at TEXT NOT NULL
+        );
         -- Provenance: which files each session edited or created, from its
         -- tool calls. Rebuilt from the sessions on sync, so it is dropped on a
         -- schema bump like messages - not curated. The path index powers
-        -- `blame` (sessions for a file) and shared-file relatedness.
+        -- `trace` (sessions for a file) and shared-file relatedness.
         CREATE TABLE IF NOT EXISTS touched(
             session_id TEXT NOT NULL,
             path       TEXT NOT NULL,
@@ -112,7 +143,133 @@ pub fn open() -> Result<Connection> {
         );
         CREATE INDEX IF NOT EXISTS idx_touched_path ON touched(path);",
     )?;
+    // Replay archived sessions into the cache whenever any are missing from it
+    // - after a schema bump (which dropped the cache) or if the cache was
+    // cleared some other way. Gated on a count so a normal open does nothing.
+    let arch_total: i64 = conn.query_row("SELECT count(*) FROM archive", [], |r| r.get(0))?;
+    let arch_live: i64 = conn.query_row(
+        "SELECT count(*) FROM files WHERE archived_at IS NOT NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    if arch_total > arch_live {
+        rehydrate_archive(&conn)?;
+    }
     Ok(conn)
+}
+
+/// After a schema bump drops the cache tables, replay archived sessions back
+/// into them from the durable `archive` table, so search, `trace`, and reading
+/// keep working for sessions whose originals the tool deleted. This is what
+/// makes archive survive a rebuild; without it a version bump would silently
+/// lose exactly the data that cannot be re-derived from disk.
+fn rehydrate_archive(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT session_id, path, tool, project, title, started, ended,
+                kind, transcript, touched, archived_at FROM archive",
+    )?;
+    let rows: Vec<ArchiveRow> = stmt
+        .query_map([], |r| {
+            Ok(ArchiveRow {
+                session_id: r.get(0)?,
+                path: r.get(1)?,
+                tool: r.get(2)?,
+                project: r.get(3)?,
+                title: r.get(4)?,
+                started: r.get(5)?,
+                ended: r.get(6)?,
+                kind: r.get(7)?,
+                transcript: r.get(8)?,
+                touched: r.get(9)?,
+                archived_at: r.get(10)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+
+    for a in rows {
+        // The transcript is the durable backup; if it will not deserialize,
+        // skip the session rather than rehydrate an empty shell that claims to
+        // have content - that would be silent data loss disguised as success.
+        let msgs: Vec<(String, String)> = match serde_json::from_str(&a.transcript) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!(
+                    "archive: skipping {} - unreadable transcript ({e})",
+                    a.session_id
+                );
+                continue;
+            }
+        };
+        let paths: Vec<String> = serde_json::from_str(&a.touched).unwrap_or_else(|e| {
+            eprintln!("archive: {} has unreadable provenance ({e})", a.session_id);
+            Vec::new()
+        });
+
+        // Idempotent: clear any existing cache rows for this session first, so
+        // re-running rehydrate never duplicates messages/FTS rows.
+        delete_session_msgs(conn, &a.session_id)?;
+        conn.execute(
+            "DELETE FROM touched WHERE session_id = ?1",
+            params![a.session_id],
+        )?;
+        conn.execute(
+            "DELETE FROM files WHERE session_id = ?1",
+            params![a.session_id],
+        )?;
+
+        // mtime/size are forced to 0 so that if this file ever reappears on
+        // disk, the next sync always sees a mismatch and re-parses it, clearing
+        // archived_at. msg_count comes from the actual transcript, never the
+        // stored count, so the displayed count can never outrun the content.
+        conn.execute(
+            "INSERT INTO files
+             (path, mtime, size, session_id, tool, project, title, started, ended,
+              msg_count, kind, archived_at)
+             VALUES (?1,0,0,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![
+                a.path,
+                a.session_id,
+                a.tool,
+                a.project,
+                a.title,
+                a.started,
+                a.ended,
+                msgs.len() as i64,
+                a.kind,
+                a.archived_at,
+            ],
+        )?;
+        {
+            let mut ins_row = conn
+                .prepare_cached("INSERT INTO messages(session_id, role, text) VALUES (?1,?2,?3)")?;
+            let mut ins_fts =
+                conn.prepare_cached("INSERT INTO msgs(rowid, text) VALUES (?1,?2)")?;
+            for (role, text) in &msgs {
+                ins_row.execute(params![a.session_id, role, text])?;
+                ins_fts.execute(params![conn.last_insert_rowid(), text])?;
+            }
+        }
+        let mut ins_touched =
+            conn.prepare_cached("INSERT OR IGNORE INTO touched(session_id, path) VALUES (?1,?2)")?;
+        for p in &paths {
+            ins_touched.execute(params![a.session_id, p])?;
+        }
+    }
+    Ok(())
+}
+
+struct ArchiveRow {
+    session_id: String,
+    path: String,
+    tool: String,
+    project: String,
+    title: String,
+    started: Option<String>,
+    ended: Option<String>,
+    kind: String,
+    transcript: String,
+    touched: String,
+    archived_at: String,
 }
 
 /// Bring the index up to date with what is on disk. Only files whose
@@ -138,6 +295,7 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
         }
     }
 
+    let mut archived_total = 0usize;
     for adapter in &adapters {
         let files = adapter.discover();
         let mut seen: Vec<String> = Vec::with_capacity(files.len());
@@ -159,9 +317,14 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
             seen.push(key);
         }
 
-        // Drop index rows for files that disappeared from this store.
+        // Reconcile deletions: sessions the tool removed are archived (kept)
+        // rather than dropped, so search/trace/brief keep working for them.
+        // `store_present` tells "the tool pruned some sessions" (root exists,
+        // those files gone) apart from "the whole store vanished" (uninstall,
+        // unmounted) - we must not mass-archive on the latter.
         let tool = adapter.name();
-        prune_deleted(conn, tool, &seen)?;
+        let store_present = adapter.root().is_some_and(|r| r.exists());
+        archived_total += archive_or_prune(conn, tool, &seen, store_present)?;
 
         if pending.is_empty() {
             continue;
@@ -181,6 +344,13 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
             delete_session_msgs(&tx, &session.id)?;
             tx.execute(
                 "DELETE FROM touched WHERE session_id = ?1",
+                params![session.id],
+            )?;
+            // If this path was previously archived (the tool deleted it, now
+            // it is back), it is live again: the INSERT below clears
+            // archived_at, and the durable copy is no longer needed.
+            tx.execute(
+                "DELETE FROM archive WHERE session_id = ?1",
                 params![session.id],
             )?;
             tx.execute(
@@ -222,6 +392,19 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
         tx.commit()?;
         eprintln!("\r[{tool}] indexed {done}/{total}    ");
     }
+
+    // The one passive signal that archive is earning its keep: how many
+    // sessions we kept this run that the tool deleted, and the running total.
+    if archived_total > 0 {
+        let kept: i64 = conn.query_row(
+            "SELECT count(*) FROM files WHERE archived_at IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )?;
+        eprintln!(
+            "archived {archived_total} session(s) the tool removed ({kept} kept that your tools have deleted)"
+        );
+    }
     Ok(())
 }
 
@@ -239,24 +422,101 @@ fn delete_session_msgs(conn: &Connection, session_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn prune_deleted(conn: &Connection, tool: &str, seen: &[String]) -> Result<()> {
-    let mut stmt = conn.prepare("SELECT path, session_id FROM files WHERE tool = ?1")?;
-    let rows = stmt.query_map(params![tool], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    })?;
-    let seen: std::collections::HashSet<&str> = seen.iter().map(String::as_str).collect();
-    let mut gone: Vec<(String, String)> = Vec::new();
-    for row in rows {
-        let (path, sid) = row?;
-        if !seen.contains(path.as_str()) {
-            gone.push((path, sid));
+/// Reconcile the index with a tool's store after discovery. Sessions whose
+/// original file disappeared are **archived** (kept in the durable `archive`
+/// table and flagged in `files`, with messages/touched left in place so
+/// search and trace keep working) instead of deleted - unless
+/// `SESSIONWIKI_NO_ARCHIVE` is set or the session has no indexed content, in
+/// which case they are pruned as before. Returns how many were newly archived.
+///
+/// Guard: if the store root is gone (uninstalled, unmounted), do not touch its
+/// sessions - that is "the whole store vanished", not "the tool pruned some".
+/// An existing-but-empty store is a legitimate prune-everything and proceeds.
+fn archive_or_prune(
+    conn: &Connection,
+    tool: &str,
+    seen: &[String],
+    store_present: bool,
+) -> Result<usize> {
+    let no_archive = std::env::var_os("SESSIONWIKI_NO_ARCHIVE").is_some();
+    let seen_set: std::collections::HashSet<&str> = seen.iter().map(String::as_str).collect();
+
+    let mut stmt =
+        conn.prepare("SELECT path, session_id FROM files WHERE tool = ?1 AND archived_at IS NULL")?;
+    let live: Vec<(String, String)> = stmt
+        .query_map(params![tool], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let gone: Vec<(String, String)> = live
+        .into_iter()
+        .filter(|(p, _)| !seen_set.contains(p.as_str()))
+        .collect();
+    if gone.is_empty() {
+        return Ok(0);
+    }
+    if !store_present {
+        eprintln!(
+            "[{tool}] store not found - skipping ({} indexed session(s) left untouched, not archived)",
+            gone.len()
+        );
+        return Ok(0);
+    }
+    // The root exists but discovery returned nothing while we still had live
+    // sessions: could be a legitimate prune-everything, but also a transient
+    // read failure (permissions, a half-mounted network FS). Archiving keeps
+    // the data (reversible on the next good sync), but say so loudly.
+    if seen.is_empty() {
+        eprintln!(
+            "[{tool}] no sessions found on disk but {} were indexed - archiving them; \
+             if the store is just unreadable right now, they will un-archive on the next sync",
+            gone.len()
+        );
+    }
+
+    let mut archived = 0usize;
+    for (path, sid) in gone {
+        if no_archive {
+            conn.execute("DELETE FROM files WHERE path = ?1", params![path])?;
+            delete_session_msgs(conn, &sid)?;
+            conn.execute("DELETE FROM touched WHERE session_id = ?1", params![sid])?;
+        } else {
+            archive_session(conn, &path, &sid)?;
+            archived += 1;
         }
     }
-    for (path, sid) in gone {
-        conn.execute("DELETE FROM files WHERE path = ?1", params![path])?;
-        delete_session_msgs(conn, &sid)?;
-        conn.execute("DELETE FROM touched WHERE session_id = ?1", params![sid])?;
-    }
+    Ok(archived)
+}
+
+/// Copy a session whose original file is gone into the durable `archive` table
+/// and flag its `files` row. The messages/msgs/touched rows are left in place
+/// so search and `trace` keep working; the archive copy is the rebuild-survival
+/// backup (replayed by `rehydrate_archive` after a schema bump).
+fn archive_session(conn: &Connection, path: &str, sid: &str) -> Result<()> {
+    let mut s =
+        conn.prepare("SELECT role, text FROM messages WHERE session_id = ?1 ORDER BY id")?;
+    let transcript: Vec<(String, String)> = s
+        .query_map(params![sid], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(s);
+    let mut s = conn.prepare("SELECT path FROM touched WHERE session_id = ?1 ORDER BY rowid")?;
+    let touched: Vec<String> = s
+        .query_map(params![sid], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(s);
+    let transcript_json = serde_json::to_string(&transcript)?;
+    let touched_json = serde_json::to_string(&touched)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO archive
+         (session_id, path, mtime, size, tool, project, title, started, ended,
+          msg_count, kind, transcript, touched, archived_at)
+         SELECT session_id, path, mtime, size, tool, project, title, started, ended,
+                msg_count, kind, ?2, ?3, datetime('now')
+         FROM files WHERE path = ?1",
+        params![path, transcript_json, touched_json],
+    )?;
+    conn.execute(
+        "UPDATE files SET archived_at = datetime('now') WHERE path = ?1",
+        params![path],
+    )?;
     Ok(())
 }
 
@@ -276,6 +536,8 @@ pub struct SessionRow {
     pub summary: Option<String>,
     /// Comma-joined user tags, if any.
     pub tags: Option<String>,
+    /// True if the tool deleted the original and we kept the indexed copy.
+    pub archived: bool,
 }
 
 /// Correlated subquery for the preview column; messages.id preserves
@@ -298,7 +560,7 @@ pub fn recent(
     include_subagents: bool,
 ) -> Result<Vec<SessionRow>> {
     let mut sql = format!(
-        "SELECT session_id, tool, path, project, title, started, msg_count, kind, {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}
+        "SELECT session_id, tool, path, project, title, started, msg_count, kind, {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}, (archived_at IS NOT NULL)
          FROM files f WHERE 1=1",
     );
     let mut args: Vec<String> = Vec::new();
@@ -335,6 +597,7 @@ pub fn recent(
             preview: r.get(8)?,
             summary: r.get(9)?,
             tags: r.get(10)?,
+            archived: r.get(11)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -368,7 +631,7 @@ pub fn search(
     // multi-million-message index. Narrow the query to surface the long tail.
     let mut sql = String::from(
         "SELECT f.session_id, f.tool, f.path, f.project, f.title, f.started, f.msg_count, f.kind,
-                m.role, x.snip, min(x.rank) AS best
+                m.role, x.snip, min(x.rank) AS best, (f.archived_at IS NOT NULL)
          FROM (SELECT rowid AS mid,
                       snippet(msgs, 0, char(2), char(3), char(8230), 18) AS snip,
                       rank
@@ -405,6 +668,7 @@ pub fn search(
                 preview: None,
                 summary: None,
                 tags: None,
+                archived: r.get(11)?,
             },
             role: r.get(8)?,
             snippet: r.get(9)?,
@@ -416,7 +680,7 @@ pub fn search(
 /// Resolve a (possibly abbreviated) session id to its file row.
 pub fn resolve(conn: &Connection, id_prefix: &str) -> Result<Vec<SessionRow>> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT session_id, tool, path, project, title, started, msg_count, kind, {SUMMARY_SQL}, {TAGS_SQL}
+        "SELECT session_id, tool, path, project, title, started, msg_count, kind, {SUMMARY_SQL}, {TAGS_SQL}, (archived_at IS NOT NULL)
          FROM files f WHERE session_id LIKE ?1 LIMIT 10",
     ))?;
     let rows = stmt.query_map(params![format!("{id_prefix}%")], |r| {
@@ -432,6 +696,7 @@ pub fn resolve(conn: &Connection, id_prefix: &str) -> Result<Vec<SessionRow>> {
             preview: None,
             summary: r.get(8)?,
             tags: r.get(9)?,
+            archived: r.get(10)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -454,7 +719,7 @@ pub fn unsummarized(
     tool: Option<&str>,
 ) -> Result<Vec<SessionRow>> {
     let mut sql = format!(
-        "SELECT session_id, tool, path, project, title, started, msg_count, kind, {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}
+        "SELECT session_id, tool, path, project, title, started, msg_count, kind, {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}, (archived_at IS NOT NULL)
          FROM files f
          WHERE kind = 'main' AND NOT EXISTS
                (SELECT 1 FROM summaries s WHERE s.session_id = f.session_id)",
@@ -479,6 +744,7 @@ pub fn unsummarized(
             preview: r.get(8)?,
             summary: r.get(9)?,
             tags: r.get(10)?,
+            archived: r.get(11)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -537,7 +803,7 @@ pub fn files_for(conn: &Connection, session_id: &str) -> Result<Vec<String>> {
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-/// Sessions that touched a file, newest first - "git blame for AI sessions".
+/// Sessions that touched a file, newest first - the reverse provenance link.
 /// Matches either the exact stored path or any stored path ending in the
 /// query, so a relative `src/auth.rs` finds `/home/me/proj/src/auth.rs`. The
 /// matched stored path is returned alongside each session.
@@ -550,7 +816,7 @@ pub fn sessions_for_file(
     let suffix = format!("%/{q}");
     let mut stmt = conn.prepare(&format!(
         "SELECT f.session_id, f.tool, f.path, f.project, f.title, f.started, f.msg_count, f.kind,
-                {SUMMARY_SQL}, {TAGS_SQL}, t.path
+                {SUMMARY_SQL}, {TAGS_SQL}, t.path, (f.archived_at IS NOT NULL)
          FROM touched t JOIN files f ON f.session_id = t.session_id
          WHERE t.path = ?1 OR t.path LIKE ?2
          GROUP BY f.session_id
@@ -570,11 +836,79 @@ pub fn sessions_for_file(
                 preview: None,
                 summary: r.get(8)?,
                 tags: r.get(9)?,
+                archived: r.get(11)?,
             },
             r.get::<_, String>(10)?,
         ))
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+// --- archive: serving and forgetting sessions whose originals are gone ---
+
+/// Reconstruct a `Session` from the index alone, for sessions whose original
+/// file the tool deleted (archive mode). It carries the distilled transcript
+/// we kept - the same text `show`/`brief` would display for a live session,
+/// minus per-message timestamps and full tool I/O, which were never indexed.
+pub fn session_from_index(conn: &Connection, row: &SessionRow) -> Result<crate::model::Session> {
+    use crate::model::{Message, Role};
+    let mut stmt =
+        conn.prepare("SELECT role, text FROM messages WHERE session_id = ?1 ORDER BY id")?;
+    let messages: Vec<Message> = stmt
+        .query_map(params![row.session_id], |r| {
+            let role: String = r.get(0)?;
+            let text: String = r.get(1)?;
+            Ok(Message {
+                role: match role.as_str() {
+                    "user" => Role::User,
+                    "assistant" => Role::Assistant,
+                    _ => Role::Tool,
+                },
+                text,
+                ts: None,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(stmt);
+
+    let tool = adapters::by_name(&row.tool)
+        .map(|a| a.name())
+        .unwrap_or("unknown");
+    let started = row
+        .started
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|t| t.with_timezone(&chrono::Utc));
+    Ok(crate::model::Session {
+        id: row.session_id.clone(),
+        tool,
+        path: std::path::PathBuf::from(&row.path),
+        project: row.project.clone(),
+        started,
+        ended: started,
+        title: row.title.clone(),
+        subagent: row.kind == "sub",
+        messages,
+        touched: files_for(conn, &row.session_id)?,
+    })
+}
+
+/// Permanently remove a session from the index AND the archive - the only way
+/// to undo archiving for a session the user genuinely wants gone. Curation for
+/// it (tags/notes/summary) goes too, since the session no longer exists here.
+/// All-or-nothing: a crash mid-forget must not leave the FTS index out of sync
+/// with `messages`, nor an `archive` row that would resurrect it on rebuild.
+pub fn forget(conn: &mut Connection, session_id: &str) -> Result<()> {
+    let tx = conn.transaction()?;
+    delete_session_msgs(&tx, session_id)?;
+    for table in ["files", "touched", "archive", "summaries", "tags", "notes"] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE session_id = ?1"),
+            params![session_id],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 // --- related sessions (backlinks) ---
@@ -603,7 +937,7 @@ pub fn related(conn: &Connection, session_id: &str, limit: usize) -> Result<Vec<
     if !target.project.is_empty() {
         let sql = format!(
             "SELECT session_id, tool, path, project, title, started, msg_count, kind,
-                    {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}
+                    {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}, (archived_at IS NOT NULL)
              FROM files f
              WHERE kind = 'main' AND project = ?1 AND session_id != ?2
              ORDER BY started DESC LIMIT ?3"
@@ -627,7 +961,7 @@ pub fn related(conn: &Connection, session_id: &str, limit: usize) -> Result<Vec<
     if out.len() < limit {
         let sql = format!(
             "SELECT DISTINCT f.session_id, f.tool, f.path, f.project, f.title, f.started,
-                    f.msg_count, f.kind, {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}
+                    f.msg_count, f.kind, {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}, (f.archived_at IS NOT NULL)
              FROM touched a
              JOIN touched b ON a.path = b.path AND b.session_id != a.session_id
              JOIN files f ON f.session_id = b.session_id
@@ -656,7 +990,7 @@ pub fn related(conn: &Connection, session_id: &str, limit: usize) -> Result<Vec<
             .join(",");
         let sql = format!(
             "SELECT DISTINCT f.session_id, f.tool, f.path, f.project, f.title, f.started,
-                    f.msg_count, f.kind, {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}
+                    f.msg_count, f.kind, {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}, (f.archived_at IS NOT NULL)
              FROM files f JOIN tags t ON t.session_id = f.session_id
              WHERE f.kind = 'main' AND t.tag IN ({placeholders})
              ORDER BY f.started DESC LIMIT 50"
@@ -692,6 +1026,7 @@ fn map_row(r: &rusqlite::Row) -> rusqlite::Result<SessionRow> {
         preview: r.get(8)?,
         summary: r.get(9)?,
         tags: r.get(10)?,
+        archived: r.get(11)?,
     })
 }
 
@@ -734,6 +1069,8 @@ pub struct Stats {
     pub summarized: i64,
     /// Distinct files linked to at least one session (provenance coverage).
     pub files: i64,
+    /// Sessions kept after the tool deleted their originals (archive mode).
+    pub archived: i64,
 }
 
 pub fn stats(conn: &Connection) -> Result<Stats> {
@@ -766,5 +1103,6 @@ pub fn stats(conn: &Connection) -> Result<Stats> {
         tags: one("SELECT count(DISTINCT tag) FROM tags")?,
         summarized: one("SELECT count(*) FROM summaries")?,
         files: one("SELECT count(DISTINCT path) FROM touched")?,
+        archived: one("SELECT count(*) FROM files WHERE archived_at IS NOT NULL")?,
     })
 }
