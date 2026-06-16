@@ -88,8 +88,13 @@ pub fn list(
             .as_deref()
             .map(|t| format!("  {}", dim(&format!("#{}", t.replace(',', " #")))))
             .unwrap_or_default();
+        let archived = if r.archived {
+            format!("  {}", dim("[archived]"))
+        } else {
+            String::new()
+        };
         println!(
-            "{:<13} {:<12} {:<10} {:>5}  {:<24} {}{}",
+            "{:<13} {:<12} {:<10} {:>5}  {:<24} {}{}{}",
             yellow(&r.session_id),
             cyan(&r.tool),
             rel_time(when),
@@ -97,6 +102,7 @@ pub fn list(
             truncate(&project_label(&r.project), 24),
             truncate(&r.title, 60),
             tags,
+            archived,
         );
     }
     Ok(())
@@ -159,8 +165,7 @@ pub fn show(id: &str, full: bool, json: bool, outline: bool) -> Result<()> {
     index::sync(&mut conn, None)?;
     let row = resolve_one(&conn, id)?;
 
-    let adapter = adapters::by_name(&row.tool).context("unknown tool in index")?;
-    let session = adapter.parse(std::path::Path::new(&row.path))?;
+    let session = load_session(&conn, &row)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&session)?);
@@ -217,6 +222,12 @@ pub fn show(id: &str, full: bool, json: bool, outline: bool) -> Result<()> {
         ))
     );
     println!("{}", dim(&session.path.display().to_string()));
+    if row.archived {
+        println!(
+            "{}",
+            yellow("[archived] the tool deleted the original; showing the copy sessionwiki kept")
+        );
+    }
     if let Some(s) = &row.summary {
         println!("{}", s);
     }
@@ -286,6 +297,22 @@ pub fn show(id: &str, full: bool, json: bool, outline: bool) -> Result<()> {
 fn is_harness_noise(text: &str) -> bool {
     let t = text.trim_start();
     t.starts_with('<') || t.starts_with("[Request interrupted")
+}
+
+/// Load a session for reading: re-parse the original file when it still exists
+/// (full fidelity), otherwise reconstruct it from the index. The latter is how
+/// archived sessions - those the tool deleted - stay readable.
+fn load_session(
+    conn: &rusqlite::Connection,
+    row: &index::SessionRow,
+) -> Result<crate::model::Session> {
+    let path = std::path::Path::new(&row.path);
+    if path.exists() {
+        let adapter = adapters::by_name(&row.tool).context("unknown tool in index")?;
+        adapter.parse(path)
+    } else {
+        index::session_from_index(conn, row)
+    }
 }
 
 /// Resolve an id prefix to exactly one indexed session.
@@ -375,8 +402,7 @@ pub fn brief(id: &str, max_chars: usize, include_tools: bool) -> Result<()> {
     let mut conn = index::open()?;
     index::sync(&mut conn, None)?;
     let row = resolve_one(&conn, id)?;
-    let adapter = adapters::by_name(&row.tool).context("unknown tool in index")?;
-    let session = adapter.parse(std::path::Path::new(&row.path))?;
+    let session = load_session(&conn, &row)?;
     print!("{}", brief_text(&session, max_chars, include_tools));
     Ok(())
 }
@@ -500,8 +526,7 @@ pub fn summarize(
             );
             continue;
         }
-        let adapter = adapters::by_name(&row.tool).context("unknown tool in index")?;
-        let session = match adapter.parse(std::path::Path::new(&row.path)) {
+        let session = match load_session(&conn, row) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("{} parse failed: {e:#}", yellow(&row.session_id));
@@ -613,6 +638,21 @@ pub fn note(id: &str, text: Option<&str>) -> Result<()> {
             ),
         },
     }
+    Ok(())
+}
+
+/// Permanently drop a session from the index and archive. The escape hatch for
+/// archive mode: when the tool deleted a session and you actually want it gone,
+/// not kept. Does not touch the tool's own store (the original is already gone).
+pub fn forget(id: &str) -> Result<()> {
+    let mut conn = index::open()?;
+    let row = resolve_one(&conn, id)?;
+    index::forget(&mut conn, &row.session_id)?;
+    println!(
+        "{} forgotten ({})",
+        yellow(&row.session_id),
+        truncate(&row.title, 60)
+    );
     Ok(())
 }
 
@@ -751,6 +791,15 @@ pub fn stats() -> Result<()> {
             s.total_sessions, s.total_messages, s.projects, s.files, s.tags, s.summarized
         ))
     );
+    if s.archived > 0 {
+        println!(
+            "{}",
+            dim(&format!(
+                "{} kept after your tools deleted them",
+                s.archived
+            ))
+        );
+    }
     println!();
     println!("{}", bold("by tool"));
     for (tool, sess, msgs) in &s.per_tool {
