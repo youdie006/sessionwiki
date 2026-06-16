@@ -54,9 +54,9 @@ That is one real machine. Run it on yours &mdash; the number is usually a surpri
 
 And a web UI when you would rather read than grep &mdash; `sessionwiki web`:
 
-<a href="docs/demo-web.mp4"><img src="docs/demo-web-poster.png" width="900" alt="The sessionwiki web UI: search across tools, an open transcript with tags, a note and a resume command, file provenance, tag filtering, light and dark themes, and a four-language UI"></a>
+<img src="docs/demo-web.webp" width="820" alt="The sessionwiki web UI: real typing in the search, an open transcript with tags, a note and a resume command, file provenance, tag filtering, light and dark themes, and the UI switching to Korean">
 
-<sub><b><a href="docs/demo-web.mp4">&#9654; Watch the 18s demo</a></b> &mdash; real typing in the search, an open transcript with tags and a one-command resume, file provenance, dark mode, and the UI switching to Korean.</sub>
+<sub>Real typing in the search, an open transcript with tags and a one-command resume, file provenance, dark mode, and the UI in Korean. <a href="docs/demo-web.mp4">&#9654; Smoother HD version (MP4)</a>.</sub>
 
 ## Install
 

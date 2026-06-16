@@ -46,12 +46,20 @@ rm -rf "$REC"; mkdir -p "$REC"
 WEBM=$(node "$ROOT/scripts/record_web_demo.cjs" "$PW" "http://127.0.0.1:$PORT" "$REC")
 echo "recorded $WEBM"
 
-# 4. Encode: smooth H.264 mp4 (GitHub-friendly, +faststart) + a poster frame.
+# 4. Encode two artifacts:
+#  - demo-web.webp: the README hero. Animated WebP AUTOPLAYS and loops inline on
+#    GitHub (a committed mp4 does not - GitHub's native video player is
+#    click-to-play). Kept at a sane 13fps so software decode does not stutter
+#    the way the old 60fps zoom version did.
+#  - demo-web.mp4: a smoother, hardware-decoded HD version, linked from the
+#    README; drop it into a GitHub issue for a native inline player URL.
+ffmpeg -nostdin -loglevel error -ss 0.6 -i "$WEBM" -t 17 \
+  -vf "fps=13,scale=800:-2:flags=lanczos" \
+  -vcodec libwebp -lossless 0 -q:v 52 -loop 0 \
+  "$DOCS/demo-web.webp" -y
 ffmpeg -nostdin -loglevel error -i "$WEBM" \
   -vf "fps=30,scale=960:-2:flags=lanczos" \
   -c:v libx264 -crf 23 -preset slow -pix_fmt yuv420p -movflags +faststart \
   "$DOCS/demo-web.mp4" -y
-ffmpeg -nostdin -loglevel error -ss 5.2 -i "$WEBM" -frames:v 1 -vf "scale=1280:-2" \
-  "$DOCS/demo-web-poster.png" -y
 
-echo "wrote $DOCS/demo-web.mp4 ($(du -h "$DOCS/demo-web.mp4" | cut -f1)) + poster"
+echo "wrote $DOCS/demo-web.webp ($(du -h "$DOCS/demo-web.webp" | cut -f1)) + demo-web.mp4 ($(du -h "$DOCS/demo-web.mp4" | cut -f1))"
