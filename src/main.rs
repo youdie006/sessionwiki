@@ -1,10 +1,10 @@
 use clap::{Parser, Subcommand};
-use sessiondex::{commands, web};
+use sessionwiki::{commands, web};
 
 /// Find, search, and read every AI coding session on your machine -
 /// across Claude Code, Codex, and Gemini CLI. 100% local.
 #[derive(Parser)]
-#[command(name = "sessiondex", version, about, max_term_width = 100)]
+#[command(name = "sessionwiki", version, about, max_term_width = 100)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -25,6 +25,9 @@ enum Command {
         /// Filter by project path substring
         #[arg(long)]
         project: Option<String>,
+        /// Filter by tag
+        #[arg(long)]
+        tag: Option<String>,
         /// Include subagent transcripts in the listing
         #[arg(long)]
         all: bool,
@@ -85,7 +88,7 @@ enum Command {
         #[arg(long)]
         tool: Option<String>,
         /// Summarizer command reading the session on stdin (default: `claude -p`,
-        /// or the SESSIONDEX_SUMMARIZER environment variable)
+        /// or the SESSIONWIKI_SUMMARIZER environment variable)
         #[arg(long)]
         cmd: Option<String>,
         /// Re-summarize even if a cached summary exists
@@ -103,6 +106,37 @@ enum Command {
         #[arg(long)]
         tools: bool,
     },
+    /// Show, add, or remove tags on a session (no id: list all tags in use)
+    Tag {
+        /// Session id (prefix is enough); omit to list every tag in use
+        #[arg(default_value = "")]
+        id: String,
+        /// Tags to add
+        #[arg(value_name = "TAG")]
+        add: Vec<String>,
+        /// Tags to remove
+        #[arg(long = "rm", value_name = "TAG")]
+        remove: Vec<String>,
+    },
+    /// Attach or read a freeform note on a session
+    Note {
+        /// Session id (prefix is enough)
+        id: String,
+        /// Note text; omit to print the existing note
+        text: Option<String>,
+    },
+    /// Find sessions related to one (shared project and vocabulary)
+    Related {
+        /// Session id (prefix is enough)
+        id: String,
+        /// Max related sessions to show
+        #[arg(short = 'n', long, default_value_t = 10)]
+        limit: usize,
+    },
+    /// List projects with session counts (a page per project)
+    Projects,
+    /// Usage breakdown across tools, projects, and months
+    Stats,
 }
 
 fn main() {
@@ -113,8 +147,15 @@ fn main() {
             limit,
             tool,
             project,
+            tag,
             all,
-        } => commands::list(limit, tool.as_deref(), project.as_deref(), all),
+        } => commands::list(
+            limit,
+            tool.as_deref(),
+            project.as_deref(),
+            tag.as_deref(),
+            all,
+        ),
         Command::Search {
             query,
             limit,
@@ -147,6 +188,11 @@ fn main() {
             max_chars,
             tools,
         } => commands::brief(&id, max_chars, tools),
+        Command::Tag { id, add, remove } => commands::tag(&id, &add, &remove),
+        Command::Note { id, text } => commands::note(&id, text.as_deref()),
+        Command::Related { id, limit } => commands::related(&id, limit),
+        Command::Projects => commands::projects(),
+        Command::Stats => commands::stats(),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");

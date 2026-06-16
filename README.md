@@ -2,17 +2,17 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg">
-  <img src="docs/logo-light.svg" width="84" alt="sessiondex logo: an atlas globe with a location pin">
+  <img src="docs/logo-light.svg" width="84" alt="sessionwiki logo: a globe with a location pin">
 </picture>
 
-# sessiondex
+# sessionwiki
 
-The index of every AI session you've ever had &mdash; searchable, summarized, resumable.<br>
+A wiki of every AI coding session you've ever had &mdash; searchable, linkable, resumable.<br>
 Claude Code &middot; Codex CLI &middot; Gemini CLI &nbsp;&middot;&nbsp; one command, 100% local
 
-<a href="https://github.com/youdie006/sessiondex/actions/workflows/ci.yml"><img src="https://github.com/youdie006/sessiondex/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+<a href="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml"><img src="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
-<a href="https://github.com/youdie006/sessiondex/releases"><img src="https://img.shields.io/github/v/release/youdie006/sessiondex?label=release&color=355bd0" alt="Latest release"></a>
+<a href="https://github.com/youdie006/sessionwiki/releases"><img src="https://img.shields.io/github/v/release/youdie006/sessionwiki?label=release&color=355bd0" alt="Latest release"></a>
 <img src="https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-555" alt="Platforms: Linux, macOS, Windows">
 <a href="#adding-an-adapter"><img src="https://img.shields.io/badge/adapters-PRs%20welcome-2ea44f" alt="Adapter PRs welcome"></a>
 
@@ -25,16 +25,16 @@ Claude Code &middot; Codex CLI &middot; Gemini CLI &nbsp;&middot;&nbsp; one comm
 <a href="#how-it-works">How it works</a> &middot;
 <a href="#adding-an-adapter">Add your tool</a>
 
-<img src="docs/demo.gif" width="760" alt="Terminal recording: sessiondex scan reports 47 GB of sessions across three tools, search finds a past conversation by keyword, and resume reopens it in its original tool">
+<img src="docs/demo.gif" width="760" alt="Terminal recording: sessionwiki scan reports 47 GB of sessions across three tools, search finds a past conversation by keyword, and resume reopens it in its original tool">
 
 </div>
 
 That conversation where Claude fixed your CORS bug three weeks ago? It is still on your disk &mdash; you just can't find it. Every AI coding agent writes its sessions to disk: each tool in its own format, in its own folder, on every machine you use. After a few months that is thousands of conversations full of solved problems, and no way to get back to any of them.
 
-**sessiondex reads the traces your tools already leave and turns them into one searchable, resumable archive.** No daemon, no logging habit to build, no cloud. It indexes what is already there.
+**sessionwiki reads the traces your tools already leave and turns them into one searchable, linkable archive you can actually maintain.** No daemon, no logging habit to build, no cloud. It indexes what is already there, then lets you tag it, link it, and pick up where you left off.
 
 ```console
-$ sessiondex scan
+$ sessionwiki scan
 TOOL            SESSIONS       SIZE  OLDEST       NEWEST        PATH
 claude-code         1763     1.1 GB  2026-03-27   2026-06-12    ~/.claude/projects
 codex               2340    45.9 GB  2025-08-21   2026-06-12    ~/.codex/sessions
@@ -53,12 +53,13 @@ That is one real machine. Run it on yours &mdash; the number is usually a surpri
 - **Summarize** sessions into cached one-line synopses using your own LLM CLI &mdash; then never wonder "what was this one about" again.
 - **Resume** a session in its original tool, in the right project directory, with one command.
 - **Carry context across tools**: brief a Claude Code session into Codex, or anywhere else.
+- **Curate and connect**: tag and annotate sessions, jump to related ones, and see where your agent time goes &mdash; [session engineering](#session-engineering), not just search.
 
-And a web UI when you would rather read than grep &mdash; `sessiondex web`:
+And a web UI when you would rather read than grep &mdash; `sessionwiki web`:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/hero-dark.png">
-  <img src="docs/hero-light.png" width="900" alt="sessiondex web UI: searching across Claude Code and Codex sessions, with an LLM synopsis, a resume command, and a clickable outline on the open transcript">
+  <img src="docs/hero-light.png" width="900" alt="sessionwiki web UI: searching across Claude Code and Codex sessions, with an LLM synopsis, a resume command, and a clickable outline on the open transcript">
 </picture>
 
 ## Install
@@ -66,18 +67,18 @@ And a web UI when you would rather read than grep &mdash; `sessiondex web`:
 **Prebuilt binary** (no toolchain needed). macOS / Linux:
 
 ```console
-curl -sSL https://raw.githubusercontent.com/youdie006/sessiondex/main/scripts/install.sh | sh
+curl -sSL https://raw.githubusercontent.com/youdie006/sessionwiki/main/scripts/install.sh | sh
 ```
 
 The script downloads the right archive for your platform from the
-[latest release](https://github.com/youdie006/sessiondex/releases/latest) and
+[latest release](https://github.com/youdie006/sessionwiki/releases/latest) and
 installs it to `~/.local/bin`. On Windows, download the `.zip` from the
 releases page.
 
 **With Rust** (stable):
 
 ```console
-cargo install --git https://github.com/youdie006/sessiondex
+cargo install --git https://github.com/youdie006/sessionwiki
 ```
 
 Either way it is a single binary with no runtime dependencies.
@@ -85,10 +86,10 @@ Either way it is a single binary with no runtime dependencies.
 ## Quick start
 
 ```console
-sessiondex scan                # where are my sessions?
-sessiondex search "jwt retry"  # full-text search across every tool
-sessiondex show 3f9c           # read the matching conversation
-sessiondex web                 # or browse everything in a local web UI
+sessionwiki scan                # where are my sessions?
+sessionwiki search "jwt retry"  # full-text search across every tool
+sessionwiki show 3f9c           # read the matching conversation
+sessionwiki web                 # or browse everything in a local web UI
 ```
 
 The first `search` or `list` builds the index; expect a few minutes per
@@ -100,34 +101,48 @@ GB). After that, updates are incremental and take seconds.
 | Command | What it does |
 |---|---|
 | `scan` | Discover session stores on this machine. Pure filesystem walk, instant. |
-| `list` | Recent sessions across all tools in one timeline. `--tool codex`, `--project api`, `-n 50`, `--all` (include subagent transcripts). |
+| `list` | Recent sessions across all tools in one timeline. `--tool codex`, `--project api`, `--tag spike`, `-n 50`, `--all` (include subagent transcripts). |
 | `search <query>` | Full-text search over every message of every tool. Minimum 3 characters. |
 | `show <id>` | One session as a readable transcript. `--full` expands tool calls, `--json` emits the parsed session, `--outline` prints a digest: every question you asked plus how it ended. |
-| `summarize [id]` | Generate 1&ndash;2 sentence synopses with **your own LLM CLI** (`claude -p` by default, `--cmd` / `SESSIONDEX_SUMMARIZER` to change) and cache them in the index. Without an id, batches over the `--recent N` newest sessions. Summaries survive reindexing and show up in `show`, `--outline`, and the web sidebar. |
+| `summarize [id]` | Generate 1&ndash;2 sentence synopses with **your own LLM CLI** (`claude -p` by default, `--cmd` / `SESSIONWIKI_SUMMARIZER` to change) and cache them in the index. Without an id, batches over the `--recent N` newest sessions. Summaries survive reindexing and show up in `show`, `--outline`, and the web sidebar. |
 | `resume <id>` | Reopen the session in its original tool: `claude --resume` / `codex resume`, run in the right project directory. Subagent transcripts resume their parent. `--print` to just show the command. |
 | `brief <id>` | Emit the session as a markdown briefing (head and tail, middle omitted) to carry context into any tool &mdash; including across tools. `--max-chars`, `--tools`. |
-| `web` | Local viewer on `127.0.0.1:7575`: day-grouped sessions with synopsis previews, live search with highlighted snippets, rendered transcripts with outlines and resume commands, light and dark themes, UI in English, Korean, Japanese, and Chinese (auto-detected). Never leaves localhost. |
+| `web` | Local viewer on `127.0.0.1:7575`: day-grouped sessions with synopsis previews, live search with highlighted snippets, rendered transcripts with outlines, tags, and "see also" related sessions, resume commands, light and dark themes, UI in English, Korean, Japanese, and Chinese (auto-detected). Never leaves localhost. |
+
+### Session engineering
+
+A session is a unit of context, and once you have hundreds they need curating
+and managing &mdash; not just searching. These commands turn the flat archive into
+a navigable, maintained one. They read the index, so they are instant.
+
+| Command | What it does |
+|---|---|
+| `related <id>` | Sessions about the same thing: same project first, then anything sharing a tag. The "see also" for your work. |
+| `tag <id> <tag>...` | Tag a session (`--rm` to remove). No id lists every tag in use. Filter with `list --tag`. Tags are stored in the index and survive reindexing &mdash; the original session files are never touched. |
+| `note <id> "text"` | Pin a freeform note on a session; omit the text to read it back. |
+| `projects` | One row per project: session count, message volume, last activity. A page per codebase. |
+| `stats` | Totals plus a breakdown by tool and by month. Where your agent time actually goes. |
 
 ## Pick up where you left off
 
 Finding an old session is half the point; the other half is continuing it.
 
 ```console
-$ sessiondex search "rate limiter"
+$ sessionwiki search "rate limiter"
 76a614028a63 codex 2026-06-11 13:00 .../projects/api-server [assistant]
   ...the bucket invariant 0 <= tokens <= capacity holds after every step...
 
-$ sessiondex resume 76a6           # reopens that conversation in Codex
+$ sessionwiki resume 76a6           # reopens that conversation in Codex
 
-$ sessiondex brief 76a6 | claude -p \
+$ sessionwiki brief 76a6 | claude -p \
     "Continue this work: add the missing edge-case tests"
 
-$ sessiondex summarize --recent 20  # synopses for your latest sessions
+$ sessionwiki summarize --recent 20  # synopses for your latest sessions
 ```
 
 `resume` uses each tool's native mechanism, so it needs the original session
 file to still exist. `brief` works even across tools. `summarize` runs your
-LLM, on your machine, at your command &mdash; sessiondex itself never makes a
+LLM, on your machine, at your command &mdash; sessionwiki itself never makes a
 network call.
 
 ## How it works
@@ -147,8 +162,8 @@ flowchart LR
 
 - `scan` walks the filesystem and reports; it touches no index.
 - Everything else maintains an incremental index at
-  `~/.local/share/sessiondex/index.db` (platform equivalent; override with
-  `SESSIONDEX_DATA`). Only files whose mtime or size changed are re-parsed.
+  `~/.local/share/sessionwiki/index.db` (platform equivalent; override with
+  `SESSIONWIKI_DATA`). Only files whose mtime or size changed are re-parsed.
 - Original session files are never modified &mdash; the index is a disposable
   cache. Cached summaries survive schema upgrades on purpose: rebuilding an
   index is cheap, re-running an LLM over your history is not.
@@ -190,7 +205,7 @@ they survive.
 <summary><b>FAQ: what about sessions my tool already deleted?</b></summary>
 <br>
 
-Gone is gone &mdash; sessiondex reads what is on disk, and some tools clean up
+Gone is gone &mdash; sessionwiki reads what is on disk, and some tools clean up
 old sessions on a schedule (Claude Code's retention setting, for example).
 That is exactly what the planned archive mode fixes: keep a copy inside the
 atlas so the tool's cleanup stops being your memory's expiry date. Install
@@ -215,7 +230,7 @@ read-only. See the FAQ above.
 ### How this differs from a single-tool history viewer
 
 There are good tools that browse one agent's history &mdash; a Claude Code
-session viewer, a Codex log reader. sessiondex is deliberately the layer above
+session viewer, a Codex log reader. sessionwiki is deliberately the layer above
 them: one index across **every** tool, so you search without first remembering
 which agent you used; a CLI and a local web UI rather than one or the other;
 and `resume` / `brief` so finding a session is a step toward continuing the
@@ -249,7 +264,6 @@ drift between tool versions, so parse defensively and return what you can.
 - `link` &mdash; connect sessions to the git commits they produced ("git blame for AI sessions")
 - `sync` &mdash; merge archives from multiple machines
 - `clean` &mdash; reclaim disk from huge old session stores, safely
-- `stats` &mdash; usage breakdown per tool, project, and month
 - prebuilt binaries
 - more adapters (tell us which tool you want next in an issue)
 
@@ -268,8 +282,8 @@ Issues and PRs are welcome. The most valuable contributions right now:
 <div align="center">
 <br>
 
-<a href="https://github.com/youdie006/sessiondex/issues/new">Report a bug</a> &middot;
-<a href="https://github.com/youdie006/sessiondex/issues/new">Request an adapter</a> &middot;
+<a href="https://github.com/youdie006/sessionwiki/issues/new">Report a bug</a> &middot;
+<a href="https://github.com/youdie006/sessionwiki/issues/new">Request an adapter</a> &middot;
 <a href="#roadmap">Roadmap</a>
 
 </div>

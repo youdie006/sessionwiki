@@ -1,12 +1,12 @@
 #!/bin/sh
-# sessiondex installer: downloads the prebuilt binary for this platform from
+# sessionwiki installer: downloads the prebuilt binary for this platform from
 # the latest GitHub release and installs it to ~/.local/bin (override with
-# SESSIONDEX_BIN_DIR). Usage:
-#   curl -sSL https://raw.githubusercontent.com/youdie006/sessiondex/main/scripts/install.sh | sh
+# SESSIONWIKI_BIN_DIR). Usage:
+#   curl -sSL https://raw.githubusercontent.com/youdie006/sessionwiki/main/scripts/install.sh | sh
 set -eu
 
-REPO="youdie006/sessiondex"
-BIN_DIR="${SESSIONDEX_BIN_DIR:-$HOME/.local/bin}"
+REPO="youdie006/sessionwiki"
+BIN_DIR="${SESSIONWIKI_BIN_DIR:-$HOME/.local/bin}"
 
 os="$(uname -s)"
 arch="$(uname -m)"
@@ -31,7 +31,7 @@ if [ -z "${tag:-}" ]; then
   exit 1
 fi
 
-asset="sessiondex-$tag-$target.tar.gz"
+asset="sessionwiki-$tag-$target.tar.gz"
 url="https://github.com/$REPO/releases/download/$tag/$asset"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -40,9 +40,9 @@ echo "downloading $asset ..."
 curl -sSL "$url" | tar xz -C "$tmp"
 
 mkdir -p "$BIN_DIR"
-install -m 0755 "$tmp/sessiondex-$tag-$target/sessiondex" "$BIN_DIR/sessiondex"
+install -m 0755 "$tmp/sessionwiki-$tag-$target/sessionwiki" "$BIN_DIR/sessionwiki"
 
-echo "installed sessiondex $tag to $BIN_DIR/sessiondex"
+echo "installed sessionwiki $tag to $BIN_DIR/sessionwiki"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) echo "note: add $BIN_DIR to your PATH" ;;

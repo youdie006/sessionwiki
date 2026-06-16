@@ -9,8 +9,8 @@
 //! When a tool changes its format, a fixture from the new version plus an
 //! assertion here is the cleanest possible bug report and regression test.
 
-use sessiondex::adapters;
-use sessiondex::model::Session;
+use sessionwiki::adapters;
+use sessionwiki::model::Session;
 use std::path::PathBuf;
 
 fn fixture(rel: &str) -> PathBuf {

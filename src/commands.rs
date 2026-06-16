@@ -52,14 +52,20 @@ pub fn scan() -> Result<()> {
             human_size(bytes)
         ))
     );
-    println!("{}", dim("Try: sessiondex search <query>"));
+    println!("{}", dim("Try: sessionwiki search <query>"));
     Ok(())
 }
 
-pub fn list(limit: usize, tool: Option<&str>, project: Option<&str>, all: bool) -> Result<()> {
+pub fn list(
+    limit: usize,
+    tool: Option<&str>,
+    project: Option<&str>,
+    tag: Option<&str>,
+    all: bool,
+) -> Result<()> {
     let mut conn = index::open()?;
     index::sync(&mut conn, tool)?;
-    let rows = index::recent(&conn, limit, tool, project, all)?;
+    let rows = index::recent(&conn, limit, tool, project, tag, all)?;
     if rows.is_empty() {
         println!("No sessions found.");
         return Ok(());
@@ -77,14 +83,20 @@ pub fn list(limit: usize, tool: Option<&str>, project: Option<&str>, all: bool) 
             .as_deref()
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|t| t.with_timezone(&chrono::Utc));
+        let tags = r
+            .tags
+            .as_deref()
+            .map(|t| format!("  {}", dim(&format!("#{}", t.replace(',', " #")))))
+            .unwrap_or_default();
         println!(
-            "{:<13} {:<12} {:<10} {:>5}  {:<24} {}",
+            "{:<13} {:<12} {:<10} {:>5}  {:<24} {}{}",
             yellow(&r.session_id),
             cyan(&r.tool),
             rel_time(when),
             r.msg_count,
             truncate(&project_label(&r.project), 24),
             truncate(&r.title, 60),
+            tags,
         );
     }
     Ok(())
@@ -135,7 +147,7 @@ pub fn search(query: &str, limit: usize, tool: Option<&str>, project: Option<&st
     println!(
         "{}",
         dim(&format!(
-            "{} sessions. Open one: sessiondex show <id>",
+            "{} sessions. Open one: sessionwiki show <id>",
             hits.len()
         ))
     );
@@ -208,6 +220,12 @@ pub fn show(id: &str, full: bool, json: bool, outline: bool) -> Result<()> {
     if let Some(s) = &row.summary {
         println!("{}", s);
     }
+    if let Some(t) = &row.tags {
+        println!("{}", cyan(&format!("#{}", t.replace(',', " #"))));
+    }
+    if let Some(note) = index::note_for(&conn, &row.session_id)? {
+        println!("{} {}", dim("note:"), note);
+    }
     println!();
 
     for m in &session.messages {
@@ -232,6 +250,19 @@ pub fn show(id: &str, full: bool, json: bool, outline: bool) -> Result<()> {
         }
         println!();
     }
+
+    let rel = index::related(&conn, &row.session_id, 4)?;
+    if !rel.is_empty() {
+        println!("{}", bold("see also:"));
+        for r in rel {
+            println!(
+                "  {} {} {}",
+                yellow(&r.session_id),
+                dim(&cyan(&r.tool)),
+                truncate(&r.title, 64)
+            );
+        }
+    }
     Ok(())
 }
 
@@ -245,7 +276,7 @@ fn is_harness_noise(text: &str) -> bool {
 fn resolve_one(conn: &rusqlite::Connection, id: &str) -> Result<index::SessionRow> {
     let matches = index::resolve(conn, id)?;
     match matches.len() {
-        0 => bail!("no session with id starting \"{id}\" (try: sessiondex list)"),
+        0 => bail!("no session with id starting \"{id}\" (try: sessionwiki list)"),
         1 => Ok(matches.into_iter().next().unwrap()),
         _ => {
             eprintln!("ambiguous id, candidates:");
@@ -266,7 +297,7 @@ pub fn resume_cmd(id: &str, print_only: bool) -> Result<()> {
     if !path.exists() {
         bail!(
             "the session file is gone ({}) - the tool's own cleanup likely deleted it,\n\
-             so a native resume is not possible. Try: sessiondex brief {id}",
+             so a native resume is not possible. Try: sessionwiki brief {id}",
             row.path
         );
     }
@@ -274,7 +305,7 @@ pub fn resume_cmd(id: &str, print_only: bool) -> Result<()> {
         bail!(
             "{} sessions cannot be resumed headlessly. For Gemini CLI, open `gemini` in\n\
              the project and use /chat resume. You can still carry the context over:\n\
-             sessiondex brief {id}",
+             sessionwiki brief {id}",
             row.tool
         );
     };
@@ -434,7 +465,7 @@ pub fn summarize(
 
     let cmd = cmd
         .map(String::from)
-        .or_else(|| std::env::var("SESSIONDEX_SUMMARIZER").ok())
+        .or_else(|| std::env::var("SESSIONWIKI_SUMMARIZER").ok())
         .unwrap_or_else(|| "claude -p".to_string());
     eprintln!(
         "{}",
@@ -510,6 +541,162 @@ fn run_summarizer(cmd: &str, input: &str) -> Result<String> {
         bail!("summarizer printed nothing");
     }
     Ok(truncate(&summary, 600))
+}
+
+pub fn tag(id: &str, add: &[String], remove: &[String]) -> Result<()> {
+    // Reads/writes the index only; no filesystem sync, so it is instant.
+    // The session id comes from list/search, which already indexed it.
+    let conn = index::open()?;
+
+    // No id and no edits: list all tags in use (the wiki tag cloud).
+    if id.is_empty() {
+        let counts = index::tag_counts(&conn)?;
+        if counts.is_empty() {
+            println!("No tags yet. Add one: sessionwiki tag <id> <tag>");
+            return Ok(());
+        }
+        for (t, n) in counts {
+            println!("{:>4}  {}", n, cyan(&format!("#{t}")));
+        }
+        return Ok(());
+    }
+
+    let row = resolve_one(&conn, id)?;
+    for t in remove {
+        index::remove_tag(&conn, &row.session_id, t)?;
+    }
+    for t in add {
+        index::add_tag(&conn, &row.session_id, t)?;
+    }
+    let tags = index::resolve(&conn, &row.session_id)?
+        .into_iter()
+        .next()
+        .and_then(|r| r.tags)
+        .unwrap_or_else(|| "(none)".into());
+    println!(
+        "{} {}",
+        yellow(&row.session_id),
+        cyan(&format!("#{}", tags.replace(',', " #")))
+    );
+    Ok(())
+}
+
+pub fn note(id: &str, text: Option<&str>) -> Result<()> {
+    let conn = index::open()?;
+    let row = resolve_one(&conn, id)?;
+    match text {
+        Some(t) => {
+            index::set_note(&conn, &row.session_id, t)?;
+            println!("{} note saved", yellow(&row.session_id));
+        }
+        None => match index::note_for(&conn, &row.session_id)? {
+            Some(n) => println!("{n}"),
+            None => println!(
+                "{}",
+                dim("(no note; add one: sessionwiki note <id> \"...\")")
+            ),
+        },
+    }
+    Ok(())
+}
+
+pub fn related(id: &str, limit: usize) -> Result<()> {
+    let conn = index::open()?;
+    let row = resolve_one(&conn, id)?;
+    println!(
+        "{}",
+        dim(&format!("related to: {}", truncate(&row.title, 70)))
+    );
+    let rel = index::related(&conn, &row.session_id, limit)?;
+    if rel.is_empty() {
+        println!("No related sessions found.");
+        return Ok(());
+    }
+    for r in rel {
+        let when = r
+            .started
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| t.with_timezone(&chrono::Utc));
+        println!(
+            "{} {} {} {}",
+            yellow(&r.session_id),
+            cyan(&r.tool),
+            dim(&fmt_date(when)),
+            truncate(&r.title, 64),
+        );
+    }
+    Ok(())
+}
+
+pub fn projects() -> Result<()> {
+    let conn = index::open()?;
+    let rows = index::projects(&conn)?;
+    if rows.is_empty() {
+        println!("No projects indexed yet.");
+        return Ok(());
+    }
+    println!(
+        "{}",
+        bold(&format!(
+            "{:>5} {:>7}  {:<11} {}",
+            "SESS", "MSGS", "LAST", "PROJECT"
+        ))
+    );
+    for p in rows {
+        let last = p
+            .newest
+            .as_deref()
+            .map(|s| s.get(0..10).unwrap_or(s).to_string())
+            .unwrap_or_else(|| "-".into());
+        println!(
+            "{:>5} {:>7}  {:<11} {}",
+            p.sessions,
+            p.messages,
+            dim(&last),
+            project_label(&p.project)
+        );
+    }
+    Ok(())
+}
+
+pub fn stats() -> Result<()> {
+    let conn = index::open()?;
+    let s = index::stats(&conn)?;
+
+    println!(
+        "{}",
+        bold(&format!(
+            "{} sessions · {} messages · {} projects · {} tags · {} summarized",
+            s.total_sessions, s.total_messages, s.projects, s.tags, s.summarized
+        ))
+    );
+    println!();
+    println!("{}", bold("by tool"));
+    for (tool, sess, msgs) in &s.per_tool {
+        println!(
+            "  {:<14} {:>6} sessions  {:>8} messages",
+            cyan(tool),
+            sess,
+            msgs
+        );
+    }
+    if !s.per_month.is_empty() {
+        println!();
+        println!("{}", bold("by month"));
+        let max = s
+            .per_month
+            .iter()
+            .map(|(_, n)| *n)
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        for (ym, n) in &s.per_month {
+            let bar = "\u{2588}".repeat(((*n as f64 / max as f64) * 24.0).round() as usize);
+            println!("  {}  {:>5}  {}", ym, n, cyan(&bar));
+        }
+    }
+    Ok(())
 }
 
 /// Long absolute paths make poor labels; keep the tail.

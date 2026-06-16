@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:,">
-<title>sessiondex</title>
+<title>sessionwiki</title>
 <style>
   :root {
     --bg: #faf9f6;
@@ -231,8 +231,51 @@
     cursor: pointer;
   }
   .doc-head .resume code:hover { border-color: var(--accent); color: var(--ink); }
+  .doc-head .tags { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .tagchip {
+    font-size: 11.5px;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-radius: 999px;
+    padding: 2px 9px;
+  }
+  .doc-head .note {
+    margin-top: 7px;
+    font-size: 12.5px;
+    color: var(--ink-2);
+    border-left: 0;
+    background: var(--bg-sunken);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 7px 11px;
+    max-width: 820px;
+    white-space: pre-wrap;
+  }
 
   .doc { max-width: 800px; margin: 0 auto; padding: 26px 36px 90px; }
+
+  .seealso {
+    margin-top: 26px;
+    border-top: 1px solid var(--line);
+    padding-top: 14px;
+  }
+  .seealso h3 {
+    margin: 0 0 8px;
+    font-size: 11.5px;
+    font-weight: 640;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .seealso .rel {
+    display: block;
+    padding: 7px 10px;
+    border-radius: 9px;
+    cursor: pointer;
+  }
+  .seealso .rel:hover { background: var(--bg-sunken); }
+  .seealso .rel .t { font-size: 13px; color: var(--ink); }
+  .seealso .rel .m { font-size: 11.5px; color: var(--ink-3); margin-top: 2px; }
 
   .outline {
     background: var(--bg-sunken);
@@ -352,7 +395,7 @@
 <div class="layout">
   <aside>
     <div class="brand">
-      <h1>sessiondex</h1>
+      <h1>sessionwiki</h1>
       <div class="stats" id="stats">loading index&hellip;</div>
     </div>
     <div class="controls">
@@ -367,7 +410,7 @@
     </div>
     <nav id="list"></nav>
     <div class="sidefoot">
-      <span class="hint" id="hint">read-only view &middot; refresh: sessiondex list</span>
+      <span class="hint" id="hint">read-only view &middot; refresh: sessionwiki list</span>
       <select id="lang" aria-label="Language">
         <option value="en">EN</option>
         <option value="ko">한국어</option>
@@ -382,7 +425,7 @@
       <h2 id="ph-title">Pick a session on the left</h2>
       <p id="ph-p1">Everything your coding agents ever said, in one place. Search works across
          every tool at once &mdash; partial words and CJK included.</p>
-      <p id="ph-p2">The index updates when you run <code>sessiondex list</code> or
+      <p id="ph-p2">The index updates when you run <code>sessionwiki list</code> or
          <code>search</code> in a terminal; reload this page afterwards.</p>
     </div>
   </main>
@@ -390,6 +433,7 @@
 <script>
 const $ = (id) => document.getElementById(id);
 let activeEl = null;
+let currentTag = null;
 
 /* ---------- i18n ---------- */
 const I18N = {
@@ -402,16 +446,17 @@ const I18N = {
     subagent: "subagent",
     untitled: "(untitled)",
     noMatches: "No matches.",
-    emptyIndex: "Index is empty - run: sessiondex list",
+    emptyIndex: "Index is empty - run: sessionwiki list",
     phTitle: "Pick a session on the left",
     phP1: "Everything your coding agents ever said, in one place. Search works across every tool at once - partial words and CJK included.",
-    phP2: "The index updates when you run `sessiondex list` or `search` in a terminal; reload this page afterwards.",
+    phP2: "The index updates when you run `sessionwiki list` or `search` in a terminal; reload this page afterwards.",
     messages: (n) => `${n} messages`,
     resumeLabel: "resume in terminal: ",
     copied: "copied",
     clickToCopy: "Click to copy",
     outline: (n) => `Outline · ${n} turns`,
-    hint: "read-only view · refresh: sessiondex list",
+    seeAlso: "See also", filtering: "filtering", filterByTag: "filter by tag",
+    hint: "read-only view · refresh: sessionwiki list",
     themeDark: "Dark", themeLight: "Light",
     stats: (s, t, b) => `${s} sessions · ${t} tools · ${b}`,
   },
@@ -424,16 +469,17 @@ const I18N = {
     subagent: "서브에이전트",
     untitled: "(제목 없음)",
     noMatches: "결과가 없습니다.",
-    emptyIndex: "인덱스가 비어 있습니다 - 터미널에서 sessiondex list 실행",
+    emptyIndex: "인덱스가 비어 있습니다 - 터미널에서 sessionwiki list 실행",
     phTitle: "왼쪽에서 세션을 선택하세요",
     phP1: "에이전트와 나눈 모든 대화를 한곳에서. 검색은 모든 툴을 한 번에 훑습니다 - 부분 단어, 한국어 모두 지원.",
-    phP2: "터미널에서 `sessiondex list`나 `search`를 실행하면 인덱스가 갱신됩니다. 이후 이 페이지를 새로고침하세요.",
+    phP2: "터미널에서 `sessionwiki list`나 `search`를 실행하면 인덱스가 갱신됩니다. 이후 이 페이지를 새로고침하세요.",
     messages: (n) => `메시지 ${n}개`,
     resumeLabel: "터미널에서 이어가기: ",
     copied: "복사됨",
     clickToCopy: "클릭하여 복사",
     outline: (n) => `목차 · 질문 ${n}개`,
-    hint: "읽기 전용 · 갱신: sessiondex list",
+    seeAlso: "관련 세션", filtering: "필터", filterByTag: "태그로 필터",
+    hint: "읽기 전용 · 갱신: sessionwiki list",
     themeDark: "다크", themeLight: "라이트",
     stats: (s, t, b) => `세션 ${s} · 툴 ${t} · ${b}`,
   },
@@ -446,16 +492,17 @@ const I18N = {
     subagent: "サブエージェント",
     untitled: "(無題)",
     noMatches: "該当なし。",
-    emptyIndex: "インデックスが空です - ターミナルで sessiondex list を実行",
+    emptyIndex: "インデックスが空です - ターミナルで sessionwiki list を実行",
     phTitle: "左からセッションを選択",
     phP1: "エージェントとのすべての会話を一箇所で。検索は全ツールを一度に探します - 部分一致も日本語も対応。",
-    phP2: "ターミナルで `sessiondex list` または `search` を実行するとインデックスが更新されます。その後このページを再読み込みしてください。",
+    phP2: "ターミナルで `sessionwiki list` または `search` を実行するとインデックスが更新されます。その後このページを再読み込みしてください。",
     messages: (n) => `${n}件のメッセージ`,
     resumeLabel: "ターミナルで再開: ",
     copied: "コピー済み",
     clickToCopy: "クリックでコピー",
     outline: (n) => `目次 · ${n}ターン`,
-    hint: "読み取り専用 · 更新: sessiondex list",
+    seeAlso: "関連セッション", filtering: "フィルタ", filterByTag: "タグで絞り込み",
+    hint: "読み取り専用 · 更新: sessionwiki list",
     themeDark: "ダーク", themeLight: "ライト",
     stats: (s, t, b) => `セッション ${s} · ツール ${t} · ${b}`,
   },
@@ -468,16 +515,17 @@ const I18N = {
     subagent: "子代理",
     untitled: "(无标题)",
     noMatches: "没有匹配结果。",
-    emptyIndex: "索引为空 - 请在终端运行 sessiondex list",
+    emptyIndex: "索引为空 - 请在终端运行 sessionwiki list",
     phTitle: "从左侧选择一个会话",
     phP1: "与代理的所有对话，尽在一处。搜索一次覆盖所有工具 - 支持部分匹配和中文。",
-    phP2: "在终端运行 `sessiondex list` 或 `search` 后索引会更新，然后刷新本页。",
+    phP2: "在终端运行 `sessionwiki list` 或 `search` 后索引会更新，然后刷新本页。",
     messages: (n) => `${n}条消息`,
     resumeLabel: "在终端继续: ",
     copied: "已复制",
     clickToCopy: "点击复制",
     outline: (n) => `大纲 · ${n}轮`,
-    hint: "只读视图 · 刷新: sessiondex list",
+    seeAlso: "相关会话", filtering: "筛选", filterByTag: "按标签筛选",
+    hint: "只读视图 · 刷新: sessionwiki list",
     themeDark: "深色", themeLight: "浅色",
     stats: (s, t, b) => `${s} 个会话 · ${t} 个工具 · ${b}`,
   },
@@ -643,6 +691,12 @@ function renderItems(rows, isSearch) {
     } else if (r.summary || r.preview) {
       item.appendChild(el("div", "preview", (r.summary || r.preview).replace(/\s+/g, " ")));
     }
+    if (r.tags && r.tags.length) {
+      const tg = el("div", "tags");
+      tg.style.marginTop = "5px";
+      for (const t of r.tags) tg.appendChild(el("span", "tagchip", "#" + t));
+      item.appendChild(tg);
+    }
     item.onclick = () => { openSession(r.id); setActive(item); };
     list.appendChild(item);
   }
@@ -672,6 +726,20 @@ async function openSession(id) {
   head.appendChild(el("div", "path", s.path));
   if (s.summary) {
     head.appendChild(el("div", "synopsis", s.summary));
+  }
+  if (s.tags && s.tags.length) {
+    const row = el("div", "tags");
+    for (const t of s.tags) {
+      const chip = el("span", "tagchip", "#" + t);
+      chip.style.cursor = "pointer";
+      chip.title = L.filterByTag || "filter by tag";
+      chip.onclick = () => { $("q").value = ""; filterByTag(t); };
+      row.appendChild(chip);
+    }
+    head.appendChild(row);
+  }
+  if (s.note) {
+    head.appendChild(el("div", "note", s.note));
   }
   if (s.resume) {
     const row = el("div", "resume");
@@ -737,8 +805,30 @@ async function openSession(id) {
     doc.appendChild(wrap);
     anchors[mi] = wrap;
   }
+
+  // See also: related sessions (same project + shared tags).
+  const seealso = el("div", "seealso");
+  doc.appendChild(seealso);
+  jget("/api/related/" + encodeURIComponent(s.id || id)).then((rel) => {
+    if (!rel || !rel.length) return;
+    seealso.appendChild(el("h3", "", L.seeAlso || "See also"));
+    for (const r of rel) {
+      const a = el("div", "rel");
+      a.appendChild(el("div", "t", r.title || L.untitled));
+      a.appendChild(el("div", "m", `${r.tool} · ${fmtDate(r.started)} · ${L.msgs(r.msgs)}`));
+      a.onclick = () => openSession(r.id);
+      seealso.appendChild(a);
+    }
+  }).catch(() => {});
+
   $("main").replaceChildren(head, doc);
   $("main").scrollTop = 0;
+}
+
+function filterByTag(tag) {
+  currentTag = tag;
+  $("q").value = "";
+  refresh();
 }
 
 /* ---------- data flow ---------- */
@@ -746,11 +836,32 @@ async function refresh() {
   const q = $("q").value.trim();
   const tool = $("tool").value;
   const t = tool ? `&tool=${encodeURIComponent(tool)}` : "";
+  renderTagBar();
   if (q.length >= 3) {
     renderItems(await jget(`/api/search?q=${encodeURIComponent(q)}${t}`), true);
+  } else if (currentTag) {
+    renderItems(await jget(`/api/sessions?limit=200${t}&tag=${encodeURIComponent(currentTag)}`), false);
   } else {
     renderItems(await jget(`/api/sessions?limit=200${t}`), false);
   }
+}
+
+// A removable chip above the list when a tag filter is active.
+function renderTagBar() {
+  let bar = $("tagbar");
+  if (!currentTag) { if (bar) bar.remove(); return; }
+  if (!bar) {
+    bar = el("div", "");
+    bar.id = "tagbar";
+    bar.style.cssText = "padding:6px 14px;font-size:12px;color:var(--ink-2);border-bottom:1px solid var(--line)";
+    $("list").parentNode.insertBefore(bar, $("list"));
+  }
+  bar.replaceChildren();
+  const chip = el("span", "tagchip", "#" + currentTag);
+  const x = el("span", "", "  ✕");
+  x.style.cursor = "pointer";
+  x.onclick = () => { currentTag = null; refresh(); };
+  bar.append(document.createTextNode((L.filtering || "filtering") + ": "), chip, x);
 }
 
 let timer = null;

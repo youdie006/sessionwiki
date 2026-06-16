@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render docs/demo.gif: a terminal recording of the sessiondex CLI.
+"""Render docs/demo.gif: a terminal recording of the sessionwiki CLI.
 
 Reproducible, headless, no external recorder. Renders typed commands and
 their output (matching the tool's real format and ANSI colors) to PNG frames,
@@ -55,7 +55,7 @@ def base_canvas():
         cx = PAD + i * (r * 2 + 6 * SCALE) + r
         cy = TITLE_H // 2
         d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=c)
-    label = "sessiondex"
+    label = "sessionwiki"
     lw = font.getbbox(label)[2]
     d.text(((W - lw) // 2, (TITLE_H - FONT_SIZE) // 2 - 2 * SCALE), label, font=font, fill=DIM)
     return img
@@ -146,21 +146,21 @@ def build_frames():
 
     # beat 1: scan
     screen.append([("", FG, False)])
-    type_cmd("sessiondex scan", 0)
+    type_cmd("sessionwiki scan", 0)
     hold(250)
     reveal(SCAN_OUT, 1)
     hold(1400)
 
     # beat 2: search (fresh screen)
     screen = [[("", FG, False)]]
-    type_cmd('sessiondex search "token"', 0)
+    type_cmd('sessionwiki search "token"', 0)
     hold(250)
     reveal(SEARCH_OUT, 1)
     hold(1500)
 
     # beat 3: resume
     screen.append([("", FG, False)])
-    type_cmd("sessiondex resume 76a6", 8)
+    type_cmd("sessionwiki resume 76a6", 8)
     hold(200)
     reveal(RESUME_OUT, 9)
     hold(2200)

@@ -35,14 +35,14 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} --bin sessiondex
+        run: cargo build --release --target ${{ matrix.target }} --bin sessionwiki
 
       - name: Package (unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          bin=target/${{ matrix.target }}/release/sessiondex
-          dist=sessiondex-${{ github.ref_name }}-${{ matrix.target }}
+          bin=target/${{ matrix.target }}/release/sessionwiki
+          dist=sessionwiki-${{ github.ref_name }}-${{ matrix.target }}
           mkdir "$dist"
           cp "$bin" "$dist/"
           cp README.md LICENSE "$dist/"
@@ -53,8 +53,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          bin=target/${{ matrix.target }}/release/sessiondex.exe
-          dist=sessiondex-${{ github.ref_name }}-${{ matrix.target }}
+          bin=target/${{ matrix.target }}/release/sessionwiki.exe
+          dist=sessionwiki-${{ github.ref_name }}-${{ matrix.target }}
           mkdir "$dist"
           cp "$bin" "$dist/"
           cp README.md LICENSE "$dist/"
@@ -65,8 +65,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            sessiondex-*.tar.gz
-            sessiondex-*.tar.gz.sha256
-            sessiondex-*.zip
-            sessiondex-*.zip.sha256
+            sessionwiki-*.tar.gz
+            sessionwiki-*.tar.gz.sha256
+            sessionwiki-*.zip
+            sessionwiki-*.zip.sha256
           fail_on_unmatched_files: false

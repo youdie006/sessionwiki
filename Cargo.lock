@@ -519,8 +519,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "sessiondex"
-version = "0.6.0"
+name = "sessionwiki"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "chrono",

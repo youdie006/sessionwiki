@@ -12,8 +12,8 @@ pub fn serve(port: u16, no_open: bool) -> Result<()> {
     let addr = format!("127.0.0.1:{port}");
     let server = Server::http(&addr).map_err(|e| anyhow::anyhow!("bind {addr}: {e}"))?;
     let url = format!("http://{addr}");
-    println!("sessiondex web: {url}");
-    println!("(read-only view of the index; run `sessiondex list` to refresh it)");
+    println!("sessionwiki web: {url}");
+    println!("(read-only view of the index; run `sessionwiki list` to refresh it)");
     if !no_open {
         open_browser(&url);
     }
@@ -26,6 +26,10 @@ pub fn serve(port: u16, no_open: bool) -> Result<()> {
             "/api/stats" => api_stats(&conn),
             "/api/sessions" => api_sessions(&conn, query),
             "/api/search" => api_search(&conn, query),
+            "/api/projects" => api_projects(&conn),
+            p if p.starts_with("/api/related/") => {
+                api_related(&conn, p.trim_start_matches("/api/related/"))
+            }
             p if p.starts_with("/api/session/") => {
                 api_session(&conn, p.trim_start_matches("/api/session/"))
             }
@@ -86,11 +90,37 @@ fn api_stats(conn: &Connection) -> Result<Boxed> {
 fn api_sessions(conn: &Connection, query: &str) -> Result<Boxed> {
     let tool = param(query, "tool");
     let project = param(query, "project");
+    let tag = param(query, "tag");
     let limit = param(query, "limit")
         .and_then(|s| s.parse().ok())
         .unwrap_or(200);
-    let rows = index::recent(conn, limit, tool.as_deref(), project.as_deref(), false)?;
+    let rows = index::recent(
+        conn,
+        limit,
+        tool.as_deref(),
+        project.as_deref(),
+        tag.as_deref(),
+        false,
+    )?;
     json_response(json!(rows.iter().map(row_json).collect::<Vec<_>>()))
+}
+
+fn api_projects(conn: &Connection) -> Result<Boxed> {
+    let rows = index::projects(conn)?;
+    json_response(json!(rows
+        .iter()
+        .map(|p| json!({
+            "project": p.project,
+            "sessions": p.sessions,
+            "messages": p.messages,
+            "newest": p.newest,
+        }))
+        .collect::<Vec<_>>()))
+}
+
+fn api_related(conn: &Connection, id: &str) -> Result<Boxed> {
+    let rel = index::related(conn, id, 8)?;
+    json_response(json!(rel.iter().map(row_json).collect::<Vec<_>>()))
 }
 
 fn api_search(conn: &Connection, query: &str) -> Result<Boxed> {
@@ -127,6 +157,12 @@ fn api_session(conn: &Connection, id: &str) -> Result<Boxed> {
     if let Some(s) = &row.summary {
         v["summary"] = json!(s);
     }
+    if let Some(t) = &row.tags {
+        v["tags"] = json!(t.split(',').collect::<Vec<_>>());
+    }
+    if let Some(note) = index::note_for(conn, &row.session_id)? {
+        v["note"] = json!(note);
+    }
     json_response(v)
 }
 
@@ -141,6 +177,7 @@ fn row_json(r: &index::SessionRow) -> serde_json::Value {
         "kind": r.kind,
         "preview": r.preview,
         "summary": r.summary,
+        "tags": r.tags.as_ref().map(|t| t.split(',').collect::<Vec<_>>()),
     })
 }
 

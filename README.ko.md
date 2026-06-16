@@ -2,32 +2,32 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg">
-  <img src="docs/logo-light.svg" width="84" alt="sessiondex 로고: 아틀라스 지구본과 위치 핀">
+  <img src="docs/logo-light.svg" width="84" alt="sessionwiki 로고: 지구본과 위치 핀">
 </picture>
 
-# sessiondex
+# sessionwiki
 
-지금까지의 모든 AI 세션을 모은 인덱스 &mdash; 검색하고, 요약하고, 이어서 작업하세요.<br>
+지금까지의 모든 AI 코딩 세션을 모은 위키 &mdash; 검색하고, 연결하고, 이어서 작업하세요.<br>
 Claude Code &middot; Codex CLI &middot; Gemini CLI &nbsp;&middot;&nbsp; 명령 하나, 100% 로컬
 
-<a href="https://github.com/youdie006/sessiondex/actions/workflows/ci.yml"><img src="https://github.com/youdie006/sessiondex/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+<a href="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml"><img src="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT 라이선스"></a>
-<a href="https://github.com/youdie006/sessiondex/releases"><img src="https://img.shields.io/github/v/release/youdie006/sessiondex?label=release&color=355bd0" alt="최신 릴리스"></a>
+<a href="https://github.com/youdie006/sessionwiki/releases"><img src="https://img.shields.io/github/v/release/youdie006/sessionwiki?label=release&color=355bd0" alt="최신 릴리스"></a>
 <img src="https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-555" alt="플랫폼: Linux, macOS, Windows">
 <a href="README.md#adding-an-adapter"><img src="https://img.shields.io/badge/adapters-PRs%20welcome-2ea44f" alt="어댑터 PR 환영"></a>
 
 <a href="README.md">English</a> &middot; <b>한국어</b>
 
-<img src="docs/demo.gif" width="760" alt="터미널 녹화: sessiondex scan이 세 툴에 걸친 47GB 세션을 보여주고, search가 과거 대화를 키워드로 찾고, resume이 원래 툴에서 다시 엽니다">
+<img src="docs/demo.gif" width="760" alt="터미널 녹화: sessionwiki scan이 세 툴에 걸친 47GB 세션을 보여주고, search가 과거 대화를 키워드로 찾고, resume이 원래 툴에서 다시 엽니다">
 
 </div>
 
 3주 전에 Claude가 고쳐준 그 CORS 버그 대화, 아직 디스크에 있습니다 &mdash; 못 찾을 뿐이죠. 모든 AI 코딩 에이전트는 세션을 디스크에 기록합니다. 툴마다 다른 포맷으로, 다른 폴더에, 쓰는 머신마다 제각각. 몇 달이면 해결된 문제로 가득한 대화 수천 개가 쌓이는데, 다시 찾아갈 방법이 없습니다.
 
-**sessiondex는 툴들이 어차피 남기는 흔적을 읽어 하나의 검색 가능한 아카이브로 만듭니다.** 데몬도, 기록 습관도, 클라우드도 필요 없습니다. 이미 있는 것을 인덱싱할 뿐입니다.
+**sessionwiki는 툴들이 어차피 남기는 흔적을 읽어 하나의 검색 가능한 아카이브로 만듭니다.** 데몬도, 기록 습관도, 클라우드도 필요 없습니다. 이미 있는 것을 인덱싱할 뿐입니다.
 
 ```console
-$ sessiondex scan
+$ sessionwiki scan
 TOOL            SESSIONS       SIZE  OLDEST       NEWEST        PATH
 claude-code         1763     1.1 GB  2026-03-27   2026-06-12    ~/.claude/projects
 codex               2340    45.9 GB  2025-08-21   2026-06-12    ~/.codex/sessions
@@ -38,11 +38,11 @@ gemini                50     1.2 MB  2026-04-02   2026-06-10    ~/.gemini/tmp
 
 실제 머신 한 대의 결과입니다. 본인 머신에서 돌려보세요 &mdash; 숫자에 보통 놀랍니다.
 
-읽는 게 더 편하면 웹 UI도 있습니다 &mdash; `sessiondex web`:
+읽는 게 더 편하면 웹 UI도 있습니다 &mdash; `sessionwiki web`:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/hero-dark.png">
-  <img src="docs/hero-light.png" width="900" alt="sessiondex 웹 UI: Claude Code와 Codex 세션을 가로질러 검색하고, 열린 트랜스크립트에 LLM 요약·resume 명령·목차가 표시된 화면">
+  <img src="docs/hero-light.png" width="900" alt="sessionwiki 웹 UI: Claude Code와 Codex 세션을 가로질러 검색하고, 열린 트랜스크립트에 LLM 요약·resume 명령·목차가 표시된 화면">
 </picture>
 
 ## 무엇을 할 수 있나
@@ -59,15 +59,15 @@ gemini                50     1.2 MB  2026-04-02   2026-06-10    ~/.gemini/tmp
 **빌드된 바이너리** (툴체인 불필요). macOS / Linux:
 
 ```console
-curl -sSL https://raw.githubusercontent.com/youdie006/sessiondex/main/scripts/install.sh | sh
+curl -sSL https://raw.githubusercontent.com/youdie006/sessionwiki/main/scripts/install.sh | sh
 ```
 
-스크립트가 플랫폼에 맞는 아카이브를 [최신 릴리스](https://github.com/youdie006/sessiondex/releases/latest)에서 받아 `~/.local/bin`에 설치합니다. Windows는 릴리스 페이지에서 `.zip`을 받으세요.
+스크립트가 플랫폼에 맞는 아카이브를 [최신 릴리스](https://github.com/youdie006/sessionwiki/releases/latest)에서 받아 `~/.local/bin`에 설치합니다. Windows는 릴리스 페이지에서 `.zip`을 받으세요.
 
 **Rust(stable)** 가 있다면:
 
 ```console
-cargo install --git https://github.com/youdie006/sessiondex
+cargo install --git https://github.com/youdie006/sessionwiki
 ```
 
 어느 쪽이든 런타임 의존성 없는 단일 바이너리입니다.
@@ -75,10 +75,10 @@ cargo install --git https://github.com/youdie006/sessiondex
 ## 빠른 시작
 
 ```console
-sessiondex scan                # 내 세션이 어디에 있지?
-sessiondex search "jwt retry"  # 모든 툴을 가로지르는 전문 검색
-sessiondex show 3f9c           # 찾은 대화 읽기
-sessiondex web                 # 또는 로컬 웹 UI로 전부 둘러보기
+sessionwiki scan                # 내 세션이 어디에 있지?
+sessionwiki search "jwt retry"  # 모든 툴을 가로지르는 전문 검색
+sessionwiki show 3f9c           # 찾은 대화 읽기
+sessionwiki web                 # 또는 로컬 웹 UI로 전부 둘러보기
 ```
 
 첫 `search`/`list`가 인덱스를 만듭니다. 기록 1GB당 몇 분 정도 걸리는 일회성 비용이고(Codex 헤비유저는 수십 GB일 수 있습니다), 이후 갱신은 증분이라 몇 초면 끝납니다.
@@ -88,32 +88,44 @@ sessiondex web                 # 또는 로컬 웹 UI로 전부 둘러보기
 | 명령 | 설명 |
 |---|---|
 | `scan` | 이 머신의 세션 저장소를 발견. 파일시스템만 훑으므로 즉시 끝납니다. |
-| `list` | 모든 툴의 최근 세션을 한 타임라인으로. `--tool codex`, `--project api`, `-n 50`, `--all`(서브에이전트 트랜스크립트 포함). |
+| `list` | 모든 툴의 최근 세션을 한 타임라인으로. `--tool codex`, `--project api`, `--tag spike`, `-n 50`, `--all`(서브에이전트 트랜스크립트 포함). |
 | `search <검색어>` | 모든 툴의 모든 메시지를 전문 검색. 최소 3글자. |
 | `show <id>` | 세션 하나를 읽기 좋은 트랜스크립트로. `--full`은 툴 호출 전체 표시, `--json`은 파싱 결과 출력, `--outline`은 다이제스트(내가 던진 질문 전부 + 어떻게 끝났는지). |
-| `summarize [id]` | **본인 LLM CLI**(기본 `claude -p`, `--cmd`/`SESSIONDEX_SUMMARIZER`로 교체)로 1~2문장 시놉시스를 생성해 인덱스에 캐시. id 없이 실행하면 최근 `--recent N`개 일괄 처리. 요약은 재인덱싱에도 살아남고 `show`, `--outline`, 웹 사이드바에 표시됩니다. |
+| `summarize [id]` | **본인 LLM CLI**(기본 `claude -p`, `--cmd`/`SESSIONWIKI_SUMMARIZER`로 교체)로 1~2문장 시놉시스를 생성해 인덱스에 캐시. id 없이 실행하면 최근 `--recent N`개 일괄 처리. 요약은 재인덱싱에도 살아남고 `show`, `--outline`, 웹 사이드바에 표시됩니다. |
 | `resume <id>` | 원래 툴에서 세션 다시 열기: `claude --resume` / `codex resume`를 해당 프로젝트 디렉토리에서 실행. 서브에이전트 트랜스크립트는 부모 세션을 엽니다. `--print`는 명령만 출력. |
 | `brief <id>` | 세션을 마크다운 브리핑으로 출력(긴 세션은 머리·꼬리만, 중간 생략) &mdash; 어느 툴로든, 툴을 바꿔서도 컨텍스트를 들고 갈 수 있습니다. `--max-chars`, `--tools`. |
-| `web` | `127.0.0.1:7575` 로컬 뷰어: 날짜별 세션 목록과 시놉시스 미리보기, 하이라이트 스니펫 실시간 검색, 목차와 resume 명령이 달린 트랜스크립트, 라이트/다크 테마, UI 언어 한국어·영어·일본어·중국어 지원. localhost 밖으로 절대 나가지 않습니다. |
+| `web` | `127.0.0.1:7575` 로컬 뷰어: 날짜별 세션 목록과 시놉시스 미리보기, 하이라이트 스니펫 실시간 검색, 목차·태그·"관련 세션"이 달린 트랜스크립트, resume 명령, 라이트/다크 테마, UI 언어 한국어·영어·일본어·중국어 지원. localhost 밖으로 절대 나가지 않습니다. |
+
+### 세션 엔지니어링
+
+세션은 하나의 컨텍스트 단위이고, 수백 개가 쌓이면 검색만이 아니라 큐레이션과 관리가 필요해집니다. 아래 명령은 평평한 아카이브를 탐색 가능하고 정돈된 것으로 바꿉니다. 인덱스를 읽으므로 즉시 끝납니다.
+
+| 명령 | 설명 |
+|---|---|
+| `related <id>` | 같은 주제의 세션: 같은 프로젝트 우선, 그다음 태그를 공유하는 것. 내 작업의 "관련 항목". |
+| `tag <id> <태그>...` | 세션에 태그(`--rm`으로 제거). id 없이 실행하면 전체 태그 목록. `list --tag`로 필터. 태그는 인덱스에 저장되고 재인덱싱에도 살아남으며, 원본 세션 파일은 절대 건드리지 않습니다. |
+| `note <id> "텍스트"` | 세션에 자유 메모를 답니다. 텍스트를 생략하면 기존 메모를 읽습니다. |
+| `projects` | 프로젝트별 한 줄: 세션 수, 메시지 양, 마지막 활동. 코드베이스마다 한 페이지. |
+| `stats` | 전체 합계 + 툴별·월별 분포. 에이전트 시간이 실제로 어디 갔는지. |
 
 ## 멈춘 곳에서 다시 시작하기
 
 옛 세션을 찾는 건 절반이고, 나머지 절반은 이어가는 것입니다.
 
 ```console
-$ sessiondex search "rate limiter"
+$ sessionwiki search "rate limiter"
 76a614028a63 codex 2026-06-11 13:00 .../projects/api-server [assistant]
   ...the bucket invariant 0 <= tokens <= capacity holds after every step...
 
-$ sessiondex resume 76a6           # 그 대화를 Codex에서 다시 엽니다
+$ sessionwiki resume 76a6           # 그 대화를 Codex에서 다시 엽니다
 
-$ sessiondex brief 76a6 | claude -p \
+$ sessionwiki brief 76a6 | claude -p \
     "이 작업 이어서: 빠진 엣지 케이스 테스트 추가해줘"
 
-$ sessiondex summarize --recent 20  # 최근 세션들에 시놉시스 달기
+$ sessionwiki summarize --recent 20  # 최근 세션들에 시놉시스 달기
 ```
 
-`resume`은 각 툴의 네이티브 기능을 쓰므로 원본 세션 파일이 남아 있어야 합니다. `brief`는 툴을 바꿔도 동작합니다. `summarize`는 당신의 LLM을, 당신의 머신에서, 당신이 시킬 때만 돌립니다 &mdash; sessiondex 자체는 네트워크 호출을 하지 않습니다.
+`resume`은 각 툴의 네이티브 기능을 쓰므로 원본 세션 파일이 남아 있어야 합니다. `brief`는 툴을 바꿔도 동작합니다. `summarize`는 당신의 LLM을, 당신의 머신에서, 당신이 시킬 때만 돌립니다 &mdash; sessionwiki 자체는 네트워크 호출을 하지 않습니다.
 
 ## 동작 원리
 
@@ -131,7 +143,7 @@ flowchart LR
 ```
 
 - `scan`은 파일시스템만 훑고 인덱스를 건드리지 않습니다.
-- 나머지는 `~/.local/share/sessiondex/index.db`(플랫폼별 위치, `SESSIONDEX_DATA`로 변경)에 증분 인덱스를 유지합니다. 수정시각·크기가 바뀐 파일만 다시 파싱합니다.
+- 나머지는 `~/.local/share/sessionwiki/index.db`(플랫폼별 위치, `SESSIONWIKI_DATA`로 변경)에 증분 인덱스를 유지합니다. 수정시각·크기가 바뀐 파일만 다시 파싱합니다.
 - 원본 세션 파일은 절대 수정하지 않습니다 &mdash; 인덱스는 언제든 지워도 되는 캐시입니다. 캐시된 요약만은 스키마 업그레이드에도 의도적으로 살아남습니다. 인덱스 재구축은 싸지만, 기록 전체에 LLM을 다시 돌리는 건 비싸니까요.
 - 잡음은 일부러 거릅니다: 반복되는 하네스 보일러플레이트와 거대한 툴 출력은 인덱스에서 제외해 검색 결과의 신호를 지킵니다.
 
@@ -150,7 +162,7 @@ flowchart LR
 
 ## 어댑터 추가하기
 
-당신의 에이전트가 세션을 디스크에 남긴다면, sessiondex에 들어올 자격이 있습니다. 어댑터는 메서드 4개를 구현한 작은 Rust 파일 하나입니다:
+당신의 에이전트가 세션을 디스크에 남긴다면, sessionwiki에 들어올 자격이 있습니다. 어댑터는 메서드 4개를 구현한 작은 Rust 파일 하나입니다:
 
 ```rust
 pub trait Adapter {
@@ -165,11 +177,10 @@ pub trait Adapter {
 
 ## 로드맵
 
-- 아카이브 모드 &mdash; 툴이 원본을 지워도 sessiondex에는 남기기 (일찍 설치할수록 잃는 게 없습니다)
+- 아카이브 모드 &mdash; 툴이 원본을 지워도 sessionwiki에는 남기기 (일찍 설치할수록 잃는 게 없습니다)
 - `link` &mdash; 세션과 그 세션이 만든 git 커밋 연결 ("AI 세션의 git blame")
 - `sync` &mdash; 여러 머신의 아카이브 병합
 - `clean` &mdash; 거대한 옛 세션 저장소의 디스크 안전 회수
-- `stats` &mdash; 툴·프로젝트·월별 사용 통계
 - 빌드된 바이너리 배포
 - 더 많은 어댑터 (원하는 툴을 이슈로 알려주세요)
 
@@ -188,8 +199,8 @@ pub trait Adapter {
 <div align="center">
 <br>
 
-<a href="https://github.com/youdie006/sessiondex/issues/new">버그 신고</a> &middot;
-<a href="https://github.com/youdie006/sessiondex/issues/new">어댑터 요청</a> &middot;
+<a href="https://github.com/youdie006/sessionwiki/issues/new">버그 신고</a> &middot;
+<a href="https://github.com/youdie006/sessionwiki/issues/new">어댑터 요청</a> &middot;
 <a href="#로드맵">로드맵</a>
 
 </div>

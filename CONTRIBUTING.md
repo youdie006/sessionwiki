@@ -1,4 +1,4 @@
-# Contributing to sessiondex
+# Contributing to sessionwiki
 
 Thanks for helping. The most valuable contributions, in order:
 
@@ -9,8 +9,8 @@ Thanks for helping. The most valuable contributions, in order:
 ## Development
 
 ```console
-git clone https://github.com/youdie006/sessiondex
-cd sessiondex
+git clone https://github.com/youdie006/sessionwiki
+cd sessionwiki
 cargo build
 cargo test
 ```
@@ -29,7 +29,7 @@ so the parsing and indexing logic is testable and reusable as a dependency.
 
 ## Adding an adapter
 
-An adapter teaches sessiondex where one tool stores sessions and how to parse
+An adapter teaches sessionwiki where one tool stores sessions and how to parse
 one. It is a single file implementing the `Adapter` trait:
 
 ```rust
@@ -61,7 +61,7 @@ version.
 
 ## Scope
 
-sessiondex is deliberately local-only and read-only with respect to your
+sessionwiki is deliberately local-only and read-only with respect to your
 session stores. Features that send data anywhere, or that modify the original
 session files, are out of scope. The `summarize` command shells out to an LLM
 CLI *you* configure and run; the tool itself makes no network calls.

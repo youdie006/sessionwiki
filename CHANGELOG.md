@@ -22,7 +22,7 @@ semantic versioning once it reaches 1.0.
 ## [0.5.0] - 2026-06-12
 
 ### Changed
-- Renamed the project from `session-atlas` to **sessiondex**. The data
+- Renamed the project from `session-atlas` to **sessionwiki**. The data
   directory migrates automatically on first run, carrying the existing index
   and cached summaries over.
 
@@ -59,9 +59,9 @@ semantic versioning once it reaches 1.0.
   incremental SQLite FTS5 index. Adapters for Claude Code, Codex, and Gemini
   CLI. 100% local, no telemetry.
 
-[Unreleased]: https://github.com/youdie006/sessiondex/compare/v0.5.0...HEAD
-[0.5.0]: https://github.com/youdie006/sessiondex/releases/tag/v0.5.0
-[0.4.0]: https://github.com/youdie006/sessiondex/releases/tag/v0.4.0
-[0.3.0]: https://github.com/youdie006/sessiondex/releases/tag/v0.3.0
-[0.2.0]: https://github.com/youdie006/sessiondex/releases/tag/v0.2.0
-[0.1.0]: https://github.com/youdie006/sessiondex/releases/tag/v0.1.0
+[Unreleased]: https://github.com/youdie006/sessionwiki/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/youdie006/sessionwiki/releases/tag/v0.5.0
+[0.4.0]: https://github.com/youdie006/sessionwiki/releases/tag/v0.4.0
+[0.3.0]: https://github.com/youdie006/sessionwiki/releases/tag/v0.3.0
+[0.2.0]: https://github.com/youdie006/sessionwiki/releases/tag/v0.2.0
+[0.1.0]: https://github.com/youdie006/sessionwiki/releases/tag/v0.1.0

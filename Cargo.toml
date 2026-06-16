@@ -1,10 +1,10 @@
 [package]
-name = "sessiondex"
-version = "0.6.0"
+name = "sessionwiki"
+version = "0.7.0"
 edition = "2021"
 description = "Find, search, and read every AI coding session you've ever had - across Claude Code, Codex, and Gemini CLI."
 license = "MIT"
-repository = "https://github.com/youdie006/sessiondex"
+repository = "https://github.com/youdie006/sessionwiki"
 keywords = ["claude-code", "codex", "gemini-cli", "sessions", "search"]
 categories = ["command-line-utilities"]
 

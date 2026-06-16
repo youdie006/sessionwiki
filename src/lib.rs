@@ -1,4 +1,4 @@
-//! sessiondex: index, search, and resume every AI coding session on your
+//! sessionwiki: index, search, and resume every AI coding session on your
 //! machine, across Claude Code, Codex, and Gemini CLI.
 //!
 //! The binary is a thin CLI over this library. The pieces worth reusing as a
