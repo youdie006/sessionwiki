@@ -16,7 +16,7 @@ Claude Code &middot; Codex CLI &middot; Gemini CLI &nbsp;&middot;&nbsp; 명령 �
 <img src="https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-555" alt="플랫폼: Linux, macOS, Windows">
 <a href="README.md#adding-an-adapter"><img src="https://img.shields.io/badge/adapters-PRs%20welcome-2ea44f" alt="어댑터 PR 환영"></a>
 
-<a href="README.md">English</a> &middot; <b>한국어</b>
+<a href="README.md"><img src="https://img.shields.io/badge/English-eceae3?style=for-the-badge&labelColor=eceae3&color=6e6b62" alt="English"></a>&nbsp;<img src="https://img.shields.io/badge/%ED%95%9C%EA%B5%AD%EC%96%B4-3b5bd6?style=for-the-badge" alt="한국어 (현재)">
 
 <img src="docs/demo-cli.gif" width="760" alt="터미널 녹화: sessionwiki scan이 세 툴에 걸친 47GB 세션을 보여주고, search가 과거 대화를 키워드로 찾고, resume이 원래 툴에서 다시 엽니다">
 

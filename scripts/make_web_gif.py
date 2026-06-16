@@ -16,9 +16,7 @@ Output: docs/demo-web.gif
 
 import os
 import shutil
-import subprocess
 import sys
-import tempfile
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -65,44 +63,35 @@ def captioned(path, text):
 
 
 def main():
-    frames = []
+    frames, holds = [], []
     for i in range(1, 8):
         p = os.path.join(SRC, f"wf{i:02d}.png")
         if not os.path.exists(p):
             raise SystemExit(f"missing {p}")
-        frames.append((captioned(p, CAPTIONS[i - 1]), HOLDS[i - 1]))
+        frames.append(captioned(p, CAPTIONS[i - 1]))
+        holds.append(HOLDS[i - 1])
 
-    w, h = frames[0][0].size
-    fps = 16
-    total_out = int(sum(ms for _, ms in frames) / 1000 * fps)
-
-    tmp = tempfile.mkdtemp(prefix="swweb-")
-    concat = os.path.join(tmp, "list.txt")
-    with open(concat, "w") as f:
-        for i, (img, ms) in enumerate(frames):
-            fp = os.path.join(tmp, f"f{i:02d}.png")
-            img.save(fp)
-            f.write(f"file '{fp}'\nduration {ms/1000:.3f}\n")
-        f.write(f"file '{os.path.join(tmp, f'f{len(frames)-1:02d}.png')}'\n")
+    # A UI tour is a sequence of static scenes, so the GIF only needs one frame
+    # per scene shown with its own delay - not a constant-framerate expansion.
+    # That keeps it to 7 stored frames (small) while each gets its own 256-color
+    # palette via per-frame quantization (crisp, and the light<->dark switch is
+    # not forced to share one washed-out palette). A continuous zoom is
+    # deliberately omitted: on dense UI it blurs text and, by making every frame
+    # unique, would explode the file. The scene cuts carry the motion.
+    scale = 0.82
+    w, h = frames[0].size
+    size = (round(w * scale), round(h * scale))
+    pal_frames = [
+        f.resize(size, Image.LANCZOS).quantize(colors=256, method=Image.MEDIANCUT, dither=Image.Dither.NONE)
+        for f in frames
+    ]
 
     out = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "docs", "demo-web.gif"))
-    z = f"1.01+0.01*sin(2*PI*on/{total_out})"
-    zoom = f"zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:fps={fps}:s={w}x{h}"
-    sc = f"scale={int(w*0.60)}:-1:flags=lanczos"
-    pal = os.path.join(tmp, "pal.png")
-    subprocess.run(
-        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat,
-         "-vf", f"fps={fps},{zoom},{sc},palettegen=stats_mode=diff", pal],
-        check=True, capture_output=True)
-    r = subprocess.run(
-        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat, "-i", pal,
-         "-lavfi", f"fps={fps},{zoom},{sc}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=3",
-         "-loop", "0", out],
-        capture_output=True)
-    if r.returncode:
-        raise SystemExit(r.stderr.decode()[-800:])
-    shutil.rmtree(tmp, ignore_errors=True)
-    secs = sum(ms for _, ms in frames) / 1000
+    pal_frames[0].save(
+        out, save_all=True, append_images=pal_frames[1:],
+        duration=holds, loop=0, disposal=2, optimize=True,
+    )
+    secs = sum(holds) / 1000
     print(f"wrote {out} ({os.path.getsize(out)/1024:.0f} KB, {len(frames)} frames, ~{secs:.1f}s)")
 
 
