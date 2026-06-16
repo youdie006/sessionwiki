@@ -37,6 +37,13 @@ def claude_session(proj_dir, cwd, summary, turns, day, h):
                           "timestamp": ts(day, h, i),
                           "message": {"role": "assistant",
                                       "content": [{"type": "text", "text": text}]}})
+        elif role in ("Edit", "Write", "MultiEdit"):
+            # An edit tool call: `text` is the file path it wrote (provenance).
+            lines.append({"type": "assistant", "cwd": cwd, "sessionId": sid,
+                          "timestamp": ts(day, h, i),
+                          "message": {"role": "assistant",
+                                      "content": [{"type": "tool_use", "name": role,
+                                                   "input": {"file_path": text}}]}})
         else:
             lines.append({"type": "assistant", "cwd": cwd, "sessionId": sid,
                           "timestamp": ts(day, h, i),
@@ -57,6 +64,16 @@ def codex_session(cwd, turns, day, h):
               "payload": {"id": sid, "timestamp": ts(day, h, 0), "cwd": cwd,
                           "originator": "codex_cli_rs", "cli_version": "0.92.0"}}]
     for i, (role, text) in enumerate(turns, 1):
+        if role == "apply_patch":
+            # `text` is a comma-separated list of files the patch touched.
+            patch = "*** Begin Patch\n" + "".join(
+                f"*** Update File: {p.strip()}\n@@\n-old\n+new\n" for p in text.split(",")
+            ) + "*** End Patch\n"
+            args = json.dumps({"command": ["apply_patch", patch]})
+            lines.append({"timestamp": ts(day, h, i), "type": "response_item",
+                          "payload": {"type": "function_call", "name": "shell",
+                                      "arguments": args}})
+            continue
         kind = "input_text" if role == "user" else "output_text"
         lines.append({"timestamp": ts(day, h, i), "type": "response_item",
                       "payload": {"type": "message", "role": role,
@@ -89,6 +106,8 @@ claude_session(
      ("Bash", "rg -n 'cors' src/middleware/"),
      ("assistant", "Found it. The CORS middleware runs **after** the auth guard, so OPTIONS preflight requests (which carry no token) get rejected with 403 before CORS headers are ever attached.\n\nThe fix is a two-line reorder in `src/middleware/mod.rs`:\n\n```rust\nrouter\n    .layer(CorsLayer::permissive())  // must come before auth\n    .layer(AuthLayer::new(jwks))\n```\n\nI also added a regression test that sends a preflight without credentials."),
      ("user", "Apply it and run the middleware tests."),
+     ("Edit", "/home/demo/projects/api-server/src/middleware/mod.rs"),
+     ("Write", "/home/demo/projects/api-server/tests/cors_preflight.rs"),
      ("Bash", "cargo test middleware:: -- --nocapture"),
      ("assistant", "Done. CORS middleware now runs first, `OPTIONS` is exempt from auth, and the new regression test passes: 14 tests, 0 failures.")],
     9, 14)
@@ -97,7 +116,9 @@ claude_session(
     "-home-demo-projects-api-server", "/home/demo/projects/api-server",
     "Add retry with backoff to the payment webhook handler",
     [("user", "Stripe webhooks sometimes fail when the DB connection pool is exhausted. Add retries with exponential backoff."),
-     ("assistant", "I'll wrap the webhook handler in a retry policy: 3 attempts, 100ms base delay with jitter, and only on transient pool errors so we never double-process a charge."),
+     ("assistant", "I'll wrap the webhook handler in a retry policy: 3 attempts, 100ms base delay with jitter, and only on transient pool errors so we never double-process a charge. I'll also register the retry layer in the middleware stack."),
+     ("Edit", "/home/demo/projects/api-server/src/webhook.rs"),
+     ("Edit", "/home/demo/projects/api-server/src/middleware/mod.rs"),
      ("Bash", "cargo test webhook_retry"),
      ("assistant", "Implemented and tested. Permanent failures still go straight to the dead-letter queue, so nothing is silently retried forever.")],
     8, 11)
@@ -107,6 +128,7 @@ claude_session(
     "Fix JWT expiry handling after the app is backgrounded",
     [("user", "When the app sits in the background a while, the JWT expires and every API call comes back 401. The auto-refresh logic needs a look."),
      ("assistant", "Refresh was only wired to the foreground event, with no pre-emptive renewal. I'll renew 5 minutes before expiry, retry once with the refresh token on a 401, and fall back to the login screen if that fails too."),
+     ("Edit", "/home/demo/projects/mobile-app/src/auth/interceptor.ts"),
      ("Bash", "npm test -- auth.interceptor"),
      ("assistant", "Done: pre-emptive renewal, a single 401 retry, and session cleanup on refresh failure all pass.")],
     10, 9)
@@ -116,6 +138,7 @@ claude_session(
     "Speed up the nightly ETL by parallelizing partition loads",
     [("user", "The nightly ETL takes 4 hours now. Most of it seems to be the partition loads. Can we parallelize?"),
      ("assistant", "The loader processes partitions sequentially. They are independent, so a worker pool sized to the warehouse connection limit (8) should cut wall time roughly by the partition count over eight."),
+     ("Edit", "/home/demo/projects/data-pipeline/etl/loader.py"),
      ("Bash", "python bench/load_partitions.py --workers 8"),
      ("assistant", "With 8 workers the bench run drops from 212 to 31 minutes. I kept per-partition transactions so a failed partition retries alone without rolling back the others.")],
     7, 2)
@@ -130,6 +153,7 @@ claude_session(
      ("assistant", "Moved coupon validation to the field's blur event with a server check, so users see the error before they reach payment. Expired and exhausted codes now fail inline."),
      ("user", "QA says screen readers skip the error messages entirely."),
      ("assistant", "The errors were rendered outside the form's accessibility tree. Wrapped them in aria-live regions tied to each field with aria-describedby - VoiceOver and NVDA both announce them now."),
+     ("Edit", "/home/demo/projects/web-app/src/checkout/CheckoutForm.tsx"),
      ("user", "Run the full suite and summarize what changed."),
      ("Bash", "npm test"),
      ("assistant", "All 84 tests pass. Summary: double-submit guard on the button and handler, inline server-side coupon validation on blur, and aria-live error regions wired to each field.")],
@@ -140,12 +164,14 @@ codex_session(
     [("user", "Migrate the dashboard route to React Server Components. Keep the chart widgets client-side."),
      ("assistant", "Plan: move data fetching into the server component, keep ChartPanel and DateRangePicker as client islands with 'use client', and pass serialized props across the boundary. Starting with the layout."),
      ("user", "Looks right. Watch out for the date objects crossing the boundary."),
+     ("apply_patch", "app/dashboard/page.tsx, app/dashboard/ChartPanel.tsx"),
      ("assistant", "Good catch - Dates serialize to strings across the RSC boundary, so I am passing ISO strings and parsing them inside the client components. Migration complete, build passes, no hydration warnings.")],
     9, 16)
 
 codex_session(
     "/home/demo/projects/api-server",
     [("user", "Write property-based tests for the rate limiter. I want proof the token bucket never goes negative."),
+     ("apply_patch", "src/rate_limiter.rs, tests/rate_limiter_props.rs"),
      ("assistant", "Added proptest cases: random interleavings of acquire/refill across threads, asserting the bucket invariant `0 <= tokens <= capacity` holds after every step. 10,000 cases pass; also found and fixed an off-by-one when refill lands exactly on the window edge.")],
     11, 13)
 

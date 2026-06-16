@@ -32,7 +32,7 @@ pub fn db_path() -> Result<PathBuf> {
 
 /// Bump when the schema changes. The index is a disposable cache, so a
 /// mismatch simply drops and rebuilds it instead of migrating.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 pub fn open() -> Result<Connection> {
     let conn = Connection::open(db_path()?)?;
@@ -45,6 +45,7 @@ pub fn open() -> Result<Connection> {
         conn.execute_batch(
             "DROP TABLE IF EXISTS msgs;
              DROP TABLE IF EXISTS messages;
+             DROP TABLE IF EXISTS touched;
              DROP TABLE IF EXISTS files;",
         )?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -99,7 +100,17 @@ pub fn open() -> Result<Connection> {
             session_id TEXT PRIMARY KEY,
             note       TEXT NOT NULL,
             updated    TEXT NOT NULL
-        );",
+        );
+        -- Provenance: which files each session edited or created, from its
+        -- tool calls. Rebuilt from the sessions on sync, so it is dropped on a
+        -- schema bump like messages - not curated. The path index powers
+        -- `blame` (sessions for a file) and shared-file relatedness.
+        CREATE TABLE IF NOT EXISTS touched(
+            session_id TEXT NOT NULL,
+            path       TEXT NOT NULL,
+            PRIMARY KEY (session_id, path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_touched_path ON touched(path);",
     )?;
     Ok(conn)
 }
@@ -169,6 +180,10 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
             let key = path.to_string_lossy();
             delete_session_msgs(&tx, &session.id)?;
             tx.execute(
+                "DELETE FROM touched WHERE session_id = ?1",
+                params![session.id],
+            )?;
+            tx.execute(
                 "INSERT OR REPLACE INTO files
                  (path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
@@ -197,6 +212,11 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
             for m in &session.messages {
                 ins_row.execute(params![session.id, m.role.label(), m.text])?;
                 ins_fts.execute(params![tx.last_insert_rowid(), m.text])?;
+            }
+            let mut ins_touched = tx
+                .prepare_cached("INSERT OR IGNORE INTO touched(session_id, path) VALUES (?1,?2)")?;
+            for p in &session.touched {
+                ins_touched.execute(params![session.id, p])?;
             }
         }
         tx.commit()?;
@@ -235,6 +255,7 @@ fn prune_deleted(conn: &Connection, tool: &str, seen: &[String]) -> Result<()> {
     for (path, sid) in gone {
         conn.execute("DELETE FROM files WHERE path = ?1", params![path])?;
         delete_session_msgs(conn, &sid)?;
+        conn.execute("DELETE FROM touched WHERE session_id = ?1", params![sid])?;
     }
     Ok(())
 }
@@ -507,6 +528,55 @@ pub fn tag_counts(conn: &Connection) -> Result<Vec<(String, i64)>> {
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+// --- provenance: sessions <-> the code they produced ---
+
+/// Files a session edited or created, in the order it first touched them.
+pub fn files_for(conn: &Connection, session_id: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT path FROM touched WHERE session_id = ?1 ORDER BY rowid")?;
+    let rows = stmt.query_map(params![session_id], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Sessions that touched a file, newest first - "git blame for AI sessions".
+/// Matches either the exact stored path or any stored path ending in the
+/// query, so a relative `src/auth.rs` finds `/home/me/proj/src/auth.rs`. The
+/// matched stored path is returned alongside each session.
+pub fn sessions_for_file(
+    conn: &Connection,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<(SessionRow, String)>> {
+    let q = query.trim().trim_start_matches("./");
+    let suffix = format!("%/{q}");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT f.session_id, f.tool, f.path, f.project, f.title, f.started, f.msg_count, f.kind,
+                {SUMMARY_SQL}, {TAGS_SQL}, t.path
+         FROM touched t JOIN files f ON f.session_id = t.session_id
+         WHERE t.path = ?1 OR t.path LIKE ?2
+         GROUP BY f.session_id
+         ORDER BY f.started DESC LIMIT ?3"
+    ))?;
+    let rows = stmt.query_map(params![q, suffix, limit as i64], |r| {
+        Ok((
+            SessionRow {
+                session_id: r.get(0)?,
+                tool: r.get(1)?,
+                path: r.get(2)?,
+                project: r.get(3)?,
+                title: r.get(4)?,
+                started: r.get(5)?,
+                msg_count: r.get(6)?,
+                kind: r.get(7)?,
+                preview: None,
+                summary: r.get(8)?,
+                tags: r.get(9)?,
+            },
+            r.get::<_, String>(10)?,
+        ))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 // --- related sessions (backlinks) ---
 
 /// Sessions related to `session_id`. A session is most usefully "related" to
@@ -551,7 +621,33 @@ pub fn related(conn: &Connection, session_id: &str, limit: usize) -> Result<Vec<
         }
     }
 
-    // 2. sessions that share a tag with the target (explicit wiki links).
+    // 2. sessions that edited a file this one also edited - the strongest
+    //    signal that two sessions are about the same work, and one no other
+    //    session viewer has, since it comes from the provenance link.
+    if out.len() < limit {
+        let sql = format!(
+            "SELECT DISTINCT f.session_id, f.tool, f.path, f.project, f.title, f.started,
+                    f.msg_count, f.kind, {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}
+             FROM touched a
+             JOIN touched b ON a.path = b.path AND b.session_id != a.session_id
+             JOIN files f ON f.session_id = b.session_id
+             WHERE a.session_id = ?1 AND f.kind = 'main'
+             ORDER BY f.started DESC LIMIT 50"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![target.session_id], map_row)?;
+        for row in rows {
+            let row = row?;
+            if seen.insert(row.session_id.clone()) {
+                out.push(row);
+                if out.len() >= limit {
+                    break;
+                }
+            }
+        }
+    }
+
+    // 3. sessions that share a tag with the target (explicit wiki links).
     if out.len() < limit && !target_tags.is_empty() {
         let placeholders = target_tags
             .iter()
@@ -636,6 +732,8 @@ pub struct Stats {
     pub projects: i64,
     pub tags: i64,
     pub summarized: i64,
+    /// Distinct files linked to at least one session (provenance coverage).
+    pub files: i64,
 }
 
 pub fn stats(conn: &Connection) -> Result<Stats> {
@@ -667,5 +765,6 @@ pub fn stats(conn: &Connection) -> Result<Stats> {
         )?,
         tags: one("SELECT count(DISTINCT tag) FROM tags")?,
         summarized: one("SELECT count(*) FROM summaries")?,
+        files: one("SELECT count(DISTINCT path) FROM touched")?,
     })
 }

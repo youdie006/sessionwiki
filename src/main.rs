@@ -129,13 +129,23 @@ enum Command {
         /// Note text; omit to print the existing note
         text: Option<String>,
     },
-    /// Find sessions related to one (shared project and vocabulary)
+    /// Find sessions related to one (shared project, files, and tags)
     Related {
         /// Session id (prefix is enough)
         id: String,
         /// Max related sessions to show
         #[arg(short = 'n', long, default_value_t = 10)]
         limit: usize,
+    },
+    /// List the files a session edited or created
+    Files {
+        /// Session id (prefix is enough), from list/search output
+        id: String,
+    },
+    /// Trace a file back to the AI sessions that edited it (newest first)
+    Trace {
+        /// File path as it appears in your editor (e.g. src/auth.rs)
+        path: String,
     },
     /// List projects with session counts (a page per project)
     Projects,
@@ -199,6 +209,8 @@ fn main() {
         Command::Tag { id, add, remove } => commands::tag(&id, &add, &remove),
         Command::Note { id, text } => commands::note(&id, text.as_deref()),
         Command::Related { id, limit } => commands::related(&id, limit),
+        Command::Files { id } => commands::files(&id),
+        Command::Trace { path } => commands::trace(&path),
         Command::Projects => commands::projects(),
         Command::Stats => commands::stats(),
     };

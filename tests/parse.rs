@@ -42,10 +42,20 @@ fn claude_main_session() {
     assert!(!s.subagent);
 
     // A malformed line and the isMeta:true boilerplate user turn are dropped;
-    // tool_use and tool_result both become Tool messages.
+    // tool_use (Bash, two Edits, a Write) and tool_result all become Tool
+    // messages.
     assert_eq!(
         roles(&s),
-        ["user", "assistant", "tool", "tool", "assistant"]
+        [
+            "user",
+            "assistant",
+            "tool",
+            "tool",
+            "tool",
+            "tool",
+            "tool",
+            "assistant"
+        ]
     );
 
     // The dropped boilerplate must not leak into any message.
@@ -57,6 +67,16 @@ fn claude_main_session() {
     // First user prompt and final assistant message survive intact.
     assert!(s.messages[0].text.contains("Preflight requests"));
     assert!(s.messages.iter().any(|m| m.text.contains("14 tests pass")));
+
+    // Provenance: Edit/Write file_path is extracted, the repeated edit to
+    // mod.rs is de-duplicated, and the read-only Bash call contributes nothing.
+    assert_eq!(
+        s.touched,
+        [
+            "/home/dev/proj-a/src/middleware/mod.rs",
+            "/home/dev/proj-a/tests/cors_preflight.rs"
+        ]
+    );
 
     assert_eq!(
         s.started.map(|t| t.to_rfc3339()),
@@ -86,12 +106,12 @@ fn codex_session_with_schema_variants() {
     assert_eq!(s.project, "/home/dev/api-server");
     assert_eq!(s.title, "Write property-based tests for the rate limiter.");
 
-    // environment_context boilerplate dropped; function_call kept as Tool;
-    // function_call_output and reasoning dropped; both response_item and
-    // event_msg message shapes are parsed.
+    // environment_context boilerplate dropped; both function_calls (the shell
+    // test run and the apply_patch) kept as Tool; function_call_output and
+    // reasoning dropped; both response_item and event_msg message shapes parse.
     assert_eq!(
         roles(&s),
-        ["user", "tool", "assistant", "user", "assistant"]
+        ["user", "tool", "tool", "assistant", "user", "assistant"]
     );
     assert!(s
         .messages
@@ -99,6 +119,13 @@ fn codex_session_with_schema_variants() {
         .all(|m| !m.text.contains("environment_context")));
     assert!(s.messages.iter().all(|m| !m.text.contains("cases passed"))); // function_call_output excluded
     assert!(s.messages.iter().any(|m| m.text.contains("2.1M ops/sec")));
+
+    // Provenance: apply_patch file headers (Update File / Add File) are pulled
+    // from the call arguments even though the patch is double-JSON-escaped.
+    assert_eq!(
+        s.touched,
+        ["src/rate_limiter.rs", "tests/rate_limiter_props.rs"]
+    );
 }
 
 #[test]

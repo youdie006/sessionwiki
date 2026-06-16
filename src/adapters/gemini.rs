@@ -106,6 +106,9 @@ impl Adapter for Gemini {
             title,
             subagent: false,
             messages,
+            // Gemini CLI chat logs do not record structured file edits, so
+            // there is nothing to link to the codebase here.
+            touched: Vec::new(),
         })
     }
 }
