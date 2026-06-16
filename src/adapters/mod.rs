@@ -90,3 +90,16 @@ pub(crate) fn parse_ts(s: &str) -> Option<DateTime<Utc>> {
         .ok()
         .map(|t| t.with_timezone(&Utc))
 }
+
+/// Tidy the list of files a session touched: trim, drop empties and obvious
+/// non-paths, and de-duplicate while preserving first-seen order. A session
+/// edits the same file many times; the link cares only that it did.
+pub(crate) fn dedup_paths(paths: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    paths
+        .into_iter()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty() && !p.contains('\n') && p.len() <= 4096)
+        .filter(|p| seen.insert(p.clone()))
+        .collect()
+}

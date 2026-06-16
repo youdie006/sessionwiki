@@ -1,4 +1,4 @@
-use super::{parse_ts, title_from_messages, Adapter};
+use super::{dedup_paths, parse_ts, title_from_messages, Adapter};
 use crate::model::{Message, Role, Session};
 use crate::util::{short_id, truncate};
 use anyhow::{Context, Result};
@@ -44,6 +44,7 @@ impl Adapter for Codex {
         let reader = BufReader::new(file);
 
         let mut messages: Vec<Message> = Vec::new();
+        let mut touched: Vec<String> = Vec::new();
         let mut cwd: Option<String> = None;
         let mut started = None;
         let mut ended = None;
@@ -104,6 +105,11 @@ impl Adapter for Codex {
                                 .pointer("/payload/arguments")
                                 .and_then(Value::as_str)
                                 .unwrap_or("");
+                            // Codex applies edits via an apply_patch envelope,
+                            // whether the call is named apply_patch or a shell
+                            // wrapping it. Scan the full args for the file
+                            // markers before the message text is truncated.
+                            collect_patched_paths(args, &mut touched);
                             let text = format!("{name} {}", truncate(args, 300));
                             push(&mut messages, Role::Tool, &text, ts);
                         }
@@ -144,7 +150,35 @@ impl Adapter for Codex {
             title,
             subagent: false,
             messages,
+            touched: dedup_paths(touched),
         })
+    }
+}
+
+/// Extract the files an apply_patch touched from the raw call arguments. The
+/// patch format names each file on a header line - `*** Add File: path`,
+/// `*** Update File: path`, `*** Delete File: path`, `*** Move to: path` -
+/// regardless of whether the call arrives as a dedicated apply_patch function
+/// or a shell command wrapping a heredoc. Newlines may be JSON-escaped (\\n)
+/// when the patch is embedded in an arguments string, so handle both.
+fn collect_patched_paths(args: &str, out: &mut Vec<String>) {
+    const MARKERS: [&str; 4] = [
+        "*** Add File: ",
+        "*** Update File: ",
+        "*** Delete File: ",
+        "*** Move to: ",
+    ];
+    let normalized = args.replace("\\n", "\n");
+    for line in normalized.lines() {
+        let line = line.trim();
+        for m in MARKERS {
+            if let Some(rest) = line.strip_prefix(m) {
+                let path = rest.trim().trim_matches('"');
+                if !path.is_empty() {
+                    out.push(path.to_string());
+                }
+            }
+        }
     }
 }
 

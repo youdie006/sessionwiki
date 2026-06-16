@@ -1,4 +1,4 @@
-use super::{parse_ts, title_from_messages, Adapter};
+use super::{dedup_paths, parse_ts, title_from_messages, Adapter};
 use crate::model::{Message, Role, Session};
 use crate::util::{short_id, truncate};
 use anyhow::{Context, Result};
@@ -44,6 +44,7 @@ impl Adapter for ClaudeCode {
         let reader = BufReader::new(file);
 
         let mut messages: Vec<Message> = Vec::new();
+        let mut touched: Vec<String> = Vec::new();
         let mut cwd: Option<String> = None;
         let mut summary: Option<String> = None;
         let mut started = None;
@@ -129,6 +130,9 @@ impl Adapter for ClaudeCode {
                             }
                             Some("tool_use") => {
                                 let name = b.get("name").and_then(Value::as_str).unwrap_or("?");
+                                if let Some(p) = edited_path(name, b.get("input")) {
+                                    touched.push(p);
+                                }
                                 let input =
                                     b.get("input").map(|i| i.to_string()).unwrap_or_default();
                                 let text = format!("{name} {}", truncate(&input, 300));
@@ -164,8 +168,32 @@ impl Adapter for ClaudeCode {
             title,
             subagent,
             messages,
+            touched: dedup_paths(touched),
         })
     }
+}
+
+/// Pull the file a Claude Code edit tool acted on from its `input`. Only the
+/// tools that write to disk count; reads, searches and shell commands do not
+/// establish authorship. The field name varies by tool (`file_path`,
+/// `notebook_path`, or the generic `path`).
+fn edited_path(name: &str, input: Option<&Value>) -> Option<String> {
+    let writes = matches!(
+        name,
+        "Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "str_replace_based_edit_tool"
+    );
+    if !writes {
+        return None;
+    }
+    let input = input?;
+    for key in ["file_path", "notebook_path", "path"] {
+        if let Some(p) = input.get(key).and_then(Value::as_str) {
+            if !p.is_empty() {
+                return Some(p.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn push(

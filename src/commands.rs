@@ -226,6 +226,22 @@ pub fn show(id: &str, full: bool, json: bool, outline: bool) -> Result<()> {
     if let Some(note) = index::note_for(&conn, &row.session_id)? {
         println!("{} {}", dim("note:"), note);
     }
+    let files = index::files_for(&conn, &row.session_id)?;
+    if !files.is_empty() {
+        let shown = files.len().min(8);
+        let more = files.len() - shown;
+        let list = files[..shown]
+            .iter()
+            .map(|f| project_label(f))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let suffix = if more > 0 {
+            format!(" (+{more} more)")
+        } else {
+            String::new()
+        };
+        println!("{} {}{}", dim("touched:"), list, dim(&suffix));
+    }
     println!();
 
     for m in &session.messages {
@@ -629,6 +645,70 @@ pub fn related(id: &str, limit: usize) -> Result<()> {
     Ok(())
 }
 
+/// Files a session edited or created (its side of the provenance link).
+pub fn files(id: &str) -> Result<()> {
+    let conn = index::open()?;
+    let row = resolve_one(&conn, id)?;
+    let files = index::files_for(&conn, &row.session_id)?;
+    println!(
+        "{}",
+        dim(&format!("files touched by: {}", truncate(&row.title, 70)))
+    );
+    if files.is_empty() {
+        println!(
+            "{}",
+            dim("No file edits recorded (Gemini chats, or a read-only session).")
+        );
+        return Ok(());
+    }
+    for f in files {
+        println!("  {f}");
+    }
+    Ok(())
+}
+
+/// Reverse lookup: which AI sessions touched a file, newest first. This is the
+/// provenance link read from the code side - trace a file back to the
+/// conversations that edited it, across every tool, with no setup or hooks.
+/// It reports sessions that *touched* the file, not line-level authorship: a
+/// later edit may have replaced the code, so this points you at the relevant
+/// conversations rather than claiming any line came from one.
+pub fn trace(path: &str) -> Result<()> {
+    let mut conn = index::open()?;
+    index::sync(&mut conn, None)?;
+    let hits = index::sessions_for_file(&conn, path, 20)?;
+    if hits.is_empty() {
+        println!(
+            "No session touched a file matching \"{path}\".\n{}",
+            dim("Pass a path as it appears in the editor, e.g. src/auth.rs")
+        );
+        return Ok(());
+    }
+    println!(
+        "{}",
+        dim(&format!(
+            "{} session(s) touched \"{path}\", newest first:",
+            hits.len()
+        ))
+    );
+    for (r, matched) in hits {
+        let when = r
+            .started
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| t.with_timezone(&chrono::Utc));
+        println!(
+            "{} {} {} {}",
+            yellow(&r.session_id),
+            cyan(&r.tool),
+            dim(&fmt_date(when)),
+            truncate(&r.title, 64),
+        );
+        println!("  {}", dim(&matched));
+    }
+    Ok(())
+}
+
 pub fn projects() -> Result<()> {
     let conn = index::open()?;
     let rows = index::projects(&conn)?;
@@ -667,8 +747,8 @@ pub fn stats() -> Result<()> {
     println!(
         "{}",
         bold(&format!(
-            "{} sessions · {} messages · {} projects · {} tags · {} summarized",
-            s.total_sessions, s.total_messages, s.projects, s.tags, s.summarized
+            "{} sessions · {} messages · {} projects · {} files · {} tags · {} summarized",
+            s.total_sessions, s.total_messages, s.projects, s.files, s.tags, s.summarized
         ))
     );
     println!();

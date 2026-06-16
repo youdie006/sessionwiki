@@ -40,6 +40,10 @@ pub struct Session {
     /// True for subagent transcripts spawned inside a parent session.
     pub subagent: bool,
     pub messages: Vec<Message>,
+    /// Files the session edited or created, extracted from its tool calls
+    /// (Claude's Edit/Write, Codex's apply_patch). This is the link between a
+    /// session and the code it produced - the basis for `files` and `blame`.
+    pub touched: Vec<String>,
 }
 
 /// One discovered session store on disk (for `scan`).

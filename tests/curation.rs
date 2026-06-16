@@ -43,10 +43,19 @@ fn fresh_index() -> Connection {
     std::env::set_var("SESSIONWIKI_DATA", &dir);
     let conn = index::open().unwrap();
     conn.execute_batch(
-        "DELETE FROM files; DELETE FROM messages; DELETE FROM tags; DELETE FROM notes;",
+        "DELETE FROM files; DELETE FROM messages; DELETE FROM tags;
+         DELETE FROM notes; DELETE FROM touched;",
     )
     .unwrap();
     conn
+}
+
+fn touch(conn: &Connection, id: &str, path: &str) {
+    conn.execute(
+        "INSERT OR IGNORE INTO touched(session_id, path) VALUES (?1, ?2)",
+        params![id, path],
+    )
+    .unwrap();
 }
 
 #[test]
@@ -156,6 +165,75 @@ fn related_prefers_same_project_then_shared_tags() {
         "shared-tag session should now be related"
     );
     assert!(!ids.contains(&"p1"), "a session is never related to itself");
+}
+
+#[test]
+fn provenance_files_trace_and_shared_file_relatedness() {
+    let _g = LOCK.lock().unwrap();
+    let conn = fresh_index();
+    // Two sessions in different projects both edit the same file (e.g. a
+    // shared lib); a third edits something else.
+    seed(
+        &conn,
+        "f1",
+        "claude-code",
+        "/proj/api",
+        "add auth guard",
+        "2026-06-10T10:00:00+00:00",
+    );
+    seed(
+        &conn,
+        "f2",
+        "codex",
+        "/proj/web",
+        "reuse auth helper",
+        "2026-06-11T10:00:00+00:00",
+    );
+    seed(
+        &conn,
+        "f3",
+        "codex",
+        "/proj/web",
+        "unrelated",
+        "2026-06-09T10:00:00+00:00",
+    );
+    touch(&conn, "f1", "/home/me/proj/src/auth.rs");
+    touch(&conn, "f1", "/home/me/proj/src/lib.rs");
+    touch(&conn, "f2", "/home/me/proj/src/auth.rs");
+    touch(&conn, "f3", "/home/me/proj/src/other.rs");
+
+    // files_for: a session's own edits, order preserved.
+    assert_eq!(
+        index::files_for(&conn, "f1").unwrap(),
+        ["/home/me/proj/src/auth.rs", "/home/me/proj/src/lib.rs"]
+    );
+
+    // trace by suffix: a relative path finds the absolute stored path, both
+    // sessions that touched it, newest first (f2 then f1).
+    let hits = index::sessions_for_file(&conn, "src/auth.rs", 10).unwrap();
+    let ids: Vec<&str> = hits.iter().map(|(r, _)| r.session_id.as_str()).collect();
+    assert_eq!(ids, ["f2", "f1"]);
+    assert_eq!(hits[0].1, "/home/me/proj/src/auth.rs"); // matched path reported
+                                                        // a file only one session touched
+    let one = index::sessions_for_file(&conn, "src/other.rs", 10).unwrap();
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].0.session_id, "f3");
+
+    // related now links across projects via the shared file: f2 is related to
+    // f1 even though they are in different projects and share no tag.
+    let rel = index::related(&conn, "f1", 10).unwrap();
+    let ids: Vec<&str> = rel.iter().map(|r| r.session_id.as_str()).collect();
+    assert!(
+        ids.contains(&"f2"),
+        "session editing the same file should be related across projects"
+    );
+    assert!(
+        !ids.contains(&"f3"),
+        "session touching only other files should not be related"
+    );
+
+    // stats counts distinct linked files (auth.rs, lib.rs, other.rs = 3).
+    assert_eq!(index::stats(&conn).unwrap().files, 3);
 }
 
 #[test]
