@@ -13,7 +13,7 @@
 
 <a href="README.md"><img src="https://img.shields.io/badge/English-eceae3?style=for-the-badge&labelColor=eceae3&color=6e6b62" alt="English"></a>&nbsp;<img src="https://img.shields.io/badge/%ED%95%9C%EA%B5%AD%EC%96%B4-3b5bd6?style=for-the-badge" alt="한국어 (현재)">
 
-<img src="docs/demo-cli.gif" width="760" alt="터미널 녹화: sessionwiki scan이 세 툴에 걸친 47GB 세션을 보여주고, search가 과거 대화를 키워드로 찾고, resume이 원래 툴에서 다시 엽니다">
+<img src="docs/demo-cli.webp" width="760" alt="터미널 녹화: sessionwiki scan이 세 툴에 걸친 47GB 세션을 보여주고, search가 과거 대화를 키워드로 찾고, resume이 원래 툴에서 다시 엽니다">
 
 </div>
 
@@ -35,7 +35,7 @@ gemini                50     1.2 MB  2026-04-02   2026-06-10    ~/.gemini/tmp
 
 읽는 게 더 편하면 웹 UI도 있습니다 &mdash; `sessionwiki web`:
 
-<img src="docs/demo-web.gif" width="900" alt="sessionwiki 웹 UI: 툴을 가로지른 검색, 요약·태그·노트·resume 명령이 달린 트랜스크립트, 관련 세션, 태그 필터, 라이트/다크 테마, 4개국어 UI">
+<img src="docs/demo-web.webp" width="900" alt="sessionwiki 웹 UI: 툴을 가로지른 검색, 요약·태그·노트·resume 명령이 달린 트랜스크립트, 관련 세션, 태그 필터, 라이트/다크 테마, 4개국어 UI">
 
 ## 무엇을 할 수 있나
 

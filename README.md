@@ -20,7 +20,7 @@
 <a href="#how-it-works">How it works</a> &middot;
 <a href="#adding-an-adapter">Add your tool</a>
 
-<img src="docs/demo-cli.gif" width="780" alt="Terminal recording: sessionwiki scans 47 GB of sessions across three tools, searches every message at once, jumps to related sessions, tags them, and resumes one in its original tool">
+<img src="docs/demo-cli.webp" width="780" alt="Terminal recording: sessionwiki scans 47 GB of sessions across three tools, searches every message at once, jumps to related sessions, tags them, and resumes one in its original tool">
 
 </div>
 
@@ -52,7 +52,7 @@ That is one real machine. Run it on yours &mdash; the number is usually a surpri
 
 And a web UI when you would rather read than grep &mdash; `sessionwiki web`:
 
-<img src="docs/demo-web.gif" width="900" alt="The sessionwiki web UI: search across tools, an open transcript with summary, tags, a note and a resume command, related sessions, tag filtering, light and dark themes, and a four-language UI">
+<img src="docs/demo-web.webp" width="900" alt="The sessionwiki web UI: search across tools, an open transcript with summary, tags, a note and a resume command, related sessions, tag filtering, light and dark themes, and a four-language UI">
 
 ## Install
 
