@@ -294,6 +294,24 @@
     white-space: pre-wrap;
   }
 
+  .doc-head .files { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .doc-head .files .lbl {
+    font-size: 11px; font-weight: 640; letter-spacing: .05em; text-transform: uppercase;
+    color: var(--ink-3); margin-right: 2px;
+  }
+  .filechip {
+    font-size: 11.5px;
+    font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    color: var(--ink-2);
+    background: var(--bg-sunken);
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 2px 8px;
+    cursor: pointer;
+  }
+  .filechip:hover { border-color: var(--accent); color: var(--ink); }
+  .filechip.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
   .doc { max-width: 800px; margin: 0 auto; padding: 26px 36px 90px; }
 
   .seealso {
@@ -509,6 +527,7 @@ const I18N = {
     clickToCopy: "Click to copy",
     outline: (n) => `Outline · ${n} turns`,
     seeAlso: "See also", filtering: "filtering", filterByTag: "filter by tag",
+    filesLabel: "Files", tracedBy: (f) => `Sessions that touched ${f}`,
     hint: "read-only view · refresh: sessionwiki list",
     themeDark: "Dark", themeLight: "Light",
     stats: (s, t, b) => `${s} sessions · ${t} tools · ${b}`,
@@ -532,6 +551,7 @@ const I18N = {
     clickToCopy: "클릭하여 복사",
     outline: (n) => `목차 · 질문 ${n}개`,
     seeAlso: "관련 세션", filtering: "필터", filterByTag: "태그로 필터",
+    filesLabel: "파일", tracedBy: (f) => `${f} 를 편집한 세션`,
     hint: "읽기 전용 · 갱신: sessionwiki list",
     themeDark: "다크", themeLight: "라이트",
     stats: (s, t, b) => `세션 ${s} · 툴 ${t} · ${b}`,
@@ -555,6 +575,7 @@ const I18N = {
     clickToCopy: "クリックでコピー",
     outline: (n) => `目次 · ${n}ターン`,
     seeAlso: "関連セッション", filtering: "フィルタ", filterByTag: "タグで絞り込み",
+    filesLabel: "ファイル", tracedBy: (f) => `${f} を編集したセッション`,
     hint: "読み取り専用 · 更新: sessionwiki list",
     themeDark: "ダーク", themeLight: "ライト",
     stats: (s, t, b) => `セッション ${s} · ツール ${t} · ${b}`,
@@ -578,6 +599,7 @@ const I18N = {
     clickToCopy: "点击复制",
     outline: (n) => `大纲 · ${n}轮`,
     seeAlso: "相关会话", filtering: "筛选", filterByTag: "按标签筛选",
+    filesLabel: "文件", tracedBy: (f) => `编辑过 ${f} 的会话`,
     hint: "只读视图 · 刷新: sessionwiki list",
     themeDark: "深色", themeLight: "浅色",
     stats: (s, t, b) => `${s} 个会话 · ${t} 个工具 · ${b}`,
@@ -812,6 +834,18 @@ async function openSession(id) {
     }
     head.appendChild(row);
   }
+  if (s.touched && s.touched.length) {
+    const row = el("div", "files");
+    row.appendChild(el("span", "lbl", L.filesLabel));
+    for (const p of s.touched) {
+      const base = p.split("/").pop() || p;
+      const chip = el("span", "filechip", base);
+      chip.title = p;
+      chip.onclick = () => showTrace(p, chip);
+      row.appendChild(chip);
+    }
+    head.appendChild(row);
+  }
   if (s.note) {
     head.appendChild(el("div", "note", s.note));
   }
@@ -880,7 +914,7 @@ async function openSession(id) {
     anchors[mi] = wrap;
   }
 
-  // See also: related sessions (same project + shared tags).
+  // See also: related sessions (same project + shared files + shared tags).
   const seealso = el("div", "seealso");
   doc.appendChild(seealso);
   jget("/api/related/" + encodeURIComponent(s.id || id)).then((rel) => {
@@ -894,6 +928,25 @@ async function openSession(id) {
       seealso.appendChild(a);
     }
   }).catch(() => {});
+
+  // Reverse provenance: clicking a touched file lists the sessions that
+  // touched it (across tools and projects) in the see-also panel.
+  function showTrace(path, chip) {
+    document.querySelectorAll(".filechip.on").forEach((c) => c.classList.remove("on"));
+    chip.classList.add("on");
+    const base = path.split("/").pop() || path;
+    jget("/api/trace?path=" + encodeURIComponent(path)).then((hits) => {
+      seealso.replaceChildren(el("h3", "", L.tracedBy(base)));
+      for (const r of (hits || [])) {
+        const a = el("div", "rel");
+        a.appendChild(el("div", "t", r.title || L.untitled));
+        a.appendChild(el("div", "m", `${r.tool} · ${fmtDate(r.started)} · ${L.msgs(r.msgs)}`));
+        a.onclick = () => openSession(r.id);
+        seealso.appendChild(a);
+      }
+      seealso.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }).catch(() => {});
+  }
 
   $("main").replaceChildren(head, doc);
   $("main").scrollTop = 0;

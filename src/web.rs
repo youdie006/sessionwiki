@@ -33,6 +33,7 @@ pub fn serve(port: u16, no_open: bool, sync: bool) -> Result<()> {
             "/api/stats" => api_stats(&conn),
             "/api/sessions" => api_sessions(&conn, query),
             "/api/search" => api_search(&conn, query),
+            "/api/trace" => api_trace(&conn, query),
             "/api/projects" => api_projects(&conn),
             p if p.starts_with("/api/related/") => {
                 api_related(&conn, p.trim_start_matches("/api/related/"))
@@ -146,6 +147,24 @@ fn api_search(conn: &Connection, query: &str) -> Result<Boxed> {
             let mut v = row_json(&h.row);
             v["snippet"] = json!(h.snippet);
             v["role"] = json!(h.role);
+            v
+        })
+        .collect::<Vec<_>>()))
+}
+
+/// Reverse provenance lookup: sessions that touched a file. Each result
+/// carries the matched stored path, so the UI can show what it resolved to.
+fn api_trace(conn: &Connection, query: &str) -> Result<Boxed> {
+    let path = param(query, "path").unwrap_or_default();
+    if path.is_empty() {
+        return json_response(json!([]));
+    }
+    let hits = index::sessions_for_file(conn, &path, 50)?;
+    json_response(json!(hits
+        .iter()
+        .map(|(r, matched)| {
+            let mut v = row_json(r);
+            v["matched"] = json!(matched);
             v
         })
         .collect::<Vec<_>>()))
