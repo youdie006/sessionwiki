@@ -1,6 +1,9 @@
 <div align="center">
 
-<img src="docs/banner-ko.png" alt="sessionwiki — 지금까지의 모든 AI 코딩 세션을 모은 위키: 검색·연결·이어가기. Claude Code, Codex, Gemini CLI. 100% 로컬.">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/banner-ko-dark.png">
+  <img src="docs/banner-ko.png" alt="sessionwiki — 지금까지의 모든 AI 코딩 세션을 모은 위키: 검색·연결·이어가기. Claude Code, Codex, Gemini CLI. 100% 로컬.">
+</picture>
 
 <a href="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml"><img src="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT 라이선스"></a>

@@ -63,35 +63,53 @@ def captioned(path, text):
 
 
 def main():
-    frames, holds = [], []
+    scenes, holds = [], []
     for i in range(1, 8):
         p = os.path.join(SRC, f"wf{i:02d}.png")
         if not os.path.exists(p):
             raise SystemExit(f"missing {p}")
-        frames.append(captioned(p, CAPTIONS[i - 1]))
+        scenes.append(captioned(p, CAPTIONS[i - 1]))
         holds.append(HOLDS[i - 1])
 
-    # A UI tour is a sequence of static scenes, so the GIF only needs one frame
-    # per scene shown with its own delay - not a constant-framerate expansion.
-    # That keeps it to 7 stored frames (small) while each gets its own 256-color
-    # palette via per-frame quantization (crisp, and the light<->dark switch is
-    # not forced to share one washed-out palette). A continuous zoom is
-    # deliberately omitted: on dense UI it blurs text and, by making every frame
-    # unique, would explode the file. The scene cuts carry the motion.
-    scale = 0.82
-    w, h = frames[0].size
-    size = (round(w * scale), round(h * scale))
-    pal_frames = [
-        f.resize(size, Image.LANCZOS).quantize(colors=256, method=Image.MEDIANCUT, dither=Image.Dither.NONE)
-        for f in frames
-    ]
+    # Each scene gets a gentle Ken Burns push (alternating in/out) with an
+    # ease-in-out curve so the motion reads as natural rather than mechanical -
+    # the easing principle from the motion-craft skill, applied to a raster
+    # zoom. Rendered in PIL by cropping a smoothly shrinking/growing centered
+    # window and resizing back, so text stays crisp; per-frame quantization
+    # keeps the light<->dark switch from sharing a washed-out palette. Modest
+    # fps and downscale keep the file small despite every frame being unique.
+    fps = 10
+    scale = 0.6
+    zmax = 0.042  # gentle push
+    w, h = scenes[0].size
+    out_size = (round(w * scale), round(h * scale))
+
+    def smoothstep(t):
+        return t * t * (3 - 2 * t)
+
+    frames, durations = [], []
+    for idx, (scene, hold_ms) in enumerate(zip(scenes, holds)):
+        n = max(2, round(hold_ms / 1000 * fps))
+        push_in = idx % 2 == 0  # alternate: in, out, in, ...
+        for k in range(n):
+            e = smoothstep(k / (n - 1))
+            frac = (e if push_in else 1 - e) * zmax  # 0..zmax along the ease
+            z = 1.0 + frac
+            cw, ch = w / z, h / z
+            x0, y0 = (w - cw) / 2, (h - ch) / 2
+            crop = scene.crop((round(x0), round(y0), round(x0 + cw), round(y0 + ch)))
+            frame = crop.resize(out_size, Image.LANCZOS).quantize(
+                colors=256, method=Image.MEDIANCUT, dither=Image.Dither.NONE
+            )
+            frames.append(frame)
+            durations.append(round(1000 / fps))
 
     out = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "docs", "demo-web.gif"))
-    pal_frames[0].save(
-        out, save_all=True, append_images=pal_frames[1:],
-        duration=holds, loop=0, disposal=2, optimize=True,
+    frames[0].save(
+        out, save_all=True, append_images=frames[1:],
+        duration=durations, loop=0, disposal=2, optimize=True,
     )
-    secs = sum(holds) / 1000
+    secs = sum(durations) / 1000
     print(f"wrote {out} ({os.path.getsize(out)/1024:.0f} KB, {len(frames)} frames, ~{secs:.1f}s)")
 
 

@@ -1,6 +1,9 @@
 <div align="center">
 
-<img src="docs/banner.png" alt="sessionwiki — a wiki of every AI coding session you've ever had: searchable, linkable, resumable. Claude Code, Codex, Gemini CLI. 100% local.">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.png">
+  <img src="docs/banner.png" alt="sessionwiki — a wiki of every AI coding session you've ever had: searchable, linkable, resumable. Claude Code, Codex, Gemini CLI. 100% local.">
+</picture>
 
 <a href="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml"><img src="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>

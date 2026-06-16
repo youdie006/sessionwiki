@@ -104,11 +104,11 @@ claude_session(
 
 claude_session(
     "-home-demo-projects-mobile-app", "/home/demo/projects/mobile-app",
-    "JWT 토큰 만료 처리 버그 수정",
-    [("user", "앱이 백그라운드에 오래 있다가 돌아오면 JWT 토큰이 만료돼서 API 호출이 전부 401로 떨어져. 자동 갱신 로직 좀 봐줘."),
-     ("assistant", "토큰 갱신이 앱 포그라운드 전환 이벤트에만 걸려 있고, 만료 5분 전 선제 갱신이 없네요. 인터셉터에서 401을 받으면 refresh token으로 한 번 재시도하고, 그래도 실패하면 로그인 화면으로 보내는 구조로 고치겠습니다."),
+    "Fix JWT expiry handling after the app is backgrounded",
+    [("user", "When the app sits in the background a while, the JWT expires and every API call comes back 401. The auto-refresh logic needs a look."),
+     ("assistant", "Refresh was only wired to the foreground event, with no pre-emptive renewal. I'll renew 5 minutes before expiry, retry once with the refresh token on a 401, and fall back to the login screen if that fails too."),
      ("Bash", "npm test -- auth.interceptor"),
-     ("assistant", "수정 완료했습니다. 만료 5분 전 선제 갱신 + 401 1회 재시도 + refresh 실패 시 세션 정리까지 테스트 통과합니다.")],
+     ("assistant", "Done: pre-emptive renewal, a single 401 retry, and session cleanup on refresh failure all pass.")],
     10, 9)
 
 claude_session(
