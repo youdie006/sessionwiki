@@ -5,14 +5,14 @@ The keyframes (wf1..wf7) are 1440x900 screenshots of `sessionwiki web` driven
 through a short product tour: home, search, an open transcript (tags/note/
 resume), related sessions, tag filter, dark theme, language menu.
 
-Each scene zooms to an EXACT element region measured from the live DOM with
-getBoundingClientRect (see FOCUS below, in screenshot pixels) - so the camera
-lands on the search box, the transcript header, the see-also panel, the tag bar
-and the language popup, never on dead space. The move between scenes is a fixed
-short cubic ease-in-out at a high frame rate, then the camera holds dead still
-for reading - a clean screencast push, not a drifting Ken Burns. The caption is
-a fixed bar below the (zoomed) UI so the focus can reach a corner without
-cropping the narration.
+Motion model: every scene is a clean *push-in*. The camera cuts to the whole
+frame of a scene (you see the full UI), then glides in - zoom and pan together,
+decelerating (ease-out) into a still hold on the exact element the scene is
+about. Focus regions are measured from the live DOM with getBoundingClientRect
+(see FOCUS, in screenshot pixels). There is deliberately NO panning *between*
+two zoomed scenes (that read as a stutter); each scene resets to the full frame
+and dives in, so every transition is the same natural push the eye expects. The
+caption is a fixed bar below the (zoomed) UI.
 
     # 1. capture wf1.png .. wf7.png with the playwright tour (DPR 1, 1440x900)
     # 2. python3 scripts/make_web_gif.py <dir-with-wfNN.png>
@@ -36,10 +36,10 @@ CAPTIONS = [
     "Light and dark",
     "UI in English / 한국어 / 日本語 / 中文",
 ]
-HOLDS = [1500, 2000, 2200, 1900, 1800, 1500, 2000]  # ms the camera sits still
+HOLDS = [1500, 2000, 2200, 1900, 1800, 1500, 2100]  # ms the camera sits still
 
 # Exact focal region per scene as (x, y, w, h) in screenshot pixels, measured
-# from the live DOM. None = establishing shot (no zoom, whole frame).
+# from the live DOM. None = establishing shot (whole frame, no push).
 FOCUS = [
     None,                     # 1 home
     (0, 73, 347, 411),        # 2 search box + top results (left column)
@@ -52,8 +52,8 @@ FOCUS = [
 
 PAD = 70          # breathing room added around each focal rect, px
 ZMAX = 1.9        # cap zoom so upscaled crops stay sharp
-FPS = 50
-MOVE_MS = 680     # duration of the ease between two scenes
+FPS = 60
+PUSH_MS = 850     # duration of the push-in at the start of each scene
 
 BAR_H = 46
 BAR_BG = (24, 23, 28)
@@ -83,9 +83,9 @@ def cam_for(rect):
     return ((x + w / 2) / W, (y + h / 2) / H, z)
 
 
-def ease(t):
-    """Cubic ease-in-out on [0,1]."""
-    return 4 * t * t * t if t < 0.5 else 1 - (-2 * t + 2) ** 3 / 2
+def ease_out(t):
+    """Cubic ease-out: quick start, soft deceleration into the hold."""
+    return 1 - (1 - t) ** 3
 
 
 def caption_bar(width, text):
@@ -100,8 +100,7 @@ def caption_bar(width, text):
 
 
 def main():
-    cams = []
-    ui = []
+    ui, cams = [], []
     for i in range(1, 8):
         p = os.path.join(SRC, f"wf{i}.png")
         if not os.path.exists(p):
@@ -125,26 +124,24 @@ def main():
         canvas.paste(crop.resize((uw, uh), Image.LANCZOS), (0, 0))
         return canvas
 
-    move_n = max(2, round(MOVE_MS / 1000 * FPS))
+    push_n = max(2, round(PUSH_MS / 1000 * FPS))
+    wide = (0.5, 0.5, 1.0)
     frames, captions = [], []
 
-    for idx, (img, cam) in enumerate(zip(ui, cams)):
-        # ease from the previous scene's camera into this one (skip on scene 1).
-        # The content swaps to this scene up front; the camera then glides from
-        # the old framing to the new focus over the new screenshot - a clean
-        # screencast push, no mid-move content cut.
-        if idx > 0:
-            prev = cams[idx - 1]
-            for f in range(1, move_n + 1):
-                e = ease(f / move_n)
-                c = tuple(prev[d] + (cam[d] - prev[d]) * e for d in range(3))
-                frames.append(render(img, c))
-                captions.append(CAPTIONS[idx])
-        # hold dead still
+    for idx, (img, target) in enumerate(zip(ui, cams)):
+        cap = CAPTIONS[idx]
+        # Cut to the whole frame of this scene, then push in to its focus
+        # (zoom + pan together), decelerating. Wide scenes have target == wide,
+        # so the push is a no-op and the scene is a still establishing shot.
+        for f in range(1, push_n + 1):
+            e = ease_out(f / push_n)
+            c = tuple(wide[d] + (target[d] - wide[d]) * e for d in range(3))
+            frames.append(render(img, c))
+            captions.append(cap)
         hold_n = max(2, round(HOLDS[idx] / 1000 * FPS))
         for _ in range(hold_n):
-            frames.append(render(img, cam))
-            captions.append(CAPTIONS[idx])
+            frames.append(render(img, target))
+            captions.append(cap)
 
     for fr, cap in zip(frames, captions):
         fr.paste(caption_bar(uw, cap), (0, uh))
