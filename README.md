@@ -229,11 +229,12 @@ read-only. See the FAQ above.
 There are good tools that browse one agent's history &mdash; a Claude Code
 session viewer, a Codex log reader. sessionwiki is deliberately the layer above
 them: one index across **every** tool, so you search without first remembering
-which agent you used; a CLI and a local web UI rather than one or the other;
-and `resume` / `brief` so finding a session is a step toward continuing the
-work, not just reading it. If you only ever use one tool, a dedicated viewer
-may be all you need. If your history is scattered across three, that scatter is
-the problem this solves.
+which agent you used; a CLI **and** a local web UI rather than one or the other;
+cross-platform (Linux, macOS, Windows) rather than a single-OS app; and
+`resume` / `brief` so finding a session is a step toward continuing the work,
+not just reading it. If you only ever use one tool on one OS, a dedicated
+viewer may be all you need. If your history is scattered across tools and
+machines, that scatter is the problem this solves.
 
 ## Adding an adapter
 
