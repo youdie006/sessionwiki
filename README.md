@@ -219,17 +219,23 @@ read-only. See the FAQ above.
 | Gemini CLI | `~/.gemini/tmp/*/chats/*.json` | supported |
 | Cursor, OpenCode, Aider, OpenClaw, ... | | planned &mdash; PRs welcome |
 
-### How this differs from a single-tool history viewer
+### Where sessionwiki fits
 
-There are good tools that browse one agent's history &mdash; a Claude Code
-session viewer, a Codex log reader. sessionwiki is deliberately the layer above
-them: one index across **every** tool, so you search without first remembering
-which agent you used; a CLI **and** a local web UI rather than one or the other;
-cross-platform (Linux, macOS, Windows) rather than a single-OS app; and
-`resume` / `brief` so finding a session is a step toward continuing the work,
-not just reading it. If you only ever use one tool on one OS, a dedicated
-viewer may be all you need. If your history is scattered across tools and
-machines, that scatter is the problem this solves.
+Browsing AI session history is an active space &mdash; there are native GUI apps
+and other multi-tool CLIs. sessionwiki makes three specific bets:
+
+- **Cross-platform, CLI _and_ web, one static binary.** It runs the same on
+  Linux, macOS, and Windows, over SSH, in a container &mdash; not a single-OS app.
+- **CJK search with zero setup.** The trigram index searches Korean, Japanese,
+  and Chinese (and partial words) out of the box, which most tools handle poorly.
+- **A curation layer, not just search.** Tags, notes, `related`, `brief`, and
+  `stats` &mdash; [session engineering](#session-engineering), so the archive stays
+  navigable as it grows.
+
+Honest tradeoff: if you want the widest tool coverage *today*, sessionwiki
+supports three (Claude Code, Codex, Gemini CLI) and is growing &mdash; adapters are
+the #1 thing [PRs](#adding-an-adapter) help with. If you mainly use those tools,
+care about CJK, or want one binary that works everywhere, this is built for you.
 
 ## Adding an adapter
 

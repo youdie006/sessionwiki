@@ -152,6 +152,16 @@ flowchart LR
 | Gemini CLI | `~/.gemini/tmp/*/chats/*.json` | 지원 |
 | Cursor, OpenCode, Aider, OpenClaw, ... | | 예정 &mdash; PR 환영 |
 
+### sessionwiki의 자리
+
+AI 세션 기록 탐색은 이미 활발한 분야입니다 &mdash; 네이티브 GUI 앱도, 다른 멀티툴 CLI도 있습니다. sessionwiki는 세 가지에 베팅합니다:
+
+- **크로스플랫폼, CLI _와_ 웹, 단일 정적 바이너리.** Linux·macOS·Windows에서, SSH 너머에서, 컨테이너 안에서 똑같이 돕니다 &mdash; 단일 OS 앱이 아닙니다.
+- **무설정 CJK 검색.** trigram 색인이 한국어·일본어·중국어(그리고 부분 단어)를 기본으로 검색합니다 &mdash; 대부분의 도구가 약한 지점입니다.
+- **검색을 넘는 큐레이션 레이어.** 태그·노트·`related`·`brief`·`stats` &mdash; [세션 엔지니어링](#세션-엔지니어링), 아카이브가 커져도 탐색 가능하게.
+
+솔직한 트레이드오프: *지금 당장* 가장 넓은 도구 커버리지가 필요하다면 sessionwiki는 3개(Claude Code·Codex·Gemini CLI)만 지원하며 늘려가는 중입니다 &mdash; 어댑터가 [PR](#어댑터-추가하기)로 가장 도움받는 부분입니다. 이 세 도구를 주로 쓰거나, CJK가 중요하거나, 어디서나 도는 단일 바이너리를 원한다면 이 도구가 맞습니다.
+
 ## 어댑터 추가하기
 
 당신의 에이전트가 세션을 디스크에 남긴다면, sessionwiki에 들어올 자격이 있습니다. 어댑터는 메서드 4개를 구현한 작은 Rust 파일 하나입니다:
