@@ -1,14 +1,6 @@
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg">
-  <img src="docs/logo-light.svg" width="84" alt="sessionwiki 로고: 지구본과 위치 핀">
-</picture>
-
-# sessionwiki
-
-지금까지의 모든 AI 코딩 세션을 모은 위키 &mdash; 검색하고, 연결하고, 이어서 작업하세요.<br>
-Claude Code &middot; Codex CLI &middot; Gemini CLI &nbsp;&middot;&nbsp; 명령 하나, 100% 로컬
+<img src="docs/banner-ko.png" alt="sessionwiki — 지금까지의 모든 AI 코딩 세션을 모은 위키: 검색·연결·이어가기. Claude Code, Codex, Gemini CLI. 100% 로컬.">
 
 <a href="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml"><img src="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT 라이선스"></a>

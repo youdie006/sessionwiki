@@ -1,14 +1,6 @@
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg">
-  <img src="docs/logo-light.svg" width="84" alt="sessionwiki logo: a globe with a location pin">
-</picture>
-
-# sessionwiki
-
-A wiki of every AI coding session you've ever had &mdash; searchable, linkable, resumable.<br>
-Claude Code &middot; Codex CLI &middot; Gemini CLI &nbsp;&middot;&nbsp; one command, 100% local
+<img src="docs/banner.png" alt="sessionwiki — a wiki of every AI coding session you've ever had: searchable, linkable, resumable. Claude Code, Codex, Gemini CLI. 100% local.">
 
 <a href="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml"><img src="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
