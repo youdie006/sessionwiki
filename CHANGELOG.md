@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning once it reaches 1.0.
 
+## [Unreleased]
+
+### Added
+- `recall <query>`: one-shot recall — searches, lists the candidate matches, and
+  briefs the top one, collapsing the usual search -> pick id -> brief loop into a
+  single command (`--tool`/`--project`/`-n`/`--max-chars`/`--json`/`--no-sync`).
+- `sync [--tool]`: build or refresh the index on demand, so later queries can run
+  with `--no-sync`.
+- `--no-sync` on `search`/`list`/`recall`/`show`/`brief`/`resume`/`trace`: query
+  the already-built index without walking the stores — the fast path when the
+  index is kept warm (e.g. a cron running `sessionwiki sync`).
+
+### Changed
+- `show`/`brief`/`resume` resolve the id against the existing index first and only
+  sync (all tools) when it isn't found yet, so an already-indexed id no longer
+  triggers a full walk of every store (notably the large Codex store).
+
 ## [0.9.0] - 2026-06-17
 
 ### Added

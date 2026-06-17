@@ -89,9 +89,12 @@ pub fn list(
     tag: Option<&str>,
     all: bool,
     json: bool,
+    no_sync: bool,
 ) -> Result<()> {
     let mut conn = index::open()?;
-    index::sync(&mut conn, tool)?;
+    if !no_sync {
+        index::sync(&mut conn, tool)?;
+    }
     let rows = index::recent(&conn, limit, tool, project, tag, all)?;
     if json {
         println!("{}", serde_json::to_string(&rows)?);
@@ -145,13 +148,16 @@ pub fn search(
     tool: Option<&str>,
     project: Option<&str>,
     json: bool,
+    no_sync: bool,
 ) -> Result<()> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
         bail!("empty query");
     }
     let mut conn = index::open()?;
-    index::sync(&mut conn, tool)?;
+    if !no_sync {
+        index::sync(&mut conn, tool)?;
+    }
     // Trigram FTS needs >=3 chars; shorter terms (1-2 chars, including 2-syllable
     // Korean like 회사/검색 - the most common Korean word length - and 2-char
     // latin fragments) fall back to a LIKE scan. Counted on the NFC form so
@@ -221,10 +227,118 @@ pub fn search(
     Ok(())
 }
 
-pub fn show(id: &str, full: bool, json: bool, outline: bool) -> Result<()> {
+/// Recall in one step: search, list the candidates, and brief the top match.
+/// Collapses the usual search -> eyeball id -> brief loop into one command.
+pub fn recall(
+    query: &str,
+    limit: usize,
+    tool: Option<&str>,
+    project: Option<&str>,
+    max_chars: usize,
+    json: bool,
+    no_sync: bool,
+) -> Result<()> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        bail!("empty query");
+    }
     let mut conn = index::open()?;
-    index::sync(&mut conn, None)?;
-    let row = resolve_one(&conn, id)?;
+    if !no_sync {
+        index::sync(&mut conn, tool)?;
+    }
+    let hits = if crate::util::nfc(trimmed).chars().count() < 3 {
+        index::search_like(&conn, trimmed, limit, tool, project)?
+    } else {
+        index::search(&conn, trimmed, limit, tool, project)?
+    };
+    if hits.is_empty() {
+        if json {
+            let v = serde_json::json!({
+                "query": query, "top": serde_json::Value::Null, "candidates": []
+            });
+            println!("{}", serde_json::to_string(&v)?);
+        } else {
+            println!("No sessions about \"{query}\".");
+        }
+        return Ok(());
+    }
+
+    // The top hit is briefed; the rest are listed so a wrong #1 is easy to spot
+    // (ranking is lexical, not semantic).
+    let top = &hits[0];
+    let session = load_session(&conn, &top.row)?;
+    let markdown = brief_text(&session, max_chars, false);
+
+    if json {
+        let candidates: Vec<serde_json::Value> = hits
+            .iter()
+            .map(|h| {
+                let mut v = serde_json::to_value(&h.row).unwrap_or_else(|_| serde_json::json!({}));
+                let (_plain, marked) = clean_snippet(&h.snippet);
+                v["snippet_marked"] = serde_json::json!(marked);
+                v
+            })
+            .collect();
+        let v = serde_json::json!({
+            "query": query,
+            "top": {
+                "id": session.id,
+                "tool": session.tool,
+                "project": session.project,
+                "title": session.title,
+                "started": session.started.map(|t| t.to_rfc3339()),
+                "markdown": markdown,
+            },
+            "candidates": candidates,
+        });
+        println!("{}", serde_json::to_string(&v)?);
+        return Ok(());
+    }
+
+    println!(
+        "{}",
+        dim(&format!("{} match(es) for \"{}\":", hits.len(), query))
+    );
+    for h in &hits {
+        let when = h
+            .row
+            .started
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| t.with_timezone(&chrono::Utc));
+        println!(
+            "  {} {} {} {}",
+            yellow(&h.row.session_id),
+            cyan(&h.row.tool),
+            dim(&fmt_date(when)),
+            truncate(&h.row.title, 50),
+        );
+    }
+    println!();
+    println!(
+        "{}",
+        dim(&format!(
+            "recalled {} - {}",
+            &session.id,
+            truncate(&session.title, 60)
+        ))
+    );
+    print!("{markdown}");
+    Ok(())
+}
+
+/// Build or refresh the index now, so later queries can pass `--no-sync`.
+pub fn sync_cmd(tool: Option<&str>) -> Result<()> {
+    let mut conn = index::open()?;
+    index::sync(&mut conn, tool)?;
+    let n: i64 = conn.query_row("SELECT count(*) FROM files", [], |r| r.get(0))?;
+    println!("{}", dim(&format!("index synced - {n} sessions indexed")));
+    Ok(())
+}
+
+pub fn show(id: &str, full: bool, json: bool, outline: bool, no_sync: bool) -> Result<()> {
+    let mut conn = index::open()?;
+    let row = resolve_lazy(&mut conn, id, no_sync)?;
 
     let session = load_session(&conn, &row)?;
 
@@ -420,6 +534,25 @@ fn load_session(
 }
 
 /// Resolve an id prefix to exactly one indexed session.
+/// Resolve a session id, syncing once only if it is not already indexed. This
+/// skips the all-tools walk for ids already in the index (the common case: you
+/// got the id from search/list/recall). With `no_sync` it never syncs - it just
+/// surfaces the not-found error if the id is not indexed yet.
+fn resolve_lazy(
+    conn: &mut rusqlite::Connection,
+    id: &str,
+    no_sync: bool,
+) -> Result<index::SessionRow> {
+    if let Ok(row) = resolve_one(conn, id) {
+        return Ok(row);
+    }
+    if no_sync {
+        return resolve_one(conn, id);
+    }
+    index::sync(conn, None)?;
+    resolve_one(conn, id)
+}
+
 fn resolve_one(conn: &rusqlite::Connection, id: &str) -> Result<index::SessionRow> {
     let matches = index::resolve(conn, id)?;
     match matches.len() {
@@ -435,10 +568,9 @@ fn resolve_one(conn: &rusqlite::Connection, id: &str) -> Result<index::SessionRo
     }
 }
 
-pub fn resume_cmd(id: &str, print_only: bool) -> Result<()> {
+pub fn resume_cmd(id: &str, print_only: bool, no_sync: bool) -> Result<()> {
     let mut conn = index::open()?;
-    index::sync(&mut conn, None)?;
-    let row = resolve_one(&conn, id)?;
+    let row = resolve_lazy(&mut conn, id, no_sync)?;
 
     let path = std::path::Path::new(&row.path);
     if !path.exists() {
@@ -502,10 +634,15 @@ pub fn resume_cmd(id: &str, print_only: bool) -> Result<()> {
     }
 }
 
-pub fn brief(id: &str, max_chars: usize, include_tools: bool, json: bool) -> Result<()> {
+pub fn brief(
+    id: &str,
+    max_chars: usize,
+    include_tools: bool,
+    json: bool,
+    no_sync: bool,
+) -> Result<()> {
     let mut conn = index::open()?;
-    index::sync(&mut conn, None)?;
-    let row = resolve_one(&conn, id)?;
+    let row = resolve_lazy(&mut conn, id, no_sync)?;
     let session = load_session(&conn, &row)?;
     let markdown = brief_text(&session, max_chars, include_tools);
     if json {
@@ -844,9 +981,11 @@ pub fn files(id: &str, json: bool) -> Result<()> {
 /// It reports sessions that *touched* the file, not line-level authorship: a
 /// later edit may have replaced the code, so this points you at the relevant
 /// conversations rather than claiming any line came from one.
-pub fn trace(path: &str, json: bool) -> Result<()> {
+pub fn trace(path: &str, json: bool, no_sync: bool) -> Result<()> {
     let mut conn = index::open()?;
-    index::sync(&mut conn, None)?;
+    if !no_sync {
+        index::sync(&mut conn, None)?;
+    }
     let hits = index::sessions_for_file(&conn, path, 20)?;
     if json {
         let out: Vec<serde_json::Value> = hits
