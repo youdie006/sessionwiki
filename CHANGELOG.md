@@ -20,6 +20,15 @@ semantic versioning once it reaches 1.0.
 - `show`/`brief`/`resume` resolve the id against the existing index first and only
   sync (all tools) when it isn't found yet, so an already-indexed id no longer
   triggers a full walk of every store (notably the large Codex store).
+- Harness labeling (the oh-my-* tags from 0.9.0) is now detected from the
+  filesystem only - the `.omc`/`.omo` orchestration directory in a session's
+  project - dropping the transcript-text markers. Those markers were the tools'
+  own source/doc literals, so a session that merely *discusses* a harness (e.g.
+  while building OSS) was mislabeled as run by it; the filesystem signal cannot
+  be confused that way. oh-my-codex leaves no directory and is no longer tagged.
+- A tag filter (`list --tag`, web) now includes subagent transcripts, and `list`
+  marks them `[subagent]`, so a tag carried only by a subagent is no longer shown
+  in the tag cloud yet hidden from the listing.
 
 ## [0.9.0] - 2026-06-17
 

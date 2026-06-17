@@ -127,8 +127,13 @@ pub fn list(
         } else {
             String::new()
         };
+        let sub = if r.kind == "sub" {
+            format!("  {}", dim("[subagent]"))
+        } else {
+            String::new()
+        };
         println!(
-            "{:<13} {:<12} {:<10} {:>5}  {:<24} {}{}{}",
+            "{:<13} {:<12} {:<10} {:>5}  {:<24} {}{}{}{}",
             yellow(&r.session_id),
             cyan(&r.tool),
             rel_time(when),
@@ -137,6 +142,7 @@ pub fn list(
             truncate(&r.title, 60),
             tags,
             archived,
+            sub,
         );
     }
     Ok(())
