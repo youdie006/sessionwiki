@@ -187,6 +187,18 @@ it. This is the part a generation-time hook can't do: it works for the
 thousands of sessions that already exist, and for the ones the tool already
 deleted while you weren't looking.
 
+**It also runs the other way, as a way to reclaim disk.** Raw session stores
+get big &mdash; the 47 GB in the scan above is mostly Codex JSONL, and heavy
+users reach tens of GB. The index keeps only a distilled copy of each session
+(the conversation and its file links, minus the bulky tool-output noise), so it
+is far smaller than the originals &mdash; roughly 7&times; on that machine. Delete
+the old raw sessions you no longer want taking up space and `search`, `trace`,
+`brief`, and reading keep working, served from the index. The tradeoff is
+honest: an archived session is the distilled transcript, not the byte-exact
+original with its raw tool dumps &mdash; but that distilled conversation is
+exactly what you reach for when you are trying to get back to the one that
+solved something, not the gigabytes you were storing to get there.
+
 ## Pick up where you left off
 
 Finding an old session is half the point; the other half is continuing it.
