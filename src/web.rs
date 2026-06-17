@@ -133,14 +133,20 @@ fn api_related(conn: &Connection, id: &str) -> Result<Boxed> {
 
 fn api_search(conn: &Connection, query: &str) -> Result<Boxed> {
     let q = param(query, "q").unwrap_or_default();
-    if q.chars().count() < 3 {
+    let qt = q.trim();
+    if qt.is_empty() {
         return json_response(json!([]));
     }
     let tool = param(query, "tool");
     let limit = param(query, "limit")
         .and_then(|s| s.parse().ok())
         .unwrap_or(50);
-    let hits = index::search(conn, &q, limit, tool.as_deref(), None)?;
+    // <3 chars (incl. 2-syllable Korean) is below the trigram floor; LIKE-scan it.
+    let hits = if crate::util::nfc(qt).chars().count() < 3 {
+        index::search_like(conn, qt, limit, tool.as_deref(), None)?
+    } else {
+        index::search(conn, qt, limit, tool.as_deref(), None)?
+    };
     json_response(json!(hits
         .iter()
         .map(|h| {

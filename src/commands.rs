@@ -109,12 +109,21 @@ pub fn list(
 }
 
 pub fn search(query: &str, limit: usize, tool: Option<&str>, project: Option<&str>) -> Result<()> {
-    if query.chars().count() < 3 {
-        bail!("query must be at least 3 characters (trigram index)");
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        bail!("empty query");
     }
     let mut conn = index::open()?;
     index::sync(&mut conn, tool)?;
-    let hits = index::search(&conn, query, limit, tool, project)?;
+    // Trigram FTS needs >=3 chars; shorter terms (1-2 chars, including 2-syllable
+    // Korean like 회사/검색 - the most common Korean word length - and 2-char
+    // latin fragments) fall back to a LIKE scan. Counted on the NFC form so
+    // decomposed Korean counts by visible character, not by combining scalar.
+    let hits = if crate::util::nfc(trimmed).chars().count() < 3 {
+        index::search_like(&conn, trimmed, limit, tool, project)?
+    } else {
+        index::search(&conn, trimmed, limit, tool, project)?
+    };
     if hits.is_empty() {
         println!("No matches for \"{query}\".");
         return Ok(());
