@@ -56,7 +56,7 @@ And a web UI when you would rather read than grep &mdash; `sessionwiki web`:
 
 <img src="docs/demo-web.webp" width="820" alt="The sessionwiki web UI: real typing in the search, an open transcript with tags, a note and a resume command, file provenance, tag filtering, light and dark themes, and the UI switching to Korean">
 
-<sub>Real typing in the search, an open transcript with tags and a one-command resume, file provenance, dark mode, and the UI in Korean. <a href="docs/demo-web.mp4">&#9654; Smoother HD version (MP4)</a>.</sub>
+<sub>Real typing in the search, an open transcript with tags and a one-command resume, file provenance, tag filtering, and dark mode. <a href="docs/demo-web.mp4">&#9654; Smoother HD version (MP4)</a>.</sub>
 
 ## Install
 
