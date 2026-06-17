@@ -165,7 +165,7 @@ pub fn search(
         let out: Vec<serde_json::Value> = hits
             .iter()
             .map(|h| {
-                let mut v = serde_json::to_value(&h.row).expect("SessionRow serializes");
+                let mut v = serde_json::to_value(&h.row).unwrap_or_else(|_| serde_json::json!({}));
                 let (plain, marked) = clean_snippet(&h.snippet);
                 v["snippet"] = serde_json::json!(plain);
                 v["snippet_marked"] = serde_json::json!(marked);
@@ -852,7 +852,7 @@ pub fn trace(path: &str, json: bool) -> Result<()> {
         let out: Vec<serde_json::Value> = hits
             .iter()
             .map(|(r, matched)| {
-                let mut v = serde_json::to_value(r).expect("SessionRow serializes");
+                let mut v = serde_json::to_value(r).unwrap_or_else(|_| serde_json::json!({}));
                 v["matched"] = serde_json::json!(matched);
                 v
             })
