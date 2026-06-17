@@ -385,8 +385,12 @@ fn page_or_print(text: &str) -> Result<()> {
                 use std::io::Write;
                 let _ = sin.write_all(text.as_bytes()); // ignore broken pipe (quit pager)
             }
-            let _ = child.wait();
-            return Ok(());
+            // Only treat the pager as having handled the output if it ran. If
+            // the pager isn't installed (`sh -c "less ..."` exits non-zero), the
+            // output would otherwise be lost - fall through and print it.
+            if matches!(child.wait(), Ok(s) if s.success()) {
+                return Ok(());
+            }
         }
     }
     print!("{text}");
