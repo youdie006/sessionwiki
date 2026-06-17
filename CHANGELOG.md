@@ -6,6 +6,16 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Added
+- `migrate <id> <dir>`: copy a session so it can be resumed from a different
+  project directory. Each tool ties a session to a directory differently, so
+  migrate does the right thing per tool: Claude Code's resume is scoped to the
+  project folder, so the transcript is copied into the target's folder; Codex
+  resumes by id from any directory, so nothing is copied (it just prints the
+  command); Gemini copies the chat into the target project's store
+  (`~/.gemini/tmp/<sha256(dir)>/chats/`) and rewrites its `projectHash`. The
+  original session is never modified.
+
 ## [0.10.0] - 2026-06-17
 
 ### Added

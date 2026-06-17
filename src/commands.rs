@@ -355,6 +355,114 @@ pub fn sync_cmd(tool: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Copy a session into another project directory so it can be resumed there.
+/// Each tool keys sessions to a directory differently:
+///   claude-code: resume is scoped to `~/.claude/projects/<encoded-cwd>/`,
+///                so the transcript is copied into the target's folder.
+///   codex:       resumes by id from any directory - nothing to copy, just
+///                the command to run in the target.
+///   gemini:      chats live under `~/.gemini/tmp/<sha256(dir)>/chats/`, so the
+///                chat is copied there and its `projectHash` rewritten.
+/// The original is always left untouched.
+pub fn migrate_cmd(id: &str, target_dir: &str, no_sync: bool) -> Result<()> {
+    let mut conn = index::open()?;
+    let row = resolve_lazy(&mut conn, id, no_sync)?;
+
+    let target = std::fs::canonicalize(target_dir).with_context(|| {
+        format!("target directory not found: {target_dir} (it must exist - you resume by cd-ing into it)")
+    })?;
+    if !target.is_dir() {
+        bail!("not a directory: {}", target.display());
+    }
+    let target_str = target.to_string_lossy().to_string();
+    let src = std::path::PathBuf::from(&row.path);
+    let home = dirs::home_dir().context("could not find your home directory")?;
+
+    match row.tool.as_str() {
+        "claude-code" => {
+            if row.kind == "sub" {
+                bail!("this is a subagent transcript - migrate its parent session instead");
+            }
+            if !src.exists() {
+                bail!(
+                    "the session file is gone ({}) - nothing to copy; try: sessionwiki brief {id}",
+                    row.path
+                );
+            }
+            let dest_dir = home
+                .join(".claude")
+                .join("projects")
+                .join(crate::migrate::claude_project_folder(&target_str));
+            let dest = dest_dir.join(src.file_name().context("bad session path")?);
+            if dest.exists() {
+                bail!("already migrated: {} already exists", dest.display());
+            }
+            std::fs::create_dir_all(&dest_dir)?;
+            std::fs::copy(&src, &dest)?;
+            report_migrated(&row.path, &dest);
+            print_native_resume(&row.tool, &dest, &target);
+        }
+        "codex" => {
+            // Codex stores sessions by date, not by project, and `codex resume
+            // <id>` finds them from any directory - so there is nothing to copy.
+            println!(
+                "{}",
+                green("Codex sessions resume by id from any directory - no copy needed.")
+            );
+            print_native_resume(&row.tool, &src, &target);
+        }
+        "gemini" => {
+            if !src.exists() {
+                bail!("the chat file is gone ({})", row.path);
+            }
+            let hash = crate::migrate::gemini_project_hash(&target_str);
+            let dest_dir = home.join(".gemini").join("tmp").join(&hash).join("chats");
+            let dest = dest_dir.join(src.file_name().context("bad chat path")?);
+            if dest.exists() {
+                bail!("already migrated: {} already exists", dest.display());
+            }
+            // Rewrite the chat's own projectHash so Gemini lists it under the
+            // target project; everything else is copied verbatim.
+            let raw = std::fs::read_to_string(&src)?;
+            let mut v: serde_json::Value =
+                serde_json::from_str(&raw).with_context(|| format!("parse {}", src.display()))?;
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("projectHash".into(), serde_json::Value::String(hash));
+            }
+            std::fs::create_dir_all(&dest_dir)?;
+            std::fs::write(&dest, serde_json::to_string(&v)?)?;
+            report_migrated(&row.path, &dest);
+            println!("resume it there (Gemini resume is interactive):");
+            println!("  {}", cyan(&format!("cd {} && gemini", target.display())));
+            println!("  {}", cyan("then run /chat resume and pick it"));
+        }
+        other => bail!(
+            "migrate does not support {other} sessions yet (works for claude-code, codex, gemini)"
+        ),
+    }
+    Ok(())
+}
+
+fn report_migrated(src: &str, dest: &std::path::Path) {
+    println!("{}", green("migrated (copied - the original is untouched)"));
+    println!("  {} {}", dim("from"), dim(src));
+    println!("  {}   {}", dim("to"), dest.display());
+    println!(
+        "{}",
+        dim("(the copy keeps the same id, so `sessionwiki show` will list both locations)")
+    );
+}
+
+fn print_native_resume(tool: &str, path: &std::path::Path, target: &std::path::Path) {
+    if let Some(info) = crate::resume::for_session(tool, path, &target.to_string_lossy()) {
+        println!("resume it there:");
+        println!(
+            "  {}",
+            cyan(&format!("cd {} && {}", target.display(), info.command_line()))
+        );
+    }
+}
+
 pub fn show(id: &str, full: bool, json: bool, outline: bool, no_sync: bool) -> Result<()> {
     let mut conn = index::open()?;
     let row = resolve_lazy(&mut conn, id, no_sync)?;

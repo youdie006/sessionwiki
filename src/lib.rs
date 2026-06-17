@@ -9,6 +9,7 @@
 pub mod adapters;
 pub mod commands;
 pub mod index;
+pub mod migrate;
 pub mod model;
 pub mod resume;
 pub mod util;

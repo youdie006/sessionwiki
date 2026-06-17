@@ -122,6 +122,16 @@ enum Command {
         #[arg(long)]
         no_sync: bool,
     },
+    /// Copy a session so it can be resumed from a different project directory
+    Migrate {
+        /// Session id (prefix is enough), from list/search output
+        id: String,
+        /// Target project directory to make the session resumable from
+        dir: String,
+        /// Skip the index sync; only sync if the id is not already indexed
+        #[arg(long)]
+        no_sync: bool,
+    },
     /// Generate and cache LLM synopses for sessions (uses your own LLM CLI)
     Summarize {
         /// Session id to summarize; omit to batch over recent sessions
@@ -292,6 +302,7 @@ fn main() {
             no_sync,
         } => commands::show(&id, full, json, outline, no_sync),
         Command::Resume { id, print, no_sync } => commands::resume_cmd(&id, print, no_sync),
+        Command::Migrate { id, dir, no_sync } => commands::migrate_cmd(&id, &dir, no_sync),
         Command::Summarize {
             id,
             recent,
