@@ -34,6 +34,9 @@ enum Command {
         /// Emit as a JSON array (agent-friendly, stable field names)
         #[arg(long)]
         json: bool,
+        /// Skip the index sync and query what is already indexed (pair with `sync`)
+        #[arg(long)]
+        no_sync: bool,
     },
     /// Full-text search across every session of every tool
     Search {
@@ -51,6 +54,32 @@ enum Command {
         /// Emit as a JSON array (agent-friendly, stable field names)
         #[arg(long)]
         json: bool,
+        /// Skip the index sync and query what is already indexed (pair with `sync`)
+        #[arg(long)]
+        no_sync: bool,
+    },
+    /// Recall past work in one step: search, then brief the top match
+    Recall {
+        /// What to recall - a topic, error text, or identifier (exact phrasing)
+        query: String,
+        /// How many candidate matches to list (the top one is briefed)
+        #[arg(short = 'n', long, default_value_t = 5)]
+        limit: usize,
+        /// Filter by tool (claude-code, codex, gemini)
+        #[arg(long)]
+        tool: Option<String>,
+        /// Filter by project path substring
+        #[arg(long)]
+        project: Option<String>,
+        /// Budget for the briefed top match
+        #[arg(long, default_value_t = 12000)]
+        max_chars: usize,
+        /// Emit a JSON object { query, top, candidates } instead
+        #[arg(long)]
+        json: bool,
+        /// Skip the index sync and query what is already indexed (pair with `sync`)
+        #[arg(long)]
+        no_sync: bool,
     },
     /// Browse and search sessions in a local web UI
     Web {
@@ -78,6 +107,9 @@ enum Command {
         /// Show a digest instead: every user turn plus how the session ended
         #[arg(long)]
         outline: bool,
+        /// Skip the index sync; only sync if the id is not already indexed
+        #[arg(long)]
+        no_sync: bool,
     },
     /// Reopen a session in its original tool (claude --resume / codex resume)
     Resume {
@@ -86,6 +118,9 @@ enum Command {
         /// Print the resume command instead of running it
         #[arg(long)]
         print: bool,
+        /// Skip the index sync; only sync if the id is not already indexed
+        #[arg(long)]
+        no_sync: bool,
     },
     /// Generate and cache LLM synopses for sessions (uses your own LLM CLI)
     Summarize {
@@ -119,6 +154,9 @@ enum Command {
         /// markdown } instead of raw markdown
         #[arg(long)]
         json: bool,
+        /// Skip the index sync; only sync if the id is not already indexed
+        #[arg(long)]
+        no_sync: bool,
     },
     /// Tag a session: `tag <id> <tag>...` adds, `--rm <tag>` removes (no id
     /// lists every tag in use). Tags are positional - there is no `add`
@@ -167,11 +205,20 @@ enum Command {
         /// Emit as a JSON array (agent-friendly, stable field names)
         #[arg(long)]
         json: bool,
+        /// Skip the index sync and query what is already indexed (pair with `sync`)
+        #[arg(long)]
+        no_sync: bool,
     },
     /// Permanently drop an archived (or any) session from the index
     Forget {
         /// Session id (prefix is enough), from list/search output
         id: String,
+    },
+    /// Build or refresh the index now, so later queries can use `--no-sync`
+    Sync {
+        /// Limit to one tool (claude-code, codex, gemini, opencode, ...)
+        #[arg(long)]
+        tool: Option<String>,
     },
     /// List projects with session counts (a page per project)
     Projects,
@@ -190,6 +237,7 @@ fn main() {
             tag,
             all,
             json,
+            no_sync,
         } => commands::list(
             limit,
             tool.as_deref(),
@@ -197,6 +245,7 @@ fn main() {
             tag.as_deref(),
             all,
             json,
+            no_sync,
         ),
         Command::Search {
             query,
@@ -204,7 +253,32 @@ fn main() {
             tool,
             project,
             json,
-        } => commands::search(&query, limit, tool.as_deref(), project.as_deref(), json),
+            no_sync,
+        } => commands::search(
+            &query,
+            limit,
+            tool.as_deref(),
+            project.as_deref(),
+            json,
+            no_sync,
+        ),
+        Command::Recall {
+            query,
+            limit,
+            tool,
+            project,
+            max_chars,
+            json,
+            no_sync,
+        } => commands::recall(
+            &query,
+            limit,
+            tool.as_deref(),
+            project.as_deref(),
+            max_chars,
+            json,
+            no_sync,
+        ),
         Command::Web {
             port,
             no_open,
@@ -215,8 +289,9 @@ fn main() {
             full,
             json,
             outline,
-        } => commands::show(&id, full, json, outline),
-        Command::Resume { id, print } => commands::resume_cmd(&id, print),
+            no_sync,
+        } => commands::show(&id, full, json, outline, no_sync),
+        Command::Resume { id, print, no_sync } => commands::resume_cmd(&id, print, no_sync),
         Command::Summarize {
             id,
             recent,
@@ -235,13 +310,19 @@ fn main() {
             max_chars,
             tools,
             json,
-        } => commands::brief(&id, max_chars, tools, json),
+            no_sync,
+        } => commands::brief(&id, max_chars, tools, json, no_sync),
         Command::Tag { id, add, remove } => commands::tag(&id, &add, &remove),
         Command::Note { id, text } => commands::note(&id, text.as_deref()),
         Command::Related { id, limit, json } => commands::related(&id, limit, json),
         Command::Files { id, json } => commands::files(&id, json),
-        Command::Trace { path, json } => commands::trace(&path, json),
+        Command::Trace {
+            path,
+            json,
+            no_sync,
+        } => commands::trace(&path, json, no_sync),
         Command::Forget { id } => commands::forget(&id),
+        Command::Sync { tool } => commands::sync_cmd(tool.as_deref()),
         Command::Projects => commands::projects(),
         Command::Stats => commands::stats(),
     };
