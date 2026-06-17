@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "sessionwiki",
+  "displayName": "sessionwiki session recall",
+  "version": "0.1.0",
+  "description": "Recall and reuse your past AI coding sessions as long-term memory. Searches the local sessionwiki index so the agent can find prior work, pull context, and trace which session wrote a file.",
+  "author": {
+    "name": "youdie006",
+    "url": "https://github.com/youdie006"
+  },
+  "homepage": "https://github.com/youdie006/sessionwiki",
+  "repository": "https://github.com/youdie006/sessionwiki",
+  "license": "MIT",
+  "keywords": ["memory", "sessions", "recall", "search", "context", "claude-code", "codex", "gemini-cli"]
+}

@@ -79,6 +79,21 @@ cargo install --git https://github.com/youdie006/sessionwiki
 
 Either way it is a single binary with no runtime dependencies.
 
+### Claude Code plugin (automatic session recall)
+
+Make Claude Code recall your past sessions automatically. Install the
+`sessionwiki` CLI first (above), then add the plugin from this repo:
+
+```console
+/plugin marketplace add youdie006/sessionwiki
+/plugin install sessionwiki@sessionwiki-marketplace
+```
+
+Now Claude pulls in prior work when you start a task, and `/sessionwiki:recall
+<topic>` searches your history on demand. The plugin shells out to the local
+`sessionwiki` binary &mdash; fully offline. If the binary isn't on `PATH`, the
+plugin degrades gracefully and Claude just works without recall.
+
 ## Quick start
 
 ```console

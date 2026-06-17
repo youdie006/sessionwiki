@@ -24,3 +24,16 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test --all
+      - name: Validate Claude Code plugin packaging
+        run: |
+          set -e
+          test -f .claude-plugin/marketplace.json
+          test -f plugin/.claude-plugin/plugin.json
+          test -f plugin/skills/session-recall/SKILL.md
+          test -f plugin/commands/recall.md
+          python3 -c "import json; m=json.load(open('.claude-plugin/marketplace.json')); assert m['plugins'][0]['name']=='sessionwiki' and m['plugins'][0]['source']=='./plugin'; p=json.load(open('plugin/.claude-plugin/plugin.json')); assert p['name']=='sessionwiki'"
+          grep -q '^description:' plugin/skills/session-recall/SKILL.md
+          grep -q '^description:' plugin/commands/recall.md
+          # components must live at the plugin root, not nested in .claude-plugin/
+          test ! -d plugin/.claude-plugin/skills
+          test ! -d plugin/.claude-plugin/commands
