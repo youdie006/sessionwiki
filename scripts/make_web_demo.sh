@@ -19,8 +19,8 @@ PORT=8810
 STORE=/tmp/sa-demo
 REC=/tmp/sw-rec
 DOCS="$ROOT/docs"
-PW="${PLAYWRIGHT_MODULE:-/home/dev/.npm/_npx/e41f203b7505f1fb/node_modules}"
-export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/home/dev/.cache/ms-playwright}"
+PW="${PLAYWRIGHT_MODULE:-$HOME/.npm/_npx/e41f203b7505f1fb/node_modules}"
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
 
 # 1. Demo store with curated tags/notes so the tour has something to show.
 python3 "$ROOT/scripts/demo_data.py" "$STORE" >/dev/null
