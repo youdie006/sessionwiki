@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-06-17
+
 ### Added
 - `recall <query>`: one-shot recall — searches, lists the candidate matches, and
   briefs the top one, collapsing the usual search -> pick id -> brief loop into a
@@ -17,9 +19,12 @@ semantic versioning once it reaches 1.0.
   index is kept warm (e.g. a cron running `sessionwiki sync`).
 
 ### Changed
-- `show`/`brief`/`resume` resolve the id against the existing index first and only
-  sync (all tools) when it isn't found yet, so an already-indexed id no longer
-  triggers a full walk of every store (notably the large Codex store).
+- `show`/`brief`/`resume`/`recall` resolve the id against the existing index first
+  and only sync (all tools) when it is genuinely unknown (no prefix match) - an
+  already-indexed id, including an *ambiguous* prefix, no longer triggers a full
+  walk of every store (notably the large Codex one). The tradeoff: a session that
+  has grown since the last sync is served at its last-synced length until the next
+  `sync`.
 - Harness labeling (the oh-my-* tags from 0.9.0) is now detected from the
   filesystem only - the `.omc`/`.omo` orchestration directory in a session's
   project - dropping the transcript-text markers. Those markers were the tools'
@@ -29,6 +34,13 @@ semantic versioning once it reaches 1.0.
 - A tag filter (`list --tag`, web) now includes subagent transcripts, and `list`
   marks them `[subagent]`, so a tag carried only by a subagent is no longer shown
   in the tag cloud yet hidden from the listing.
+
+### Fixed
+- `recall --json` includes the plain `snippet` next to `snippet_marked` in each
+  candidate, matching `search --json`; `recall`'s candidate list marks subagent
+  transcripts `[subagent]`.
+- `sync` reports the count of top-level live sessions (matching `stats`/`list`)
+  instead of every file row, which had included subagent transcripts.
 
 ## [0.9.0] - 2026-06-17
 
@@ -190,6 +202,7 @@ semantic versioning once it reaches 1.0.
   incremental SQLite FTS5 index. Adapters for Claude Code, Codex, and Gemini
   CLI. 100% local, no telemetry.
 
+[0.10.0]: https://github.com/youdie006/sessionwiki/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/youdie006/sessionwiki/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/youdie006/sessionwiki/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/youdie006/sessionwiki/compare/v0.6.0...v0.7.0
