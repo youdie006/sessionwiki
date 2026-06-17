@@ -22,6 +22,16 @@ semantic versioning once it reaches 1.0.
   `oh-my-codex` / `oh-my-openagent`, so `list --tag oh-my-claudecode` works. No
   new adapter required.
 
+### Changed
+- The OpenCode adapter now reads OpenCode's SQLite store
+  (`~/.local/share/opencode/opencode.db`, plus `opencode-<channel>.db` and
+  `OPENCODE_DB`), which has been the default since OpenCode v1.2.0 - the
+  previous JSON-only reader missed every session created on a current install.
+  The legacy `storage/**` JSON layout is still read on pre-1.2.0 installs. This
+  needed a small shared-store path in the indexer (one SQLite db holds many
+  sessions, so the file-per-session + mtime model did not fit); `scan` sizes the
+  db and re-indexes only sessions whose updated-time changed.
+
 ## [0.8.0] - 2026-06-17
 
 ### Added

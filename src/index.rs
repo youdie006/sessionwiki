@@ -278,6 +278,76 @@ struct ArchiveRow {
 
 /// Bring the index up to date with what is on disk. Only files whose
 /// (mtime, size) changed since the last run are re-parsed.
+/// Insert one parsed session into the cache tables (files, messages, msgs,
+/// touched) and tag it if an oh-my-* harness drove it. `key` is the stored
+/// path/identity, `mtime` the change-token, `size` the byte size (0 for
+/// shared-store sessions). Shared by the file-per-session and shared-store paths.
+fn index_one(
+    tx: &rusqlite::Transaction,
+    session: &crate::model::Session,
+    key: &str,
+    mtime: i64,
+    size: i64,
+) -> Result<()> {
+    delete_session_msgs(tx, &session.id)?;
+    tx.execute(
+        "DELETE FROM touched WHERE session_id = ?1",
+        params![session.id],
+    )?;
+    // A path that was archived (the tool deleted it, now it is back) is live
+    // again: this INSERT clears archived_at, and the durable copy is dropped.
+    tx.execute(
+        "DELETE FROM archive WHERE session_id = ?1",
+        params![session.id],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO files
+         (path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        params![
+            key,
+            mtime,
+            size,
+            session.id,
+            session.tool,
+            crate::util::nfc(&session.project),
+            session.title,
+            session.started.map(|t| t.to_rfc3339()),
+            session.ended.map(|t| t.to_rfc3339()),
+            session.messages.len() as i64,
+            if session.subagent { "sub" } else { "main" },
+        ],
+    )?;
+    // Contract: messages are inserted in transcript order within one
+    // transaction, so the autoincrement messages.id is a monotonic proxy for
+    // order (preview + the web transcript rely on it). Keep this sequential.
+    {
+        let mut ins_row =
+            tx.prepare_cached("INSERT INTO messages(session_id, role, text) VALUES (?1,?2,?3)")?;
+        let mut ins_fts = tx.prepare_cached("INSERT INTO msgs(rowid, text) VALUES (?1,?2)")?;
+        for m in &session.messages {
+            // Normalize once and reuse for the plain row and the external-content
+            // FTS row: they MUST be byte-identical or delete_session_msgs corrupts.
+            let text = crate::util::nfc(&m.text);
+            ins_row.execute(params![session.id, m.role.label(), text])?;
+            ins_fts.execute(params![tx.last_insert_rowid(), text])?;
+        }
+        let mut ins_touched =
+            tx.prepare_cached("INSERT OR IGNORE INTO touched(session_id, path) VALUES (?1,?2)")?;
+        for p in &session.touched {
+            ins_touched.execute(params![session.id, crate::util::nfc(p)])?;
+        }
+    }
+    // Tag sessions an oh-my-* harness drove (it wraps Claude Code / Codex /
+    // OpenCode) so they are filterable; recomputed on every reindex.
+    if matches!(session.tool, "claude-code" | "codex" | "opencode") {
+        if let Some(h) = crate::adapters::harness::detect(&session.messages, &session.project) {
+            add_tag(tx, &session.id, h)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
     let adapters: Vec<Box<dyn Adapter>> = match only_tool {
         Some(t) => adapters::by_name(t).into_iter().collect(),
@@ -301,6 +371,47 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
 
     let mut archived_total = 0usize;
     for adapter in &adapters {
+        // `store_present` tells "the tool pruned some sessions" (root exists,
+        // those gone) apart from "the whole store vanished" (uninstall,
+        // unmounted) - we must not mass-archive on the latter.
+        let tool = adapter.name();
+        let store_present = adapter.root().is_some_and(|r| r.exists());
+
+        // Shared store (e.g. OpenCode's SQLite db): enumerate sessions by key +
+        // change-token and re-parse only the changed ones, bypassing the
+        // file-per-session path. The token is stored in the `mtime` column
+        // (size 0), so the same change comparison works.
+        if let Some(store) = adapter.store() {
+            let mut seen: Vec<String> = Vec::with_capacity(store.keys.len());
+            let mut pending: Vec<String> = Vec::new();
+            for (key, token) in &store.keys {
+                if known.get(key) != Some(&(*token, 0)) {
+                    pending.push(key.clone());
+                }
+                seen.push(key.clone());
+            }
+            archived_total += archive_or_prune(conn, tool, &seen, store_present)?;
+
+            if !pending.is_empty() {
+                let token_of: HashMap<&str, i64> =
+                    store.keys.iter().map(|(k, t)| (k.as_str(), *t)).collect();
+                let total = pending.len();
+                let tx = conn.transaction()?;
+                for (i, key) in pending.iter().enumerate() {
+                    eprint!("\r[{tool}] indexing {}/{total}", i + 1);
+                    std::io::stderr().flush().ok();
+                    let Ok(session) = adapter.parse_key(key) else {
+                        continue;
+                    };
+                    let token = token_of.get(key.as_str()).copied().unwrap_or(0);
+                    index_one(&tx, &session, key, token, 0)?;
+                }
+                tx.commit()?;
+                eprintln!("\r[{tool}] indexed {total}/{total}    ");
+            }
+            continue;
+        }
+
         let files = adapter.discover();
         let mut seen: Vec<String> = Vec::with_capacity(files.len());
         let mut pending: Vec<(PathBuf, i64, i64)> = Vec::new();
@@ -321,13 +432,6 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
             seen.push(key);
         }
 
-        // Reconcile deletions: sessions the tool removed are archived (kept)
-        // rather than dropped, so search/trace/brief keep working for them.
-        // `store_present` tells "the tool pruned some sessions" (root exists,
-        // those files gone) apart from "the whole store vanished" (uninstall,
-        // unmounted) - we must not mass-archive on the latter.
-        let tool = adapter.name();
-        let store_present = adapter.root().is_some_and(|r| r.exists());
         archived_total += archive_or_prune(conn, tool, &seen, store_present)?;
 
         if pending.is_empty() {
@@ -345,67 +449,7 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
                 continue;
             };
             let key = path.to_string_lossy();
-            delete_session_msgs(&tx, &session.id)?;
-            tx.execute(
-                "DELETE FROM touched WHERE session_id = ?1",
-                params![session.id],
-            )?;
-            // If this path was previously archived (the tool deleted it, now
-            // it is back), it is live again: the INSERT below clears
-            // archived_at, and the durable copy is no longer needed.
-            tx.execute(
-                "DELETE FROM archive WHERE session_id = ?1",
-                params![session.id],
-            )?;
-            tx.execute(
-                "INSERT OR REPLACE INTO files
-                 (path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-                params![
-                    key,
-                    mtime,
-                    size,
-                    session.id,
-                    session.tool,
-                    crate::util::nfc(&session.project),
-                    session.title,
-                    session.started.map(|t| t.to_rfc3339()),
-                    session.ended.map(|t| t.to_rfc3339()),
-                    session.messages.len() as i64,
-                    if session.subagent { "sub" } else { "main" },
-                ],
-            )?;
-            // Contract: messages of a session are inserted in transcript order
-            // within one transaction, so the autoincrement `messages.id` is a
-            // monotonic proxy for message order. `preview` (last assistant
-            // message) and the web transcript rely on this. Keep the insert
-            // sequential and in order if you touch this loop.
-            let mut ins_row = tx
-                .prepare_cached("INSERT INTO messages(session_id, role, text) VALUES (?1,?2,?3)")?;
-            let mut ins_fts = tx.prepare_cached("INSERT INTO msgs(rowid, text) VALUES (?1,?2)")?;
-            for m in &session.messages {
-                // Normalize once and reuse for both the plain row and the
-                // external-content FTS row: they MUST be byte-identical or the
-                // 'delete' reconciliation in delete_session_msgs corrupts.
-                let text = crate::util::nfc(&m.text);
-                ins_row.execute(params![session.id, m.role.label(), text])?;
-                ins_fts.execute(params![tx.last_insert_rowid(), text])?;
-            }
-            let mut ins_touched = tx
-                .prepare_cached("INSERT OR IGNORE INTO touched(session_id, path) VALUES (?1,?2)")?;
-            for p in &session.touched {
-                ins_touched.execute(params![session.id, crate::util::nfc(p)])?;
-            }
-            // Tag sessions an "oh-my-*" harness drove (it wraps Claude Code,
-            // Codex, or OpenCode) so they are filterable; derived from the
-            // markers the harness injects, recomputed on every reindex.
-            if matches!(tool, "claude-code" | "codex" | "opencode") {
-                if let Some(h) =
-                    crate::adapters::harness::detect(&session.messages, &session.project)
-                {
-                    add_tag(&tx, &session.id, h)?;
-                }
-            }
+            index_one(&tx, &session, &key, mtime, size)?;
         }
         tx.commit()?;
         eprintln!("\r[{tool}] indexed {done}/{total}    ");
