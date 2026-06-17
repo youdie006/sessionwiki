@@ -2,16 +2,14 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.png">
-  <img src="docs/banner.png" alt="sessionwiki — a wiki of every AI coding session you've ever had: searchable, linkable, resumable. Claude Code, Codex, Gemini CLI, OpenCode. 100% local.">
+  <img src="docs/banner.png" alt="sessionwiki — every AI coding session you've ever had: searchable, linkable, resumable, across 9 AI coding tools. 100% local.">
 </picture>
 
 <a href="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml"><img src="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 <a href="https://github.com/youdie006/sessionwiki/releases"><img src="docs/release-badge.png" height="20" alt="Latest release v0.10.0"></a>
-<img src="https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-555" alt="Platforms: Linux, macOS, Windows">
-<a href="#adding-an-adapter"><img src="https://img.shields.io/badge/adapters-PRs%20welcome-2ea44f" alt="Adapter PRs welcome"></a>
 
-<img src="https://img.shields.io/badge/English-3b5bd6?style=for-the-badge" alt="English (current)">&nbsp;<a href="README.ko.md"><img src="https://img.shields.io/badge/%ED%95%9C%EA%B5%AD%EC%96%B4-eceae3?style=for-the-badge&labelColor=eceae3&color=6e6b62" alt="한국어"></a>
+<sub><b>English</b> &middot; <a href="README.ko.md">한국어</a></sub>
 
 <a href="#install"><img src="docs/nav/install.png" height="20" alt="Install"></a>
 <a href="#quick-start"><img src="docs/nav/quick-start.png" height="20" alt="Quick start"></a>
@@ -311,26 +309,36 @@ is a standalone agent with its own adapter.)
 
 ### Where sessionwiki fits
 
-Browsing AI session history is an active space &mdash; there are native GUI apps
-and other multi-tool CLIs. sessionwiki makes a few specific bets:
+Browsing AI session history is an active space. There are GUI viewers (e.g.
+[Claudia](https://github.com/getAsterisk/claudia)), history extensions (e.g.
+[SpecStory](https://specstory.com)), and single-tool log renderers (e.g.
+[claude-code-log](https://github.com/daaain/claude-code-log)). They are good at
+what they do. sessionwiki makes one different bet:
 
-- **It links sessions to the code they produced.** [`trace <file>`](#trace-code-back-to-its-session)
-  goes from a file to the conversations that edited it &mdash; retroactively,
-  with no hooks, over sessions that already exist. Other tools show you the
-  conversation; this connects it to your codebase.
-- **Cross-platform, CLI _and_ web, one static binary.** It runs the same on
-  Linux, macOS, and Windows, over SSH, in a container &mdash; not a single-OS app.
-- **CJK search with zero setup.** The trigram index searches Korean, Japanese,
-  and Chinese (and partial words) out of the box, which most tools handle poorly.
-- **A curation layer, not just search.** Tags, notes, `related`, `brief`, and
-  `stats` &mdash; [session engineering](#session-engineering), so the archive stays
+**It links the conversation to the code it produced.**
+[`trace <file>`](#trace-code-back-to-its-session) goes from a file to the AI
+conversations that edited it &mdash; retroactively, with no hooks, across every
+tool at once, and [even for sessions your tool has since deleted](#nothing-gets-lost-archive-mode).
+A generation-time hook can't do this for the thousands of sessions you already
+have; a single-tool viewer can't do it across tools. That is the one thing here
+that nothing else does.
+
+The rest is table stakes, done carefully:
+
+- **Cross-platform, CLI _and_ web, one static binary** &mdash; the same on Linux,
+  macOS, and Windows, over SSH, in a container; not a single-OS GUI.
+- **CJK search with zero setup** &mdash; the trigram index searches Korean,
+  Japanese, and Chinese (and partial words) out of the box.
+- **A curation layer, not just search** &mdash; tags, notes, `related`, `brief`,
+  and `stats`: [session engineering](#session-engineering), so the archive stays
   navigable as it grows.
 
-Honest tradeoff: if you want the widest tool coverage *today*, sessionwiki
-supports nine (Claude Code, Codex, Gemini CLI, OpenCode, Cline, Roo Code, Kilo Code,
-gajae-code, Continue) and is growing &mdash; adapters are
-the #1 thing [PRs](#adding-an-adapter) help with. If you mainly use those tools,
-care about CJK, or want one binary that works everywhere, this is built for you.
+Honest tradeoff: a dedicated single-tool viewer will have more tool-specific
+polish than sessionwiki's adapter for that one tool. sessionwiki's bet is the
+cross-tool spine plus code provenance, over the nine tools it supports today
+(Claude Code, Codex, Gemini CLI, OpenCode, Cline, Roo Code, Kilo Code,
+gajae-code, Continue) and growing &mdash; adapters are the #1 thing
+[PRs](#adding-an-adapter) help with.
 
 ## Adding an adapter
 

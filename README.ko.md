@@ -2,16 +2,14 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/banner-ko-dark.png">
-  <img src="docs/banner-ko.png" alt="sessionwiki — 지금까지의 모든 AI 코딩 세션을 모은 위키: 검색·연결·이어가기. Claude Code, Codex, Gemini CLI, OpenCode. 100% 로컬.">
+  <img src="docs/banner-ko.png" alt="sessionwiki — 지금까지의 모든 AI 코딩 세션: 검색·연결·이어가기, AI 코딩 도구 9종. 100% 로컬.">
 </picture>
 
 <a href="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml"><img src="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT 라이선스"></a>
 <a href="https://github.com/youdie006/sessionwiki/releases"><img src="docs/release-badge.png" height="20" alt="최신 릴리스 v0.10.0"></a>
-<img src="https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-555" alt="플랫폼: Linux, macOS, Windows">
-<a href="README.md#adding-an-adapter"><img src="https://img.shields.io/badge/adapters-PRs%20welcome-2ea44f" alt="어댑터 PR 환영"></a>
 
-<a href="README.md"><img src="https://img.shields.io/badge/English-eceae3?style=for-the-badge&labelColor=eceae3&color=6e6b62" alt="English"></a>&nbsp;<img src="https://img.shields.io/badge/%ED%95%9C%EA%B5%AD%EC%96%B4-3b5bd6?style=for-the-badge" alt="한국어 (현재)">
+<sub><a href="README.md">English</a> &middot; <b>한국어</b></sub>
 
 <img src="docs/demo-cli.webp" width="760" alt="터미널 녹화: sessionwiki scan이 세 툴에 걸친 47GB 세션을 보여주고, search가 과거 대화를 키워드로 찾고, resume이 원래 툴에서 다시 엽니다">
 
