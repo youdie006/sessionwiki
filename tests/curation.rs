@@ -109,6 +109,27 @@ fn tags_round_trip_and_counts() {
     assert!(!counts.iter().any(|(t, _)| t == "bug"));
 }
 
+// A comma inside a tag would corrupt the JSON/web `tags` array (it splits on
+// ','), and an empty tag would emit [""]. Both are rejected at the boundary.
+#[test]
+fn add_tag_rejects_comma_and_empty() {
+    let _g = LOCK.lock().unwrap();
+    let conn = fresh_index();
+    seed(&conn, "t1", "codex", "/p", "x", "2026-06-10T10:00:00+00:00");
+    assert!(
+        index::add_tag(&conn, "t1", "foo,bar").is_err(),
+        "comma rejected"
+    );
+    assert!(
+        index::add_tag(&conn, "t1", "   ").is_err(),
+        "empty rejected"
+    );
+    index::add_tag(&conn, "t1", "Perf").unwrap(); // valid still works (case-folded)
+    let counts = index::tag_counts(&conn).unwrap();
+    assert!(counts.iter().any(|(t, n)| t == "perf" && *n == 1));
+    assert!(!counts.iter().any(|(t, _)| t.contains(',') || t.is_empty()));
+}
+
 #[test]
 fn notes_round_trip() {
     let _g = LOCK.lock().unwrap();

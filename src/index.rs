@@ -908,9 +908,16 @@ pub fn unsummarized(
 // --- curation (the editable wiki layer) ---
 
 pub fn add_tag(conn: &Connection, session_id: &str, tag: &str) -> Result<()> {
+    // Tags are joined with ',' at read time and the JSON/web contract splits on
+    // it, so a comma inside a tag would corrupt the array into two elements.
+    // Reject it (and the empty tag) at the input boundary.
+    let tag = tag.trim().to_lowercase();
+    if tag.is_empty() || tag.contains(',') {
+        anyhow::bail!("a tag must be non-empty and contain no commas");
+    }
     conn.execute(
         "INSERT OR IGNORE INTO tags(session_id, tag) VALUES (?1, ?2)",
-        params![session_id, tag.trim().to_lowercase()],
+        params![session_id, tag],
     )?;
     Ok(())
 }
