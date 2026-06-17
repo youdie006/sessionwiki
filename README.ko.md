@@ -229,7 +229,7 @@ pub trait Adapter {
 
 ## 로드맵
 
-- 더 많은 어댑터 &mdash; Cursor, Cline, OpenCode, Aider 등. PR로 가장 도움받는 부분([어댑터 추가하기](#어댑터-추가하기))
+- 더 많은 어댑터 &mdash; Cursor, Cline, Continue, Aider 등. PR로 가장 도움받는 부분([어댑터 추가하기](#어댑터-추가하기))
 - 더 정밀한 프로비넌스 &mdash; 세션의 편집을 파일의 git 히스토리와 대조해 `trace`가 주변 커밋·줄 범위까지 좁히도록
 - `sync` &mdash; 여러 머신의 인덱스 병합
 - `clean` &mdash; 거대한 옛 세션 저장소의 디스크 안전 회수

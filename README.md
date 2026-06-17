@@ -13,13 +13,13 @@
 
 <img src="https://img.shields.io/badge/English-3b5bd6?style=for-the-badge" alt="English (current)">&nbsp;<a href="README.ko.md"><img src="https://img.shields.io/badge/%ED%95%9C%EA%B5%AD%EC%96%B4-eceae3?style=for-the-badge&labelColor=eceae3&color=6e6b62" alt="한국어"></a>
 
-<a href="#install"><img src="https://img.shields.io/badge/Install-3b5bd6?style=flat-square" alt="Install"></a>
-<a href="#quick-start"><img src="https://img.shields.io/badge/Quick%20start-3b5bd6?style=flat-square" alt="Quick start"></a>
-<a href="#commands"><img src="https://img.shields.io/badge/Commands-3b5bd6?style=flat-square" alt="Commands"></a>
-<a href="#trace-code-back-to-its-session"><img src="https://img.shields.io/badge/Trace-3b5bd6?style=flat-square" alt="Trace"></a>
-<a href="#nothing-gets-lost-archive-mode"><img src="https://img.shields.io/badge/Archive-3b5bd6?style=flat-square" alt="Archive"></a>
-<a href="#pick-up-where-you-left-off"><img src="https://img.shields.io/badge/Resume-3b5bd6?style=flat-square" alt="Resume"></a>
-<a href="#adding-an-adapter"><img src="https://img.shields.io/badge/Add%20a%20tool-3b5bd6?style=flat-square" alt="Add a tool"></a>
+<a href="#install"><b>Install</b></a> &nbsp;&middot;&nbsp;
+<a href="#quick-start"><b>Quick start</b></a> &nbsp;&middot;&nbsp;
+<a href="#commands"><b>Commands</b></a> &nbsp;&middot;&nbsp;
+<a href="#trace-code-back-to-its-session"><b>Trace</b></a> &nbsp;&middot;&nbsp;
+<a href="#nothing-gets-lost-archive-mode"><b>Archive</b></a> &nbsp;&middot;&nbsp;
+<a href="#pick-up-where-you-left-off"><b>Resume</b></a> &nbsp;&middot;&nbsp;
+<a href="#adding-an-adapter"><b>Add a tool</b></a>
 
 <img src="docs/demo-cli.webp" width="780" alt="Terminal recording: sessionwiki scans 47 GB of sessions across three tools, searches every message at once, jumps to related sessions, tags them, and resumes one in its original tool">
 
@@ -334,7 +334,7 @@ drift between tool versions, so parse defensively and return what you can.
 
 ## Roadmap
 
-- more adapters &mdash; Cursor, Cline, OpenCode, Aider, ... the #1 thing PRs
+- more adapters &mdash; Cursor, Cline, Continue, Aider, ... the #1 thing PRs
   help with (see [adding an adapter](#adding-an-adapter))
 - richer provenance &mdash; correlate a session's edits with the file's git
   history so `trace` can narrow to the commits and line ranges around it
