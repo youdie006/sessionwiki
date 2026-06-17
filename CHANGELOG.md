@@ -26,8 +26,26 @@ semantic versioning once it reaches 1.0.
   re-appearing files un-archive automatically; `SESSIONWIKI_NO_ARCHIVE` reverts
   to delete-on-prune. A store that vanishes wholesale (uninstall, unmount) is
   not mass-archived.
+- Korean/CJK search: 2-syllable words (회사, 검색) - the most common Korean word
+  length - are now searchable via a LIKE fallback below the trigram floor, and
+  all indexed text + queries are NFC-normalized so macOS NFD input no longer
+  silently returns nothing. "Zero-setup CJK search" is now actually true.
+- `--json` on `search`, `list`, `related`, `brief`, `trace`, and `files`: stable
+  snake_case output (matching the web API) for agent consumption, with the
+  absolute path hidden. Snippets are control-code-free with a `snippet_marked`
+  variant. The agent-native half of the tool.
+- Claude Code plugin (`/plugin marketplace add youdie006/sessionwiki`): a
+  `session-recall` skill + `/sessionwiki:recall` command that use the `--json`
+  commands so an agent recalls past sessions as long-term memory, fully offline,
+  degrading gracefully when the CLI isn't installed.
 
 ### Changed
+- `show` pages long transcripts through `$PAGER` (default `less -FRX`) when
+  stdout is a terminal, so `show --full` of a huge session no longer floods the
+  screen; piped/redirected output is unchanged.
+- `summarize` states up front that it pipes each transcript to the summarizer
+  (the default `claude -p` sends them to the Anthropic API) - the one place data
+  can leave the machine, and only on explicit `summarize`.
 - CLI demo is a clean static full-frame terminal (no camera zoom). The web demo
   zooms to exact element regions measured from the live DOM, at 50fps with
   cubic ease-in-out moves and still holds.

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "sessionwiki-marketplace",
+  "owner": {
+    "name": "youdie006",
+    "email": "169331997+youdie006@users.noreply.github.com"
+  },
+  "plugins": [
+    {
+      "name": "sessionwiki",
+      "source": "./plugin",
+      "description": "Recall past AI coding sessions as long-term memory: search prior work, pull context, trace a file to the session that wrote it. Requires the sessionwiki CLI.",
+      "version": "0.1.0",
+      "author": {
+        "name": "youdie006"
+      },
+      "homepage": "https://github.com/youdie006/sessionwiki",
+      "license": "MIT",
+      "keywords": ["memory", "sessions", "recall", "claude-code"]
+    }
+  ]
+}

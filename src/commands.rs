@@ -233,11 +233,21 @@ pub fn show(id: &str, full: bool, json: bool, outline: bool) -> Result<()> {
         return Ok(());
     }
 
+    // Buffer the transcript, then page it: a `show --full` of a multi-thousand-
+    // message session is tens of thousands of lines and would otherwise flood
+    // the terminal. `ln!` appends a line to the buffer.
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    macro_rules! ln {
+        () => {{ let _ = writeln!(out); }};
+        ($($a:tt)*) => {{ let _ = writeln!(out, $($a)*); }};
+    }
+
     if outline {
         // A session's user turns are its table of contents; the last
         // assistant message is where it ended. No LLM required.
-        println!("{}", bold(&session.title));
-        println!(
+        ln!("{}", bold(&session.title));
+        ln!(
             "{}",
             dim(&format!(
                 "{} | {} | {} | {} messages",
@@ -248,14 +258,14 @@ pub fn show(id: &str, full: bool, json: bool, outline: bool) -> Result<()> {
             ))
         );
         if let Some(s) = &row.summary {
-            println!("{}", s);
+            ln!("{}", s);
         }
-        println!();
+        ln!();
         let mut n = 0;
         for m in &session.messages {
             if m.role == Role::User && !is_harness_noise(&m.text) {
                 n += 1;
-                println!("{:>3}. {}", n, truncate(&m.text, 110));
+                ln!("{:>3}. {}", n, truncate(&m.text, 110));
             }
         }
         if let Some(last) = session
@@ -264,15 +274,15 @@ pub fn show(id: &str, full: bool, json: bool, outline: bool) -> Result<()> {
             .rev()
             .find(|m| m.role == Role::Assistant)
         {
-            println!();
-            println!("{}", bold("ended with:"));
-            println!("{}", truncate(&last.text, 400));
+            ln!();
+            ln!("{}", bold("ended with:"));
+            ln!("{}", truncate(&last.text, 400));
         }
-        return Ok(());
+        return page_or_print(&out);
     }
 
-    println!("{}", bold(&session.title));
-    println!(
+    ln!("{}", bold(&session.title));
+    ln!(
         "{}",
         dim(&format!(
             "{} | {} | {} | {} messages",
@@ -282,21 +292,21 @@ pub fn show(id: &str, full: bool, json: bool, outline: bool) -> Result<()> {
             session.messages.len()
         ))
     );
-    println!("{}", dim(&session.path.display().to_string()));
+    ln!("{}", dim(&session.path.display().to_string()));
     if row.archived {
-        println!(
+        ln!(
             "{}",
             yellow("[archived] the tool deleted the original; showing the copy sessionwiki kept")
         );
     }
     if let Some(s) = &row.summary {
-        println!("{}", s);
+        ln!("{}", s);
     }
     if let Some(t) = &row.tags {
-        println!("{}", cyan(&format!("#{}", t.replace(',', " #"))));
+        ln!("{}", cyan(&format!("#{}", t.replace(',', " #"))));
     }
     if let Some(note) = index::note_for(&conn, &row.session_id)? {
-        println!("{} {}", dim("note:"), note);
+        ln!("{} {}", dim("note:"), note);
     }
     let files = index::files_for(&conn, &row.session_id)?;
     if !files.is_empty() {
@@ -312,20 +322,20 @@ pub fn show(id: &str, full: bool, json: bool, outline: bool) -> Result<()> {
         } else {
             String::new()
         };
-        println!("{} {}{}", dim("touched:"), list, dim(&suffix));
+        ln!("{} {}{}", dim("touched:"), list, dim(&suffix));
     }
-    println!();
+    ln!();
 
     for m in &session.messages {
         match m.role {
-            Role::User => println!("{}", bold(&cyan("[user]"))),
-            Role::Assistant => println!("{}", bold(&green("[assistant]"))),
+            Role::User => ln!("{}", bold(&cyan("[user]"))),
+            Role::Assistant => ln!("{}", bold(&green("[assistant]"))),
             Role::Tool => {
                 if !full {
-                    println!("{}", dim(&format!("[tool] {}", truncate(&m.text, 120))));
+                    ln!("{}", dim(&format!("[tool] {}", truncate(&m.text, 120))));
                     continue;
                 }
-                println!("{}", dim("[tool]"));
+                ln!("{}", dim("[tool]"));
             }
         }
         if full || m.role != Role::Tool {
@@ -334,16 +344,16 @@ pub fn show(id: &str, full: bool, json: bool, outline: bool) -> Result<()> {
             } else {
                 truncate(&m.text, 2000)
             };
-            println!("{text}");
+            ln!("{text}");
         }
-        println!();
+        ln!();
     }
 
     let rel = index::related(&conn, &row.session_id, 4)?;
     if !rel.is_empty() {
-        println!("{}", bold("see also:"));
+        ln!("{}", bold("see also:"));
         for r in rel {
-            println!(
+            ln!(
                 "  {} {} {}",
                 yellow(&r.session_id),
                 dim(&cyan(&r.tool)),
@@ -351,6 +361,35 @@ pub fn show(id: &str, full: bool, json: bool, outline: bool) -> Result<()> {
             );
         }
     }
+    page_or_print(&out)
+}
+
+/// Print to stdout, or page through $PAGER (default `less -FRX`: short output
+/// passes straight through, long transcripts page) when stdout is a terminal.
+/// This keeps a big `show --full` from flooding the terminal while leaving
+/// piped/redirected output untouched.
+fn page_or_print(text: &str) -> Result<()> {
+    use std::io::IsTerminal;
+    if std::io::stdout().is_terminal() {
+        let pager = std::env::var("SESSIONWIKI_PAGER")
+            .or_else(|_| std::env::var("PAGER"))
+            .unwrap_or_else(|_| "less -FRX".to_string());
+        use std::process::{Command, Stdio};
+        if let Ok(mut child) = Command::new("sh")
+            .arg("-c")
+            .arg(&pager)
+            .stdin(Stdio::piped())
+            .spawn()
+        {
+            if let Some(mut sin) = child.stdin.take() {
+                use std::io::Write;
+                let _ = sin.write_all(text.as_bytes()); // ignore broken pipe (quit pager)
+            }
+            let _ = child.wait();
+            return Ok(());
+        }
+    }
+    print!("{text}");
     Ok(())
 }
 
@@ -584,10 +623,15 @@ pub fn summarize(
         .map(String::from)
         .or_else(|| std::env::var("SESSIONWIKI_SUMMARIZER").ok())
         .unwrap_or_else(|| "claude -p".to_string());
+    // Be explicit: this pipes each session's transcript into the summarizer.
+    // The default `claude -p` sends it to the Anthropic API - the only thing in
+    // sessionwiki that leaves the machine, and only when you run `summarize`.
     eprintln!(
         "{}",
         dim(&format!(
-            "summarizer: `{cmd}` ({} session(s); your LLM, your cost)",
+            "summarizer: `{cmd}` - pipes each transcript to this command \
+             ({} session(s); your cost). The default `claude -p` sends them to \
+             the Anthropic API; set --cmd or SESSIONWIKI_SUMMARIZER to change.",
             targets.len()
         ))
     );
@@ -765,10 +809,14 @@ pub fn related(id: &str, limit: usize, json: bool) -> Result<()> {
 }
 
 /// Files a session edited or created (its side of the provenance link).
-pub fn files(id: &str) -> Result<()> {
+pub fn files(id: &str, json: bool) -> Result<()> {
     let conn = index::open()?;
     let row = resolve_one(&conn, id)?;
     let files = index::files_for(&conn, &row.session_id)?;
+    if json {
+        println!("{}", serde_json::to_string(&files)?);
+        return Ok(());
+    }
     println!(
         "{}",
         dim(&format!("files touched by: {}", truncate(&row.title, 70)))
@@ -792,10 +840,22 @@ pub fn files(id: &str) -> Result<()> {
 /// It reports sessions that *touched* the file, not line-level authorship: a
 /// later edit may have replaced the code, so this points you at the relevant
 /// conversations rather than claiming any line came from one.
-pub fn trace(path: &str) -> Result<()> {
+pub fn trace(path: &str, json: bool) -> Result<()> {
     let mut conn = index::open()?;
     index::sync(&mut conn, None)?;
     let hits = index::sessions_for_file(&conn, path, 20)?;
+    if json {
+        let out: Vec<serde_json::Value> = hits
+            .iter()
+            .map(|(r, matched)| {
+                let mut v = serde_json::to_value(r).expect("SessionRow serializes");
+                v["matched"] = serde_json::json!(matched);
+                v
+            })
+            .collect();
+        println!("{}", serde_json::to_string(&serde_json::Value::Array(out))?);
+        return Ok(());
+    }
     if hits.is_empty() {
         println!(
             "No session touched a file matching \"{path}\".\n{}",

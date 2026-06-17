@@ -120,12 +120,14 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Show, add, or remove tags on a session (no id: list all tags in use)
+    /// Tag a session: `tag <id> <tag>...` adds, `--rm <tag>` removes (no id
+    /// lists every tag in use). Tags are positional - there is no `add`
+    /// keyword, so `tag <id> add foo` would create the tags `add` and `foo`.
     Tag {
         /// Session id (prefix is enough); omit to list every tag in use
         #[arg(default_value = "")]
         id: String,
-        /// Tags to add
+        /// Tags to add (positional, space-separated)
         #[arg(value_name = "TAG")]
         add: Vec<String>,
         /// Tags to remove
@@ -154,11 +156,17 @@ enum Command {
     Files {
         /// Session id (prefix is enough), from list/search output
         id: String,
+        /// Emit as a JSON array of paths
+        #[arg(long)]
+        json: bool,
     },
     /// Trace a file back to the AI sessions that edited it (newest first)
     Trace {
         /// File path as it appears in your editor (e.g. src/auth.rs)
         path: String,
+        /// Emit as a JSON array (agent-friendly, stable field names)
+        #[arg(long)]
+        json: bool,
     },
     /// Permanently drop an archived (or any) session from the index
     Forget {
@@ -231,8 +239,8 @@ fn main() {
         Command::Tag { id, add, remove } => commands::tag(&id, &add, &remove),
         Command::Note { id, text } => commands::note(&id, text.as_deref()),
         Command::Related { id, limit, json } => commands::related(&id, limit, json),
-        Command::Files { id } => commands::files(&id),
-        Command::Trace { path } => commands::trace(&path),
+        Command::Files { id, json } => commands::files(&id, json),
+        Command::Trace { path, json } => commands::trace(&path, json),
         Command::Forget { id } => commands::forget(&id),
         Command::Projects => commands::projects(),
         Command::Stats => commands::stats(),
