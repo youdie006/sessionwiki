@@ -52,51 +52,77 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await page.goto(URL, { waitUntil: "networkidle" });
   await sleep(1200);
   await kf(null, "One wiki for every AI coding session");
+  await sleep(700);
 
-  // 1. Search - type for real; results stream in.
+  // 1. Search - log the focus BEFORE typing so the camera is already zoomed on
+  // the search box as the typing happens (the zoom follows the action, not
+  // after it), then the results stream in while still zoomed.
   await page.click("#q");
-  await sleep(300);
-  await page.type("#q", "token", { delay: 120 });
-  await sleep(1500);
-  await kf("#q", "Search across every tool - partial words and CJK", { union: "#list" });
+  await sleep(250);
+  await kf("#q", "Search every tool at once - partial words and CJK", { union: "#list" });
+  await sleep(900); // let the focus zoom settle on the box before typing
+  await page.type("#q", "token", { delay: 145 });
+  await sleep(1900);
 
-  // 2. Open a session - tags, a note, the resume command.
+  // 2. Open a session - tags, a note, the original transcript.
   await page.click("#list > *:first-child");
   await page.waitForSelector("#main .doc-head", { timeout: 4000 });
-  await sleep(1500);
-  await kf("#main .doc-head", "Tags, a note, and a one-command resume");
+  await sleep(600);
+  await kf("#main .doc-head", "Open any session: tags, a note, the transcript");
+  await sleep(2100);
 
-  // 3. Provenance: click a touched-file chip -> sessions that touched it.
+  // 3. The resume command - pick up where you left off, in the original tool.
+  try {
+    const resume = page.locator("#main .doc-head .resume").first();
+    if (await resume.count()) {
+      await kf("#main .doc-head .resume", "Pick up where you left off - one command");
+      await sleep(2000);
+    }
+  } catch {}
+
+  // 4. Read the transcript - scroll a real message exchange into view.
+  try {
+    await page.locator("#main .msg.assistant").first().scrollIntoViewIfNeeded({ timeout: 2000 });
+    await sleep(500);
+    await kf("#main .msg.assistant", "Read it back like a clean transcript");
+    await sleep(1900);
+    await page.evaluate(() => { document.querySelector("#main").scrollTop = 0; });
+    await sleep(400);
+  } catch {}
+
+  // 5. Provenance: click a touched-file chip -> sessions that touched it.
   try {
     const chip = page.locator("#main .doc-head .filechip").first();
     if (await chip.count()) {
       await chip.click();
       await page.locator("#main .seealso").scrollIntoViewIfNeeded({ timeout: 2000 });
-      await sleep(1700);
+      await sleep(600);
       await kf("#main .seealso", "Trace a file back to the sessions that wrote it");
+      await sleep(2100);
       await page.evaluate(() => { document.querySelector("#main").scrollTop = 0; });
-      await sleep(500);
+      await sleep(400);
     }
   } catch {}
 
-  // 4. Tag filter: click a tag chip in the header -> the sidebar narrows.
+  // 6. Tag filter: click a tag chip in the header -> the sidebar narrows.
   try {
     const tag = page.locator("#main .doc-head .tagchip", { hasText: "perf" }).first();
     if (await tag.count()) {
       await tag.click();
-      await sleep(1600);
+      await sleep(600);
       await kf("#list", "Filter by tag", { union: "#q" });
+      await sleep(2000);
     }
   } catch {}
 
-  // 5. Dark theme - whole frame, stays in English.
+  // 7. Dark theme - whole frame, stays in English.
   try {
     await page.click("#theme");
-    await sleep(1600);
+    await sleep(1800);
     await kf(null, "Light and dark, 100% local");
   } catch {}
 
-  await sleep(700);
+  await sleep(1000);
   await context.close(); // flush the webm
   await browser.close();
 

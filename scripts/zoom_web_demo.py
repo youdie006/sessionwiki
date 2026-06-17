@@ -137,10 +137,12 @@ def main():
          "-movflags", "+faststart", OUT_MP4, "-y"],
         check=True,
     )
+    # The autoplay inline webp: lower fps + smaller than the mp4 to keep the
+    # file reasonable for a longer tour (software decode, so keep it light).
     subprocess.run(
         ["ffmpeg", "-nostdin", "-loglevel", "error", "-i", OUT_MP4,
-         "-vf", "fps=14", "-vcodec", "libwebp", "-lossless", "0", "-q:v", "52",
-         "-loop", "0", OUT_WEBP, "-y"],
+         "-vf", "fps=12,scale=720:-2:flags=lanczos", "-vcodec", "libwebp",
+         "-lossless", "0", "-q:v", "50", "-loop", "0", OUT_WEBP, "-y"],
         check=True,
     )
     subprocess.run(["rm", "-rf", work])
