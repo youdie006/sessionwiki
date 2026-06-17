@@ -390,7 +390,13 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
                 }
                 seen.push(key.clone());
             }
-            archived_total += archive_or_prune(conn, tool, &seen, store_present)?;
+            // Reconcile deletions only when the whole store was read this run.
+            // If a backing db was present but unreadable (locked, half-written),
+            // `seen` is partial - pruning off it would archive the whole corpus
+            // on a transient hiccup, so skip reconciliation until a clean read.
+            if !store.had_error {
+                archived_total += archive_or_prune(conn, tool, &seen, store_present)?;
+            }
 
             if !pending.is_empty() {
                 let token_of: HashMap<&str, i64> =
@@ -1098,7 +1104,11 @@ pub fn session_from_index(conn: &Connection, row: &SessionRow) -> Result<crate::
     Ok(crate::model::Session {
         id: row.session_id.clone(),
         tool,
-        path: std::path::PathBuf::from(&row.path),
+        // A shared-store key carries a U+001F separator in the stored path;
+        // render it human-readable (`<db>#<id>`) so it never leaks into show /
+        // brief / web. Real file paths never contain U+001F, so this is a no-op
+        // for every other adapter.
+        path: std::path::PathBuf::from(row.path.replace('\u{1f}', "#")),
         project: row.project.clone(),
         started,
         ended: started,
