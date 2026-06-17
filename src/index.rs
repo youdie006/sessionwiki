@@ -1,6 +1,7 @@
 use crate::adapters::{self, Adapter};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
@@ -527,13 +528,20 @@ fn archive_session(conn: &Connection, path: &str, sid: &str) -> Result<()> {
     Ok(())
 }
 
+/// Serializes to the agent-facing JSON contract: snake_case keys matching the
+/// web API (`id`, `msgs`, tags as an array), and the absolute `path` is skipped
+/// so it never leaks into agent-consumed output.
+#[derive(Serialize)]
 pub struct SessionRow {
+    #[serde(rename = "id")]
     pub session_id: String,
     pub tool: String,
+    #[serde(skip)]
     pub path: String,
     pub project: String,
     pub title: String,
     pub started: Option<String>,
+    #[serde(rename = "msgs")]
     pub msg_count: i64,
     pub kind: String,
     /// Tail of the conversation (last assistant message), so a list can show
@@ -541,10 +549,20 @@ pub struct SessionRow {
     pub preview: Option<String>,
     /// Cached LLM synopsis, if `summarize` has been run for this session.
     pub summary: Option<String>,
-    /// Comma-joined user tags, if any.
+    /// Comma-joined user tags, if any. Serialized as a string array (or null).
+    #[serde(serialize_with = "ser_tags")]
     pub tags: Option<String>,
     /// True if the tool deleted the original and we kept the indexed copy.
     pub archived: bool,
+}
+
+/// Tags are stored comma-joined but the JSON contract is an array (matching the
+/// web API). Null when there are no tags.
+fn ser_tags<S: serde::Serializer>(tags: &Option<String>, s: S) -> Result<S::Ok, S::Error> {
+    match tags {
+        Some(t) => s.collect_seq(t.split(',')),
+        None => s.serialize_none(),
+    }
 }
 
 /// Correlated subquery for the preview column; messages.id preserves

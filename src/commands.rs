@@ -5,6 +5,32 @@ use crate::resume;
 use crate::util::*;
 use anyhow::{bail, Context, Result};
 
+/// `index::search` wraps matches in \x02..\x03 (FTS5 snippet markers). For JSON
+/// we strip color/control entirely. Returns (plain, marked): `plain` has the
+/// markers removed, `marked` replaces them with the stable ASCII pair `[[`..`]]`
+/// so an agent can still locate the match. Newlines collapse to spaces and any
+/// other C0 control char is dropped so the JSON string is always clean.
+pub fn clean_snippet(raw: &str) -> (String, String) {
+    let mut plain = String::with_capacity(raw.len());
+    let mut marked = String::with_capacity(raw.len() + 8);
+    for c in raw.chars() {
+        match c {
+            '\u{2}' => marked.push_str("[["),
+            '\u{3}' => marked.push_str("]]"),
+            '\n' | '\t' => {
+                plain.push(' ');
+                marked.push(' ');
+            }
+            c if (c as u32) < 0x20 => {} // drop other C0 controls
+            c => {
+                plain.push(c);
+                marked.push(c);
+            }
+        }
+    }
+    (plain, marked)
+}
+
 pub fn scan() -> Result<()> {
     let mut reports = Vec::new();
     for adapter in adapters::all() {
@@ -62,10 +88,15 @@ pub fn list(
     project: Option<&str>,
     tag: Option<&str>,
     all: bool,
+    json: bool,
 ) -> Result<()> {
     let mut conn = index::open()?;
     index::sync(&mut conn, tool)?;
     let rows = index::recent(&conn, limit, tool, project, tag, all)?;
+    if json {
+        println!("{}", serde_json::to_string(&rows)?);
+        return Ok(());
+    }
     if rows.is_empty() {
         println!("No sessions found.");
         return Ok(());
@@ -108,7 +139,13 @@ pub fn list(
     Ok(())
 }
 
-pub fn search(query: &str, limit: usize, tool: Option<&str>, project: Option<&str>) -> Result<()> {
+pub fn search(
+    query: &str,
+    limit: usize,
+    tool: Option<&str>,
+    project: Option<&str>,
+    json: bool,
+) -> Result<()> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
         bail!("empty query");
@@ -124,6 +161,21 @@ pub fn search(query: &str, limit: usize, tool: Option<&str>, project: Option<&st
     } else {
         index::search(&conn, trimmed, limit, tool, project)?
     };
+    if json {
+        let out: Vec<serde_json::Value> = hits
+            .iter()
+            .map(|h| {
+                let mut v = serde_json::to_value(&h.row).expect("SessionRow serializes");
+                let (plain, marked) = clean_snippet(&h.snippet);
+                v["snippet"] = serde_json::json!(plain);
+                v["snippet_marked"] = serde_json::json!(marked);
+                v["role"] = serde_json::json!(h.role);
+                v
+            })
+            .collect();
+        println!("{}", serde_json::to_string(&serde_json::Value::Array(out))?);
+        return Ok(());
+    }
     if hits.is_empty() {
         println!("No matches for \"{query}\".");
         return Ok(());
@@ -407,12 +459,26 @@ pub fn resume_cmd(id: &str, print_only: bool) -> Result<()> {
     }
 }
 
-pub fn brief(id: &str, max_chars: usize, include_tools: bool) -> Result<()> {
+pub fn brief(id: &str, max_chars: usize, include_tools: bool, json: bool) -> Result<()> {
     let mut conn = index::open()?;
     index::sync(&mut conn, None)?;
     let row = resolve_one(&conn, id)?;
     let session = load_session(&conn, &row)?;
-    print!("{}", brief_text(&session, max_chars, include_tools));
+    let markdown = brief_text(&session, max_chars, include_tools);
+    if json {
+        let v = serde_json::json!({
+            "id": session.id,
+            "tool": session.tool,
+            "project": session.project,
+            "title": session.title,
+            "started": session.started.map(|t| t.to_rfc3339()),
+            "source": session.path.display().to_string(),
+            "markdown": markdown,
+        });
+        println!("{}", serde_json::to_string(&v)?);
+        return Ok(());
+    }
+    print!("{markdown}");
     Ok(())
 }
 
@@ -665,14 +731,18 @@ pub fn forget(id: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn related(id: &str, limit: usize) -> Result<()> {
+pub fn related(id: &str, limit: usize, json: bool) -> Result<()> {
     let conn = index::open()?;
     let row = resolve_one(&conn, id)?;
+    let rel = index::related(&conn, &row.session_id, limit)?;
+    if json {
+        println!("{}", serde_json::to_string(&rel)?);
+        return Ok(());
+    }
     println!(
         "{}",
         dim(&format!("related to: {}", truncate(&row.title, 70)))
     );
-    let rel = index::related(&conn, &row.session_id, limit)?;
     if rel.is_empty() {
         println!("No related sessions found.");
         return Ok(());

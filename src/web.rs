@@ -151,7 +151,9 @@ fn api_search(conn: &Connection, query: &str) -> Result<Boxed> {
         .iter()
         .map(|h| {
             let mut v = row_json(&h.row);
-            v["snippet"] = json!(h.snippet);
+            let (plain, marked) = crate::commands::clean_snippet(&h.snippet);
+            v["snippet"] = json!(plain);
+            v["snippet_marked"] = json!(marked);
             v["role"] = json!(h.role);
             v
         })
@@ -207,20 +209,11 @@ fn api_session(conn: &Connection, id: &str) -> Result<Boxed> {
     json_response(v)
 }
 
+/// Delegate to SessionRow's Serialize derive so the web JSON and the CLI
+/// `--json` contract are the exact same field set (id/msgs/tags-array/...),
+/// and can never drift apart.
 fn row_json(r: &index::SessionRow) -> serde_json::Value {
-    json!({
-        "id": r.session_id,
-        "tool": r.tool,
-        "project": r.project,
-        "title": r.title,
-        "started": r.started,
-        "msgs": r.msg_count,
-        "kind": r.kind,
-        "preview": r.preview,
-        "summary": r.summary,
-        "tags": r.tags.as_ref().map(|t| t.split(',').collect::<Vec<_>>()),
-        "archived": r.archived,
-    })
+    serde_json::to_value(r).unwrap_or_else(|_| json!({}))
 }
 
 fn param(query: &str, key: &str) -> Option<String> {
