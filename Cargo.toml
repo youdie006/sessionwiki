@@ -1,8 +1,8 @@
 [package]
 name = "sessionwiki"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
-description = "Find, search, and read every AI coding session you've ever had - across Claude Code, Codex, and Gemini CLI."
+description = "Find, search, and read every AI coding session you've ever had - across Claude Code, Codex, Gemini CLI, and OpenCode."
 license = "MIT"
 repository = "https://github.com/youdie006/sessionwiki"
 keywords = ["claude-code", "codex", "gemini-cli", "sessions", "search"]

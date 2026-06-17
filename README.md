@@ -2,23 +2,24 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.png">
-  <img src="docs/banner.png" alt="sessionwiki — a wiki of every AI coding session you've ever had: searchable, linkable, resumable. Claude Code, Codex, Gemini CLI. 100% local.">
+  <img src="docs/banner.png" alt="sessionwiki — a wiki of every AI coding session you've ever had: searchable, linkable, resumable. Claude Code, Codex, Gemini CLI, OpenCode. 100% local.">
 </picture>
 
 <a href="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml"><img src="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
-<a href="https://github.com/youdie006/sessionwiki/releases"><img src="https://img.shields.io/github/v/release/youdie006/sessionwiki?label=release&color=355bd0" alt="Latest release"></a>
+<a href="https://github.com/youdie006/sessionwiki/releases"><img src="https://img.shields.io/badge/release-v0.8.0-355bd0" alt="Latest release"></a>
 <img src="https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-555" alt="Platforms: Linux, macOS, Windows">
 <a href="#adding-an-adapter"><img src="https://img.shields.io/badge/adapters-PRs%20welcome-2ea44f" alt="Adapter PRs welcome"></a>
 
 <img src="https://img.shields.io/badge/English-3b5bd6?style=for-the-badge" alt="English (current)">&nbsp;<a href="README.ko.md"><img src="https://img.shields.io/badge/%ED%95%9C%EA%B5%AD%EC%96%B4-eceae3?style=for-the-badge&labelColor=eceae3&color=6e6b62" alt="한국어"></a>
 
-<a href="#install">Install</a> &middot;
-<a href="#quick-start">Quick start</a> &middot;
-<a href="#commands">Commands</a> &middot;
-<a href="#pick-up-where-you-left-off">Resume &amp; brief</a> &middot;
-<a href="#how-it-works">How it works</a> &middot;
-<a href="#adding-an-adapter">Add your tool</a>
+<a href="#install"><img src="https://img.shields.io/badge/Install-3b5bd6?style=flat-square" alt="Install"></a>
+<a href="#quick-start"><img src="https://img.shields.io/badge/Quick%20start-3b5bd6?style=flat-square" alt="Quick start"></a>
+<a href="#commands"><img src="https://img.shields.io/badge/Commands-3b5bd6?style=flat-square" alt="Commands"></a>
+<a href="#trace-code-back-to-its-session"><img src="https://img.shields.io/badge/Trace-3b5bd6?style=flat-square" alt="Trace"></a>
+<a href="#nothing-gets-lost-archive-mode"><img src="https://img.shields.io/badge/Archive-3b5bd6?style=flat-square" alt="Archive"></a>
+<a href="#pick-up-where-you-left-off"><img src="https://img.shields.io/badge/Resume-3b5bd6?style=flat-square" alt="Resume"></a>
+<a href="#adding-an-adapter"><img src="https://img.shields.io/badge/Add%20a%20tool-3b5bd6?style=flat-square" alt="Add a tool"></a>
 
 <img src="docs/demo-cli.webp" width="780" alt="Terminal recording: sessionwiki scans 47 GB of sessions across three tools, searches every message at once, jumps to related sessions, tags them, and resumes one in its original tool">
 
