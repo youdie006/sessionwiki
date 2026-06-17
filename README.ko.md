@@ -68,6 +68,21 @@ cargo install --git https://github.com/youdie006/sessionwiki
 
 어느 쪽이든 런타임 의존성 없는 단일 바이너리입니다.
 
+### Claude Code 플러그인 (세션 자동 회상)
+
+Claude Code가 과거 세션을 자동으로 회상하게 만듭니다. 먼저 위에서
+`sessionwiki` CLI를 설치한 뒤, 이 레포에서 플러그인을 추가하세요:
+
+```console
+/plugin marketplace add youdie006/sessionwiki
+/plugin install sessionwiki@sessionwiki-marketplace
+```
+
+이제 작업을 시작할 때 Claude가 이전 작업을 끌어오고, `/sessionwiki:recall
+<주제>` 로 필요할 때 히스토리를 검색합니다. 플러그인은 로컬 `sessionwiki`
+바이너리를 호출할 뿐이라 &mdash; 완전히 오프라인입니다. 바이너리가 `PATH`에
+없으면 플러그인은 우아하게 비활성화되고 Claude는 회상 없이 그대로 동작합니다.
+
 ## 빠른 시작
 
 ```console

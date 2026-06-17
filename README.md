@@ -13,13 +13,13 @@
 
 <img src="https://img.shields.io/badge/English-3b5bd6?style=for-the-badge" alt="English (current)">&nbsp;<a href="README.ko.md"><img src="https://img.shields.io/badge/%ED%95%9C%EA%B5%AD%EC%96%B4-eceae3?style=for-the-badge&labelColor=eceae3&color=6e6b62" alt="한국어"></a>
 
-<a href="#install"><b>Install</b></a> &nbsp;&middot;&nbsp;
-<a href="#quick-start"><b>Quick start</b></a> &nbsp;&middot;&nbsp;
-<a href="#commands"><b>Commands</b></a> &nbsp;&middot;&nbsp;
-<a href="#trace-code-back-to-its-session"><b>Trace</b></a> &nbsp;&middot;&nbsp;
-<a href="#nothing-gets-lost-archive-mode"><b>Archive</b></a> &nbsp;&middot;&nbsp;
-<a href="#pick-up-where-you-left-off"><b>Resume</b></a> &nbsp;&middot;&nbsp;
-<a href="#adding-an-adapter"><b>Add a tool</b></a>
+<a href="#install"><img src="docs/nav/install.png" height="20" alt="Install"></a>
+<a href="#quick-start"><img src="docs/nav/quick-start.png" height="20" alt="Quick start"></a>
+<a href="#commands"><img src="docs/nav/commands.png" height="20" alt="Commands"></a>
+<a href="#trace-code-back-to-its-session"><img src="docs/nav/trace.png" height="20" alt="Trace"></a>
+<a href="#nothing-gets-lost-archive-mode"><img src="docs/nav/archive.png" height="20" alt="Archive"></a>
+<a href="#pick-up-where-you-left-off"><img src="docs/nav/resume.png" height="20" alt="Resume"></a>
+<a href="#adding-an-adapter"><img src="docs/nav/add-a-tool.png" height="20" alt="Add a tool"></a>
 
 <img src="docs/demo-cli.webp" width="780" alt="Terminal recording: sessionwiki scans 47 GB of sessions across three tools, searches every message at once, jumps to related sessions, tags them, and resumes one in its original tool">
 
