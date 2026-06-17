@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning once it reaches 1.0.
 
-## [Unreleased]
+## [0.8.0] - 2026-06-17
 
 ### Added
 - OpenCode adapter: indexes sst/opencode sessions from
@@ -45,15 +45,22 @@ semantic versioning once it reaches 1.0.
   degrading gracefully when the CLI isn't installed.
 
 ### Changed
-- `show` pages long transcripts through `$PAGER` (default `less -FRX`) when
-  stdout is a terminal, so `show --full` of a huge session no longer floods the
-  screen; piped/redirected output is unchanged.
+- `show` pages long transcripts through your pager (`SESSIONWIKI_PAGER`, then
+  `PAGER`, default `less -FRX`) when stdout is a terminal, so `show --full` of a
+  huge session no longer floods the screen, and falls back to plain printing when
+  no pager is installed; piped/redirected output is unchanged.
 - `summarize` states up front that it pipes each transcript to the summarizer
   (the default `claude -p` sends them to the Anthropic API) - the one place data
   can leave the machine, and only on explicit `summarize`.
 - CLI demo is a clean static full-frame terminal (no camera zoom). The web demo
   zooms to exact element regions measured from the live DOM, at 50fps with
   cubic ease-in-out moves and still holds.
+
+### Fixed
+- `tag` now rejects a tag containing a comma or an empty tag: a comma corrupted
+  the comma-joined `tags` array in `--json` and the web API, and an empty tag
+  emitted `""`. JSON serialization of session rows in `search`/`trace` can no
+  longer panic mid-array.
 
 ## [0.7.0] - 2026-06-16
 
@@ -129,6 +136,7 @@ semantic versioning once it reaches 1.0.
   incremental SQLite FTS5 index. Adapters for Claude Code, Codex, and Gemini
   CLI. 100% local, no telemetry.
 
+[0.8.0]: https://github.com/youdie006/sessionwiki/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/youdie006/sessionwiki/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/youdie006/sessionwiki/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/youdie006/sessionwiki/releases/tag/v0.5.0

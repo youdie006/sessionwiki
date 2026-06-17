@@ -2,12 +2,12 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/banner-ko-dark.png">
-  <img src="docs/banner-ko.png" alt="sessionwiki — 지금까지의 모든 AI 코딩 세션을 모은 위키: 검색·연결·이어가기. Claude Code, Codex, Gemini CLI. 100% 로컬.">
+  <img src="docs/banner-ko.png" alt="sessionwiki — 지금까지의 모든 AI 코딩 세션을 모은 위키: 검색·연결·이어가기. Claude Code, Codex, Gemini CLI, OpenCode. 100% 로컬.">
 </picture>
 
 <a href="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml"><img src="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT 라이선스"></a>
-<a href="https://github.com/youdie006/sessionwiki/releases"><img src="https://img.shields.io/github/v/release/youdie006/sessionwiki?label=release&color=355bd0" alt="최신 릴리스"></a>
+<a href="https://github.com/youdie006/sessionwiki/releases"><img src="https://img.shields.io/badge/release-v0.8.0-355bd0" alt="최신 릴리스"></a>
 <img src="https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-555" alt="플랫폼: Linux, macOS, Windows">
 <a href="README.md#adding-an-adapter"><img src="https://img.shields.io/badge/adapters-PRs%20welcome-2ea44f" alt="어댑터 PR 환영"></a>
 
@@ -210,7 +210,7 @@ AI 세션 기록 탐색은 이미 활발한 분야입니다 &mdash; 네이티브
 - **무설정 CJK 검색.** trigram 색인이 한국어·일본어·중국어(그리고 부분 단어)를 기본으로 검색합니다 &mdash; 대부분의 도구가 약한 지점입니다.
 - **검색을 넘는 큐레이션 레이어.** 태그·노트·`related`·`brief`·`stats` &mdash; [세션 엔지니어링](#세션-엔지니어링), 아카이브가 커져도 탐색 가능하게.
 
-솔직한 트레이드오프: *지금 당장* 가장 넓은 도구 커버리지가 필요하다면 sessionwiki는 3개(Claude Code·Codex·Gemini CLI)만 지원하며 늘려가는 중입니다 &mdash; 어댑터가 [PR](#어댑터-추가하기)로 가장 도움받는 부분입니다. 이 세 도구를 주로 쓰거나, CJK가 중요하거나, 어디서나 도는 단일 바이너리를 원한다면 이 도구가 맞습니다.
+솔직한 트레이드오프: *지금 당장* 가장 넓은 도구 커버리지가 필요하다면 sessionwiki는 4개(Claude Code·Codex·Gemini CLI·OpenCode)를 지원하며 늘려가는 중입니다 &mdash; 어댑터가 [PR](#어댑터-추가하기)로 가장 도움받는 부분입니다. 이 도구들을 주로 쓰거나, CJK가 중요하거나, 어디서나 도는 단일 바이너리를 원한다면 이 도구가 맞습니다.
 
 ## 어댑터 추가하기
 
