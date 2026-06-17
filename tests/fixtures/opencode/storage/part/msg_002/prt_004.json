@@ -1,0 +1,10 @@
+{
+  "id": "prt_004",
+  "sessionID": "ses_aaa",
+  "messageID": "msg_002",
+  "type": "patch",
+  "hash": "deadbeef",
+  "files": [
+    "/home/dev/myapp/src/util.ts"
+  ]
+}

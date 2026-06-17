@@ -1,0 +1,7 @@
+{
+  "id": "prt_001",
+  "sessionID": "ses_aaa",
+  "messageID": "msg_002",
+  "type": "reasoning",
+  "text": "thinking about the backoff strategy"
+}

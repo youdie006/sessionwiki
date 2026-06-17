@@ -198,7 +198,8 @@ flowchart LR
 | Claude Code | `~/.claude/projects/**/*.jsonl` (중첩 서브에이전트 트랜스크립트 포함) | 지원 |
 | Codex CLI | `~/.codex/sessions/**/rollout-*.jsonl` | 지원 |
 | Gemini CLI | `~/.gemini/tmp/*/chats/*.json` | 지원 |
-| Cursor, OpenCode, Aider, OpenClaw, ... | | 예정 &mdash; PR 환영 |
+| OpenCode | `~/.local/share/opencode/storage/{session,message,part}/**` | 지원 |
+| Cursor, Cline, Aider, Continue, ... | | 예정 &mdash; PR 환영 |
 
 ### sessionwiki의 자리
 

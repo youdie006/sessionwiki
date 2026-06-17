@@ -287,7 +287,8 @@ read-only. See the FAQ above.
 | Claude Code | `~/.claude/projects/**/*.jsonl` (incl. nested subagent transcripts) | supported |
 | Codex CLI | `~/.codex/sessions/**/rollout-*.jsonl` | supported |
 | Gemini CLI | `~/.gemini/tmp/*/chats/*.json` | supported |
-| Cursor, OpenCode, Aider, OpenClaw, ... | | planned &mdash; PRs welcome |
+| OpenCode | `~/.local/share/opencode/storage/{session,message,part}/**` | supported |
+| Cursor, Cline, Aider, Continue, ... | | planned &mdash; PRs welcome |
 
 ### Where sessionwiki fits
 
@@ -307,7 +308,7 @@ and other multi-tool CLIs. sessionwiki makes a few specific bets:
   navigable as it grows.
 
 Honest tradeoff: if you want the widest tool coverage *today*, sessionwiki
-supports three (Claude Code, Codex, Gemini CLI) and is growing &mdash; adapters are
+supports four (Claude Code, Codex, Gemini CLI, OpenCode) and is growing &mdash; adapters are
 the #1 thing [PRs](#adding-an-adapter) help with. If you mainly use those tools,
 care about CJK, or want one binary that works everywhere, this is built for you.
 

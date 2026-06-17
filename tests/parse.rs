@@ -149,6 +149,49 @@ fn gemini_session() {
 }
 
 #[test]
+fn opencode_multi_file_session() {
+    // OpenCode splits a session across session/message/part JSON files; the
+    // adapter is handed the session file and joins the rest from the store.
+    let s = parse("opencode", "opencode/storage/session/proj1/ses_aaa.json");
+
+    assert_eq!(s.tool, "opencode");
+    assert_eq!(s.title, "Add retry to the HTTP client"); // from session.title
+    assert_eq!(s.project, "/home/dev/myapp"); // session.directory
+    assert!(!s.subagent);
+
+    // reasoning parts are dropped; text parts and the edit tool become messages
+    // in id order; the malformed part file is skipped without panicking; the
+    // patch part contributes no message (only provenance).
+    assert_eq!(roles(&s), ["user", "assistant", "tool"]);
+    assert!(s.messages[0]
+        .text
+        .contains("retry with exponential backoff"));
+    assert!(s
+        .messages
+        .iter()
+        .any(|m| m.text.contains("3-attempt retry")));
+    assert!(s
+        .messages
+        .iter()
+        .all(|m| !m.text.contains("thinking about"))); // reasoning dropped
+
+    // Provenance: edit tool's state.input.filePath + the patch's files list.
+    assert_eq!(
+        s.touched,
+        [
+            "/home/dev/myapp/src/http/client.ts",
+            "/home/dev/myapp/src/util.ts"
+        ]
+    );
+
+    // epoch-millis timestamp is parsed (not an RFC3339 string).
+    assert_eq!(
+        s.started,
+        chrono::DateTime::from_timestamp_millis(1718630400000)
+    );
+}
+
+#[test]
 fn missing_file_errors_without_panicking() {
     let adapter = adapters::by_name("codex").unwrap();
     assert!(adapter
@@ -158,7 +201,7 @@ fn missing_file_errors_without_panicking() {
 
 #[test]
 fn every_adapter_is_addressable_by_name() {
-    for tool in ["claude-code", "codex", "gemini"] {
+    for tool in ["claude-code", "codex", "gemini", "opencode"] {
         assert!(adapters::by_name(tool).is_some(), "{tool} should resolve");
     }
     assert!(adapters::by_name("nonexistent").is_none());
