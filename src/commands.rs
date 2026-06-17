@@ -280,7 +280,8 @@ pub fn recall(
             .iter()
             .map(|h| {
                 let mut v = serde_json::to_value(&h.row).unwrap_or_else(|_| serde_json::json!({}));
-                let (_plain, marked) = clean_snippet(&h.snippet);
+                let (plain, marked) = clean_snippet(&h.snippet);
+                v["snippet"] = serde_json::json!(plain);
                 v["snippet_marked"] = serde_json::json!(marked);
                 v
             })
@@ -312,12 +313,18 @@ pub fn recall(
             .as_deref()
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|t| t.with_timezone(&chrono::Utc));
+        let sub = if h.row.kind == "sub" {
+            format!("  {}", dim("[subagent]"))
+        } else {
+            String::new()
+        };
         println!(
-            "  {} {} {} {}",
+            "  {} {} {} {}{}",
             yellow(&h.row.session_id),
             cyan(&h.row.tool),
             dim(&fmt_date(when)),
             truncate(&h.row.title, 50),
+            sub,
         );
     }
     println!();
@@ -337,7 +344,13 @@ pub fn recall(
 pub fn sync_cmd(tool: Option<&str>) -> Result<()> {
     let mut conn = index::open()?;
     index::sync(&mut conn, tool)?;
-    let n: i64 = conn.query_row("SELECT count(*) FROM files", [], |r| r.get(0))?;
+    // Count top-level sessions only (not subagent transcripts or archived rows)
+    // so the number matches what `stats` and `list` report.
+    let n: i64 = conn.query_row(
+        "SELECT count(*) FROM files WHERE kind = 'main' AND archived_at IS NULL",
+        [],
+        |r| r.get(0),
+    )?;
     println!("{}", dim(&format!("index synced - {n} sessions indexed")));
     Ok(())
 }
@@ -549,18 +562,23 @@ fn resolve_lazy(
     id: &str,
     no_sync: bool,
 ) -> Result<index::SessionRow> {
-    if let Ok(row) = resolve_one(conn, id) {
-        return Ok(row);
-    }
-    if no_sync {
+    // Resolve against the existing index first. Only a genuinely unknown id (no
+    // prefix match at all) is worth a full store walk - an *ambiguous* prefix is
+    // already in the index, so a sync cannot disambiguate it and would just pay
+    // for a needless walk of every store (notably the large Codex one).
+    let matches = index::resolve(conn, id)?;
+    if matches.is_empty() && !no_sync {
+        index::sync(conn, None)?;
         return resolve_one(conn, id);
     }
-    index::sync(conn, None)?;
-    resolve_one(conn, id)
+    pick_one(matches, id)
 }
 
 fn resolve_one(conn: &rusqlite::Connection, id: &str) -> Result<index::SessionRow> {
-    let matches = index::resolve(conn, id)?;
+    pick_one(index::resolve(conn, id)?, id)
+}
+
+fn pick_one(matches: Vec<index::SessionRow>, id: &str) -> Result<index::SessionRow> {
     match matches.len() {
         0 => bail!("no session with id starting \"{id}\" (try: sessionwiki list)"),
         1 => Ok(matches.into_iter().next().unwrap()),
