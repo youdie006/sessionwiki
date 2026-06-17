@@ -18,6 +18,7 @@ tiny_http = "0.12"
 walkdir = "2"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 dirs = "5"
+unicode-normalization = "0.1"
 
 [profile.release]
 lto = true

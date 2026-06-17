@@ -58,6 +58,31 @@ fn touch(conn: &Connection, id: &str, path: &str) {
     .unwrap();
 }
 
+/// A session with explicit message text. LIKE (the short-query path) reads
+/// messages.text directly, so the FTS `msgs` table is irrelevant here.
+fn seed_msg(conn: &Connection, id: &str, project: &str, title: &str, started: &str, text: &str) {
+    conn.execute(
+        "INSERT OR REPLACE INTO files
+         (path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind)
+         VALUES (?1, 0, 0, ?2, 'codex', ?3, ?4, ?5, ?5, 1, 'main')",
+        params![format!("/fake/{id}.jsonl"), id, project, title, started],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO messages(session_id, role, text) VALUES (?1, 'user', ?2)",
+        params![id, text],
+    )
+    .unwrap();
+}
+
+/// Explicit NFD (decomposed) "회사" spelled by codepoint so the source file's own
+/// encoding can't silently re-compose it: 회 = U+1112 U+116C, 사 = U+1109 U+1161.
+fn nfd_hoesa() -> String {
+    ['\u{1112}', '\u{116C}', '\u{1109}', '\u{1161}']
+        .iter()
+        .collect()
+}
+
 #[test]
 fn tags_round_trip_and_counts() {
     let _g = LOCK.lock().unwrap();
@@ -423,4 +448,282 @@ fn archive_on_prune_serves_and_forgets() {
 
     let _ = std::fs::remove_dir_all(&home);
     let _ = std::fs::remove_dir_all(&data);
+}
+
+// --- CJK: NFC normalization + short-query (2-syllable Korean) search ---
+
+#[test]
+fn nfd_fixture_is_actually_decomposed() {
+    let nfd = nfd_hoesa();
+    let composed = sessionwiki::util::nfc(&nfd);
+    assert_ne!(nfd, composed, "fixture must differ from its NFC form");
+    assert_eq!(composed.chars().count(), 2, "NFC 회사 is two syllables");
+    assert_eq!(composed, "회사", "NFC form must be the composed word");
+    assert_eq!(sessionwiki::util::nfc("회사"), "회사"); // NFC is idempotent
+}
+
+// The #1 bug from the user eval: Korean stored on disk as NFD (macOS) must be
+// found by an NFC query. We index it through the same NFC-on-write the fixed
+// sync uses, starting from explicit NFD bytes, then search the composed literal.
+// Padded to >=3 chars so this exercises the trigram FTS path specifically.
+#[test]
+fn nfd_message_is_found_by_nfc_query_via_fts() {
+    let _g = LOCK.lock().unwrap();
+    let conn = fresh_index();
+    let nfd_text = format!("{} 프로젝트", nfd_hoesa()); // "회사 프로젝트", 회사 is NFD
+    let text = sessionwiki::util::nfc(&nfd_text);
+    conn.execute(
+        "INSERT OR REPLACE INTO files
+         (path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind)
+         VALUES ('/fake/k.jsonl', 0, 0, 'k1', 'codex', '/p', 't', NULL, NULL, 1, 'main')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO messages(session_id, role, text) VALUES ('k1','user',?1)",
+        params![text],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO msgs(rowid, text) VALUES (last_insert_rowid(), ?1)",
+        params![text],
+    )
+    .unwrap();
+
+    let hits = index::search(&conn, "회사 프로젝트", 10, None, None).unwrap();
+    assert!(
+        hits.iter().any(|h| h.row.session_id == "k1"),
+        "NFC query must find the NFD-sourced message"
+    );
+    // A decomposed query is normalized too, so it also matches.
+    let nfd_q = format!("{} 프로젝트", nfd_hoesa());
+    assert!(index::search(&conn, &nfd_q, 10, None, None)
+        .unwrap()
+        .iter()
+        .any(|h| h.row.session_id == "k1"));
+}
+
+#[test]
+fn nfd_touched_path_is_traceable_by_nfc() {
+    let _g = LOCK.lock().unwrap();
+    let conn = fresh_index();
+    seed(
+        &conn,
+        "t1",
+        "codex",
+        "/p",
+        "korean file",
+        "2026-06-10T10:00:00+00:00",
+    );
+    let nfd_path = format!("/home/me/{}.rs", nfd_hoesa());
+    conn.execute(
+        "INSERT OR IGNORE INTO touched(session_id, path) VALUES ('t1', ?1)",
+        params![sessionwiki::util::nfc(&nfd_path)],
+    )
+    .unwrap();
+    assert!(
+        index::sessions_for_file(&conn, "회사.rs", 10)
+            .unwrap()
+            .iter()
+            .any(|(r, _)| r.session_id == "t1"),
+        "NFC trace query must match the NFC-stored Korean path"
+    );
+    assert!(
+        index::sessions_for_file(&conn, &format!("{}.rs", nfd_hoesa()), 10)
+            .unwrap()
+            .iter()
+            .any(|(r, _)| r.session_id == "t1"),
+        "NFD trace query must be normalized and match"
+    );
+}
+
+// Archived sessions: a pre-fix archive holds an NFD transcript; rehydrate on a
+// schema bump must re-normalize it, or archived Korean sessions silently vanish
+// from search on the very upgrade that ships this fix.
+#[test]
+fn archived_nfd_transcript_searchable_after_rehydrate() {
+    let _g = LOCK.lock().unwrap();
+    let conn = fresh_index();
+    let transcript = serde_json::to_string(&vec![
+        ("user".to_string(), "korean question".to_string()),
+        ("assistant".to_string(), format!("{} 프로젝트", nfd_hoesa())),
+    ])
+    .unwrap();
+    conn.execute(
+        "INSERT INTO archive
+         (session_id, path, mtime, size, tool, project, title, started, ended,
+          msg_count, kind, transcript, touched, archived_at)
+         VALUES ('arcK','/gone/k.jsonl',0,0,'codex','/p','korean archived',
+                 NULL, NULL, 2, 'main', ?1, '[]', '2026-06-12T00:00:00Z')",
+        params![transcript],
+    )
+    .unwrap();
+    drop(conn);
+    {
+        let conn = index::open().unwrap();
+        conn.pragma_update(None, "user_version", 0i64).unwrap();
+    }
+    let conn = index::open().unwrap();
+    assert!(
+        index::search(&conn, "회사 프로젝트", 10, None, None)
+            .unwrap()
+            .iter()
+            .any(|h| h.row.session_id == "arcK"),
+        "rehydrate must re-normalize archived NFD text to NFC"
+    );
+}
+
+// 2-syllable Korean (회사) is below the trigram floor and unsearchable by FTS;
+// search_like finds it. This is the headline bug the user eval flagged.
+#[test]
+fn short_korean_query_matches_via_like() {
+    let _g = LOCK.lock().unwrap();
+    let conn = fresh_index();
+    seed_msg(
+        &conn,
+        "k1",
+        "/p",
+        "company",
+        "2026-06-10T10:00:00+00:00",
+        "우리 회사 온보딩 절차",
+    );
+    seed_msg(
+        &conn,
+        "k2",
+        "/p",
+        "other",
+        "2026-06-09T10:00:00+00:00",
+        "rate limiter off-by-one",
+    );
+    let hits = index::search_like(&conn, "회사", 10, None, None).unwrap();
+    let ids: Vec<&str> = hits.iter().map(|h| h.row.session_id.as_str()).collect();
+    assert!(ids.contains(&"k1"), "2-char Korean must match via LIKE");
+    assert!(!ids.contains(&"k2"));
+    let h = hits.iter().find(|h| h.row.session_id == "k1").unwrap();
+    assert!(
+        h.snippet.contains("\u{2}회사\u{3}"),
+        "match must be delimited like FTS"
+    );
+    assert_eq!(h.role, "user");
+    // A decomposed 2-char query is normalized and matches the same row.
+    assert!(index::search_like(&conn, &nfd_hoesa(), 10, None, None)
+        .unwrap()
+        .iter()
+        .any(|h| h.row.session_id == "k1"));
+}
+
+#[test]
+fn short_latin_query_matches_via_like() {
+    let _g = LOCK.lock().unwrap();
+    let conn = fresh_index();
+    seed_msg(
+        &conn,
+        "l1",
+        "/p",
+        "db",
+        "2026-06-10T10:00:00+00:00",
+        "the DB connection pool leaked",
+    );
+    assert!(index::search_like(&conn, "db", 10, None, None)
+        .unwrap()
+        .iter()
+        .any(|h| h.row.session_id == "l1"));
+    assert!(index::search_like(&conn, "zz", 10, None, None)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn short_query_escapes_like_wildcards() {
+    let _g = LOCK.lock().unwrap();
+    let conn = fresh_index();
+    // e1 contains the literal "9%x"; e2 contains "9zx". A query of "9%x" must
+    // match only e1. If % were treated as a wildcard, "9%x" would also match
+    // "9zx" (9, any, x) and let e2 through - so this distinguishes literal from
+    // wildcard. (search_like is called directly, bypassing the 3-char routing.)
+    seed_msg(
+        &conn,
+        "e1",
+        "/p",
+        "lit",
+        "2026-06-10T10:00:00+00:00",
+        "rate was 9%x today",
+    );
+    seed_msg(
+        &conn,
+        "e2",
+        "/p",
+        "wild",
+        "2026-06-09T10:00:00+00:00",
+        "rate was 9zx today",
+    );
+    let ids: Vec<String> = index::search_like(&conn, "9%x", 10, None, None)
+        .unwrap()
+        .iter()
+        .map(|h| h.row.session_id.clone())
+        .collect();
+    assert_eq!(
+        ids,
+        ["e1"],
+        "% must be escaped to a literal, not a wildcard"
+    );
+}
+
+#[test]
+fn short_query_orders_by_recency() {
+    let _g = LOCK.lock().unwrap();
+    let conn = fresh_index();
+    seed_msg(
+        &conn,
+        "r_old",
+        "/p",
+        "old",
+        "2026-06-01T10:00:00+00:00",
+        "회사 A",
+    );
+    seed_msg(
+        &conn,
+        "r_new",
+        "/p",
+        "new",
+        "2026-06-15T10:00:00+00:00",
+        "회사 B",
+    );
+    let ids: Vec<String> = index::search_like(&conn, "회사", 10, None, None)
+        .unwrap()
+        .iter()
+        .map(|h| h.row.session_id.clone())
+        .collect();
+    assert_eq!(
+        ids,
+        ["r_new", "r_old"],
+        "newest session first (LIKE has no rank)"
+    );
+}
+
+#[test]
+fn long_query_still_uses_fts_unchanged() {
+    let _g = LOCK.lock().unwrap();
+    let conn = fresh_index();
+    conn.execute(
+        "INSERT OR REPLACE INTO files
+         (path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind)
+         VALUES ('/fake/g1.jsonl', 0, 0, 'g1', 'codex', '/p', 'fts', ?1, ?1, 1, 'main')",
+        params!["2026-06-10T10:00:00+00:00"],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO messages(session_id, role, text) VALUES ('g1','assistant','negative balance bug')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO msgs(rowid, text) VALUES (last_insert_rowid(), 'negative balance bug')",
+        [],
+    )
+    .unwrap();
+    assert!(index::search(&conn, "negative", 10, None, None)
+        .unwrap()
+        .iter()
+        .any(|h| h.row.session_id == "g1"));
 }

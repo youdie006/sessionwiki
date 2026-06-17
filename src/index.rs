@@ -35,7 +35,7 @@ pub fn db_path() -> Result<PathBuf> {
 /// migrating. The exceptions are the durable tables (summaries, tags, notes,
 /// archive): they hold things that cannot be re-derived from the session files
 /// - LLM output, user curation, and sessions whose originals the tool deleted.
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 pub fn open() -> Result<Connection> {
     let conn = Connection::open(db_path()?)?;
@@ -230,7 +230,7 @@ fn rehydrate_archive(conn: &Connection) -> Result<()> {
                 a.path,
                 a.session_id,
                 a.tool,
-                a.project,
+                crate::util::nfc(&a.project),
                 a.title,
                 a.started,
                 a.ended,
@@ -245,6 +245,9 @@ fn rehydrate_archive(conn: &Connection) -> Result<()> {
             let mut ins_fts =
                 conn.prepare_cached("INSERT INTO msgs(rowid, text) VALUES (?1,?2)")?;
             for (role, text) in &msgs {
+                // Re-normalize on rehydrate: pre-fix archives hold raw/NFD JSON,
+                // so this is where archived Korean sessions become NFC again.
+                let text = crate::util::nfc(text);
                 ins_row.execute(params![a.session_id, role, text])?;
                 ins_fts.execute(params![conn.last_insert_rowid(), text])?;
             }
@@ -252,7 +255,7 @@ fn rehydrate_archive(conn: &Connection) -> Result<()> {
         let mut ins_touched =
             conn.prepare_cached("INSERT OR IGNORE INTO touched(session_id, path) VALUES (?1,?2)")?;
         for p in &paths {
-            ins_touched.execute(params![a.session_id, p])?;
+            ins_touched.execute(params![a.session_id, crate::util::nfc(p)])?;
         }
     }
     Ok(())
@@ -363,7 +366,7 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
                     size,
                     session.id,
                     session.tool,
-                    session.project,
+                    crate::util::nfc(&session.project),
                     session.title,
                     session.started.map(|t| t.to_rfc3339()),
                     session.ended.map(|t| t.to_rfc3339()),
@@ -380,13 +383,17 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
                 .prepare_cached("INSERT INTO messages(session_id, role, text) VALUES (?1,?2,?3)")?;
             let mut ins_fts = tx.prepare_cached("INSERT INTO msgs(rowid, text) VALUES (?1,?2)")?;
             for m in &session.messages {
-                ins_row.execute(params![session.id, m.role.label(), m.text])?;
-                ins_fts.execute(params![tx.last_insert_rowid(), m.text])?;
+                // Normalize once and reuse for both the plain row and the
+                // external-content FTS row: they MUST be byte-identical or the
+                // 'delete' reconciliation in delete_session_msgs corrupts.
+                let text = crate::util::nfc(&m.text);
+                ins_row.execute(params![session.id, m.role.label(), text])?;
+                ins_fts.execute(params![tx.last_insert_rowid(), text])?;
             }
             let mut ins_touched = tx
                 .prepare_cached("INSERT OR IGNORE INTO touched(session_id, path) VALUES (?1,?2)")?;
             for p in &session.touched {
-                ins_touched.execute(params![session.id, p])?;
+                ins_touched.execute(params![session.id, crate::util::nfc(p)])?;
             }
         }
         tx.commit()?;
@@ -573,7 +580,7 @@ pub fn recent(
     }
     if let Some(p) = project {
         sql.push_str(" AND project LIKE ?");
-        args.push(format!("%{p}%"));
+        args.push(format!("%{}%", crate::util::nfc(p)));
     }
     if let Some(t) = tag {
         sql.push_str(
@@ -620,7 +627,9 @@ pub fn search(
 ) -> Result<Vec<Hit>> {
     // A plain quoted string disables FTS5 operator parsing: users type
     // text, not query syntax.
-    let fts_query = format!("\"{}\"", query.replace('"', "\"\""));
+    // Normalize the query to NFC so it lines up with the NFC-normalized indexed
+    // text, then quote (the quoting is FTS5 syntax we add, not user content).
+    let fts_query = format!("\"{}\"", crate::util::nfc(query).replace('"', "\"\""));
 
     // snippet()/rank only work in a plain FTS5 query context, not under
     // joins or GROUP BY, so match in a subquery and attach metadata outside.
@@ -647,7 +656,7 @@ pub fn search(
     }
     if let Some(p) = project {
         sql.push_str(" AND f.project LIKE ?");
-        args.push(format!("%{p}%"));
+        args.push(format!("%{}%", crate::util::nfc(p)));
     }
     sql.push_str(&format!(
         " GROUP BY f.session_id ORDER BY best LIMIT {limit}"
@@ -675,6 +684,134 @@ pub fn search(
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Substring search for queries too short for the trigram FTS index (1-2
+/// chars, e.g. the Korean words 회사 / 검색). The trigram tokenizer needs >=3
+/// chars, so these terms are unindexable; we fall back to a LIKE scan of
+/// messages.text. Returns the same `Hit` shape as `search` so callers are
+/// agnostic to which path ran.
+///
+/// Perf: this is a table scan, used ONLY for short queries (the >=3 path stays
+/// on FTS). We cap the candidate rows scanned (SCAN_CAP) ordered newest-first
+/// so a very common 2-char term cannot walk an unbounded table; the tradeoff is
+/// that a session whose only match is older than the newest SCAN_CAP hits can be
+/// missed. Narrow to a >=3-char term to use the exact FTS path instead. LIKE has
+/// no rank, so results are ordered by recency (newest session first).
+pub fn search_like(
+    conn: &Connection,
+    query: &str,
+    limit: usize,
+    tool: Option<&str>,
+    project: Option<&str>,
+) -> Result<Vec<Hit>> {
+    const SCAN_CAP: i64 = 50_000;
+
+    // NFC so a decomposed query (macOS Korean) matches NFC-stored text, then
+    // escape LIKE metacharacters ('\' first so an escape char is literal).
+    let q = crate::util::nfc(query.trim());
+    let pattern = format!(
+        "%{}%",
+        q.replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
+
+    let mut sql = String::from(
+        "SELECT f.session_id, f.tool, f.path, f.project, f.title, f.started, f.msg_count, f.kind,
+                x.role, x.text, (f.archived_at IS NOT NULL)
+         FROM (SELECT m.session_id AS sid, m.role AS role, m.text AS text, m.id AS mid
+               FROM messages m
+               WHERE m.text LIKE ?1 ESCAPE '\\'
+               ORDER BY m.id DESC LIMIT ?2) x
+         JOIN files f ON f.session_id = x.sid
+         WHERE 1=1",
+    );
+    let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(pattern), Box::new(SCAN_CAP)];
+    if let Some(t) = tool {
+        sql.push_str(" AND f.tool = ?");
+        args.push(Box::new(t.to_string()));
+    }
+    if let Some(p) = project {
+        sql.push_str(" AND f.project LIKE ?");
+        args.push(Box::new(format!("%{}%", crate::util::nfc(p))));
+    }
+    // One row per session (its newest matching message), sessions newest-first.
+    sql.push_str(&format!(
+        " GROUP BY f.session_id ORDER BY max(x.mid) DESC LIMIT {limit}"
+    ));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(
+        rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())),
+        |r| {
+            let role: String = r.get(8)?;
+            let text: String = r.get(9)?;
+            Ok(Hit {
+                row: SessionRow {
+                    session_id: r.get(0)?,
+                    tool: r.get(1)?,
+                    path: r.get(2)?,
+                    project: r.get(3)?,
+                    title: r.get(4)?,
+                    started: r.get(5)?,
+                    msg_count: r.get(6)?,
+                    kind: r.get(7)?,
+                    preview: None,
+                    summary: None,
+                    tags: None,
+                    archived: r.get(10)?,
+                },
+                role,
+                snippet: snippet_around(&text, &q),
+            })
+        },
+    )?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Build a snippet for a LIKE hit: a window around the first (case-insensitive,
+/// NFC) match of `needle` in `text`, with the match wrapped in \u{2}..\u{3} -
+/// the same delimiters snippet() emits - so the CLI's ANSI swap and the web UI
+/// render LIKE hits identically to FTS hits. Matching is on chars, not bytes,
+/// so multibyte CJK is never sliced mid-codepoint.
+fn snippet_around(text: &str, needle: &str) -> String {
+    const WINDOW: usize = 36;
+    let hay_chars: Vec<char> = text.to_lowercase().chars().collect();
+    let nee_chars: Vec<char> = needle.to_lowercase().chars().collect();
+    let chars: Vec<char> = text.chars().collect();
+
+    let match_at = if nee_chars.is_empty() {
+        None
+    } else {
+        hay_chars
+            .windows(nee_chars.len())
+            .position(|w| w == nee_chars.as_slice())
+    };
+    let Some(start) = match_at else {
+        return chars
+            .iter()
+            .take(WINDOW * 2)
+            .collect::<String>()
+            .replace('\n', " ");
+    };
+    let end = start + nee_chars.len();
+    let lo = start.saturating_sub(WINDOW);
+    let hi = (end + WINDOW).min(chars.len());
+
+    let mut out = String::new();
+    if lo > 0 {
+        out.push('\u{2026}');
+    }
+    out.extend(&chars[lo..start]);
+    out.push('\u{2}');
+    out.extend(&chars[start..end]);
+    out.push('\u{3}');
+    out.extend(&chars[end..hi]);
+    if hi < chars.len() {
+        out.push('\u{2026}');
+    }
+    out.replace('\n', " ")
 }
 
 /// Resolve a (possibly abbreviated) session id to its file row.
@@ -812,7 +949,7 @@ pub fn sessions_for_file(
     query: &str,
     limit: usize,
 ) -> Result<Vec<(SessionRow, String)>> {
-    let q = query.trim().trim_start_matches("./");
+    let q = crate::util::nfc(query.trim().trim_start_matches("./"));
     let suffix = format!("%/{q}");
     let mut stmt = conn.prepare(&format!(
         "SELECT f.session_id, f.tool, f.path, f.project, f.title, f.started, f.msg_count, f.kind,

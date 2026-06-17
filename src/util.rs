@@ -11,6 +11,21 @@ pub fn short_id(s: &str) -> String {
     format!("{hash:016x}")[..12].to_string()
 }
 
+/// Normalize text to Unicode NFC before it enters or queries the index.
+///
+/// The FTS5 trigram tokenizer windows over raw bytes, so the same grapheme in
+/// two normalization forms never matches: macOS stores Hangul as NFD
+/// (decomposed jamo - "회사" as combining scalars) while a typed query is NFC,
+/// so without this an NFD-stored Korean session is invisible to an NFC search,
+/// and the `trace` suffix match misses the same way. Normalizing both the
+/// indexed text and the query to NFC makes them line up. Pure ASCII is already
+/// NFC, so this is a cheap near-no-op for English; the cost is per-message and
+/// negligible next to parsing and the SQLite write.
+pub fn nfc(s: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    s.nfc().collect()
+}
+
 pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut size = bytes as f64;
