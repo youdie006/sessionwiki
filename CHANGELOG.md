@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-06-18
+
 ### Added
 - `migrate <id> <dir>`: copy a session so it can be resumed from a different
   project directory. Each tool ties a session to a directory differently, so
@@ -212,6 +214,7 @@ semantic versioning once it reaches 1.0.
   incremental SQLite FTS5 index. Adapters for Claude Code, Codex, and Gemini
   CLI. 100% local, no telemetry.
 
+[0.11.0]: https://github.com/youdie006/sessionwiki/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/youdie006/sessionwiki/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/youdie006/sessionwiki/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/youdie006/sessionwiki/compare/v0.7.0...v0.8.0
