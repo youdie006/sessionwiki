@@ -14,6 +14,13 @@ semantic versioning once it reaches 1.0.
   from either; **gajae-code** (and upstream Pi) from `~/.gjc/agent/sessions`
   JSONL; and **Continue** from `~/.continue/sessions/*.json`. Each extracts the
   files a session edited so they show up in `trace`.
+- Harness labeling for the Korean "oh-my-*" wrappers. oh-my-claudecode,
+  oh-my-codex, and the oh-my-openagent / lazyclaudecode / lazycodex family run
+  on top of Claude Code, Codex, and OpenCode, so their conversations are already
+  indexed via those adapters; sessionwiki now detects which harness drove a
+  session (from the markers each injects) and auto-tags it `oh-my-claudecode` /
+  `oh-my-codex` / `oh-my-openagent`, so `list --tag oh-my-claudecode` works. No
+  new adapter required.
 
 ## [0.8.0] - 2026-06-17
 

@@ -4,6 +4,7 @@ mod codex;
 mod continue_dev;
 mod gajae;
 mod gemini;
+pub mod harness;
 mod opencode;
 
 use crate::model::{Session, StoreReport};
