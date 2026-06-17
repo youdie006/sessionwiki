@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning once it reaches 1.0.
 
-## [Unreleased]
+## [0.9.0] - 2026-06-17
 
 ### Added
 - Five new adapters, bringing supported tools to nine: the **Cline family**
@@ -164,6 +164,7 @@ semantic versioning once it reaches 1.0.
   incremental SQLite FTS5 index. Adapters for Claude Code, Codex, and Gemini
   CLI. 100% local, no telemetry.
 
+[0.9.0]: https://github.com/youdie006/sessionwiki/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/youdie006/sessionwiki/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/youdie006/sessionwiki/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/youdie006/sessionwiki/compare/v0.5.0...v0.6.0
