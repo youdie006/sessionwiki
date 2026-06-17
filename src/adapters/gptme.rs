@@ -2,7 +2,7 @@ use super::{title_from_messages, Adapter};
 use crate::model::{Message, Role, Session};
 use crate::util::short_id;
 use anyhow::{Context, Result};
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::Value;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -19,7 +19,7 @@ fn parse_ts(s: &str) -> Option<DateTime<Utc>> {
             // Python naive format: "2026-06-08T10:00:01.000000"
             NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f")
                 .ok()
-                .map(|n| Utc.from_utc_datetime(&n))
+                .map(|n| n.and_utc())
         })
 }
 
