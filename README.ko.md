@@ -35,9 +35,9 @@ gemini                50     1.2 MB  2026-04-02   2026-06-10    ~/.gemini/tmp
 
 읽는 게 더 편하면 웹 UI도 있습니다 &mdash; `sessionwiki web`:
 
-https://github.com/user-attachments/assets/9363d611-2122-4bdc-9263-348adbdab85d
+<img src="docs/demo-web.webp" width="820" alt="sessionwiki 웹 UI: 검색창 실제 타이핑, 태그·resume 명령이 달린 트랜스크립트, 파일 프로비넌스, 태그 필터, 다크 모드">
 
-<sub>검색창 실제 타이핑, 태그와 원커맨드 resume이 달린 트랜스크립트, 파일 프로비넌스, 태그 필터, 다크 모드. 플레이어가 안 보이면: <a href="docs/demo-web.webp">자동재생 버전</a> &middot; <a href="docs/demo-web.mp4">MP4</a>.</sub>
+<sub>검색창 실제 타이핑, 태그와 원커맨드 resume이 달린 트랜스크립트, 파일 프로비넌스, 태그 필터, 다크 모드. <a href="docs/demo-web.mp4">&#9654; 더 부드러운 HD (MP4)</a>.</sub>
 
 ## 무엇을 할 수 있나
 
