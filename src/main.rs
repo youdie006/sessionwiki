@@ -31,6 +31,9 @@ enum Command {
         /// Include subagent transcripts in the listing
         #[arg(long)]
         all: bool,
+        /// Emit as a JSON array (agent-friendly, stable field names)
+        #[arg(long)]
+        json: bool,
     },
     /// Full-text search across every session of every tool
     Search {
@@ -45,6 +48,9 @@ enum Command {
         /// Filter by project path substring
         #[arg(long)]
         project: Option<String>,
+        /// Emit as a JSON array (agent-friendly, stable field names)
+        #[arg(long)]
+        json: bool,
     },
     /// Browse and search sessions in a local web UI
     Web {
@@ -109,6 +115,10 @@ enum Command {
         /// Include tool calls in the briefing
         #[arg(long)]
         tools: bool,
+        /// Emit a JSON object { id, tool, project, title, started, source,
+        /// markdown } instead of raw markdown
+        #[arg(long)]
+        json: bool,
     },
     /// Show, add, or remove tags on a session (no id: list all tags in use)
     Tag {
@@ -136,6 +146,9 @@ enum Command {
         /// Max related sessions to show
         #[arg(short = 'n', long, default_value_t = 10)]
         limit: usize,
+        /// Emit as a JSON array (agent-friendly, stable field names)
+        #[arg(long)]
+        json: bool,
     },
     /// List the files a session edited or created
     Files {
@@ -168,19 +181,22 @@ fn main() {
             project,
             tag,
             all,
+            json,
         } => commands::list(
             limit,
             tool.as_deref(),
             project.as_deref(),
             tag.as_deref(),
             all,
+            json,
         ),
         Command::Search {
             query,
             limit,
             tool,
             project,
-        } => commands::search(&query, limit, tool.as_deref(), project.as_deref()),
+            json,
+        } => commands::search(&query, limit, tool.as_deref(), project.as_deref(), json),
         Command::Web {
             port,
             no_open,
@@ -210,10 +226,11 @@ fn main() {
             id,
             max_chars,
             tools,
-        } => commands::brief(&id, max_chars, tools),
+            json,
+        } => commands::brief(&id, max_chars, tools, json),
         Command::Tag { id, add, remove } => commands::tag(&id, &add, &remove),
         Command::Note { id, text } => commands::note(&id, text.as_deref()),
-        Command::Related { id, limit } => commands::related(&id, limit),
+        Command::Related { id, limit, json } => commands::related(&id, limit, json),
         Command::Files { id } => commands::files(&id),
         Command::Trace { path } => commands::trace(&path),
         Command::Forget { id } => commands::forget(&id),
