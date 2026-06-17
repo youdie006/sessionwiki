@@ -115,11 +115,15 @@ GB). After that, updates are incremental and take seconds.
 | `scan` | Discover session stores on this machine. Pure filesystem walk, instant. |
 | `list` | Recent sessions across all tools in one timeline. `--tool codex`, `--project api`, `--tag spike`, `-n 50`, `--all` (include subagent transcripts). |
 | `search <query>` | Full-text search over every message of every tool. Minimum 3 characters. |
+| `recall <query>` | One shot: search, list the candidate matches, and brief the top one &mdash; the search &rarr; pick id &rarr; brief loop in a single command. `--tool`, `--project`, `-n`, `--max-chars`, `--json` (for agents). The fastest way back into a past session. |
 | `show <id>` | One session as a readable transcript. `--full` expands tool calls, `--json` emits the parsed session, `--outline` prints a digest: every question you asked plus how it ended. |
 | `summarize [id]` | Generate 1&ndash;2 sentence synopses with **your own LLM CLI** (`claude -p` by default, `--cmd` / `SESSIONWIKI_SUMMARIZER` to change) and cache them in the index. Without an id, batches over the `--recent N` newest sessions. Summaries survive reindexing and show up in `show`, `--outline`, and the web sidebar. |
 | `resume <id>` | Reopen the session in its original tool: `claude --resume` / `codex resume`, run in the right project directory. Subagent transcripts resume their parent. `--print` to just show the command. |
 | `brief <id>` | Emit the session as a markdown briefing (head and tail, middle omitted) to carry context into any tool &mdash; including across tools. `--max-chars`, `--tools`. |
 | `web` | Local viewer on `127.0.0.1:7575`: day-grouped sessions with synopsis previews, live search with highlighted snippets, rendered transcripts with outlines, tags, and "see also" related sessions, resume commands, light and dark themes, UI in English, Korean, Japanese, and Chinese (auto-detected). It reads the existing index (sessions created after your last `list`/`search` show up once you refresh); `web --sync` refreshes first. Never leaves localhost. |
+| `sync [--tool]` | Build or refresh the index on demand. Pair with `--no-sync` (below) so queries skip the store walk. Handy from a cron to keep the index warm. |
+
+Every query command (`search`, `list`, `recall`, `show`, `brief`, `resume`, `trace`) takes `--no-sync` to query the already-built index without re-walking the stores &mdash; the fast path when something else (e.g. a cron running `sessionwiki sync`) keeps the index current.
 
 ### Session engineering
 
@@ -353,7 +357,7 @@ drift between tool versions, so parse defensively and return what you can.
   help with (see [adding an adapter](#adding-an-adapter))
 - richer provenance &mdash; correlate a session's edits with the file's git
   history so `trace` can narrow to the commits and line ranges around it
-- `sync` &mdash; merge indexes from multiple machines
+- `merge` &mdash; combine indexes from multiple machines into one
 - `clean` &mdash; reclaim disk from huge old session stores, safely
 - prebuilt binaries for every platform
 
