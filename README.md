@@ -289,7 +289,10 @@ read-only. See the FAQ above.
 | Codex CLI | `~/.codex/sessions/**/rollout-*.jsonl` | supported |
 | Gemini CLI | `~/.gemini/tmp/*/chats/*.json` | supported |
 | OpenCode | `~/.local/share/opencode/storage/{session,message,part}/**` | supported |
-| Cursor, Cline, Aider, Continue, ... | | planned &mdash; PRs welcome |
+| Cline, Roo Code, Kilo Code | VS Code `globalStorage/<ext>/tasks/<id>/` (one parser, three tools) | supported |
+| gajae-code (& Pi) | `~/.gjc/agent/sessions/**/*.jsonl` | supported |
+| Continue | `~/.continue/sessions/*.json` | supported |
+| Cursor, Aider, Zed, ... | | planned &mdash; PRs welcome |
 
 ### Where sessionwiki fits
 
@@ -309,7 +312,8 @@ and other multi-tool CLIs. sessionwiki makes a few specific bets:
   navigable as it grows.
 
 Honest tradeoff: if you want the widest tool coverage *today*, sessionwiki
-supports four (Claude Code, Codex, Gemini CLI, OpenCode) and is growing &mdash; adapters are
+supports nine (Claude Code, Codex, Gemini CLI, OpenCode, Cline, Roo Code, Kilo Code,
+gajae-code, Continue) and is growing &mdash; adapters are
 the #1 thing [PRs](#adding-an-adapter) help with. If you mainly use those tools,
 care about CJK, or want one binary that works everywhere, this is built for you.
 
@@ -334,7 +338,7 @@ drift between tool versions, so parse defensively and return what you can.
 
 ## Roadmap
 
-- more adapters &mdash; Cursor, Cline, Continue, Aider, ... the #1 thing PRs
+- more adapters &mdash; Cursor, Aider, Zed, gptme, ... the #1 thing PRs
   help with (see [adding an adapter](#adding-an-adapter))
 - richer provenance &mdash; correlate a session's edits with the file's git
   history so `trace` can narrow to the commits and line ranges around it

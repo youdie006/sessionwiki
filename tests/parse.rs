@@ -192,6 +192,135 @@ fn opencode_multi_file_session() {
 }
 
 #[test]
+fn cline_xml_and_native_tool_edits() {
+    // Cline keeps each task as api_conversation_history.json (the Anthropic
+    // Messages array) plus ui_messages.json (timestamps + the title).
+    let s = parse(
+        "cline",
+        "cline/tasks/1749477660000/api_conversation_history.json",
+    );
+
+    assert_eq!(s.tool, "cline");
+    assert_eq!(s.title, "Add a hello function to src/main.py"); // ui_messages say:"task"
+    assert_eq!(s.project, "/home/dev/app"); // from <environment_details>
+    assert!(!s.subagent);
+
+    // The <task>/<environment_details> wrappers and the tool-result feedback
+    // turn ("[... ] Result:") are stripped; XML and native tool calls both
+    // become Tool messages.
+    assert_eq!(
+        roles(&s),
+        [
+            "user",
+            "assistant",
+            "tool",
+            "assistant",
+            "tool",
+            "assistant"
+        ]
+    );
+    assert_eq!(s.messages[0].text, "Add a hello function to src/main.py");
+    assert!(s
+        .messages
+        .iter()
+        .all(|m| !m.text.contains("environment_details")));
+    assert!(s.messages.iter().all(|m| !m.text.contains("] Result:")));
+    assert!(s
+        .messages
+        .iter()
+        .all(|m| !m.text.contains("successfully saved")));
+
+    // Provenance from BOTH the XML <write_to_file><path> and the native
+    // tool_use input.path.
+    assert_eq!(s.touched, ["src/main.py", "tests/test_main.py"]);
+
+    assert_eq!(
+        s.started,
+        chrono::DateTime::from_timestamp_millis(1749477660000)
+    );
+    assert_eq!(
+        s.ended,
+        chrono::DateTime::from_timestamp_millis(1749477700000)
+    );
+}
+
+#[test]
+fn gajae_jsonl_session() {
+    // gajae-code (and upstream Pi) store one JSONL transcript per session: a
+    // header line then message lines, with toolCall/arguments content blocks.
+    let s = parse(
+        "gajae-code",
+        "gajae-code/--home--dev--proj--/2025-12-09T00-53-29-825Z_ffae836b-9420-4060-ac13-7745215f90ff.jsonl",
+    );
+
+    assert_eq!(s.tool, "gajae-code");
+    assert_eq!(s.title, "refactor the parser"); // header title
+    assert_eq!(s.project, "/home/dev/proj"); // header cwd
+    assert!(!s.subagent);
+
+    // thinking blocks dropped; toolResult -> tool; the malformed line is skipped
+    // without panicking.
+    assert_eq!(
+        roles(&s),
+        [
+            "user",
+            "assistant",
+            "tool",
+            "tool",
+            "assistant",
+            "tool",
+            "assistant",
+            "tool",
+            "assistant"
+        ]
+    );
+    assert!(s
+        .messages
+        .iter()
+        .all(|m| !m.text.contains("considering the structure")));
+
+    // Provenance: write (arguments.path) + ast_edit (arguments.paths[]) with the
+    // repeat de-duplicated; read is excluded.
+    assert_eq!(s.touched, ["src/parse.ts", "src/helper.ts"]);
+
+    // started = header RFC3339; ended = last entry's RFC3339.
+    assert_eq!(
+        s.started.map(|t| t.to_rfc3339()),
+        Some("2025-12-09T00:53:29.825+00:00".to_string())
+    );
+    assert_eq!(
+        s.ended.map(|t| t.to_rfc3339()),
+        Some("2025-12-09T00:53:40+00:00".to_string())
+    );
+}
+
+#[test]
+fn continue_session_with_tool_edit() {
+    let s = parse(
+        "continue",
+        "continue/sessions/5f1d2c9a-8b34-4e21-9d6e-7a0c1b2e3f44.json",
+    );
+
+    assert_eq!(s.tool, "continue");
+    assert_eq!(s.title, "Add retry to the HTTP client");
+    assert_eq!(s.project, "/home/alex/projects/acme-api");
+    assert!(!s.subagent);
+
+    assert_eq!(roles(&s), ["user", "assistant", "tool", "tool"]);
+
+    // Provenance from toolCallStates[].parsedArgs.filepath.
+    assert_eq!(s.touched, ["src/http.ts"]);
+
+    // The session file has no timestamps; started comes from sessions.json's
+    // dateCreated (epoch-ms as a string); there is no reliable ended.
+    assert_eq!(
+        s.started,
+        chrono::DateTime::from_timestamp_millis(1718600000000)
+    );
+    assert_eq!(s.ended, None);
+}
+
+#[test]
 fn missing_file_errors_without_panicking() {
     let adapter = adapters::by_name("codex").unwrap();
     assert!(adapter
@@ -201,7 +330,17 @@ fn missing_file_errors_without_panicking() {
 
 #[test]
 fn every_adapter_is_addressable_by_name() {
-    for tool in ["claude-code", "codex", "gemini", "opencode"] {
+    for tool in [
+        "claude-code",
+        "codex",
+        "gemini",
+        "opencode",
+        "cline",
+        "roo-code",
+        "kilo-code",
+        "gajae-code",
+        "continue",
+    ] {
         assert!(adapters::by_name(tool).is_some(), "{tool} should resolve");
     }
     assert!(adapters::by_name("nonexistent").is_none());

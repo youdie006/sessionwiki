@@ -1,5 +1,8 @@
 mod claude_code;
+mod cline;
 mod codex;
+mod continue_dev;
+mod gajae;
 mod gemini;
 mod opencode;
 
@@ -31,6 +34,11 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
         Box::new(codex::Codex),
         Box::new(gemini::Gemini),
         Box::new(opencode::OpenCode),
+        Box::new(cline::Cline),
+        Box::new(cline::RooCode),
+        Box::new(cline::KiloCode),
+        Box::new(gajae::GajaeCode),
+        Box::new(continue_dev::Continue),
     ]
 }
 

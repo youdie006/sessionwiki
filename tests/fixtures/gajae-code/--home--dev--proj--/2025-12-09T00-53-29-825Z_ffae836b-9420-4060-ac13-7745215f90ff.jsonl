@@ -1,0 +1,9 @@
+{"type":"session","version":3,"id":"ffae836b-9420-4060-ac13-7745215f90ff","timestamp":"2025-12-09T00:53:29.825Z","cwd":"/home/dev/proj","title":"refactor the parser"}
+{"type":"message","timestamp":"2025-12-09T00:53:30.100Z","id":"u1","parentId":null,"message":{"role":"user","content":[{"type":"text","text":"refactor the parser"}],"timestamp":1765241610100}}
+{"type":"message","timestamp":"2025-12-09T00:53:31.200Z","id":"a1","parentId":"u1","message":{"role":"assistant","content":[{"type":"thinking","thinking":"considering the structure"},{"type":"text","text":"I'll rewrite it."},{"type":"toolCall","id":"toolu_01","name":"write","arguments":{"path":"src/parse.ts","content":"export const parse = () => {}\n"}}],"timestamp":1765241611200}}
+{"type":"message","timestamp":"2025-12-09T00:53:31.260Z","id":"t1","parentId":"a1","message":{"role":"toolResult","toolCallId":"toolu_01","toolName":"write","content":[{"type":"text","text":"Successfully wrote 28 bytes to src/parse.ts"}],"isError":false}}
+{ this line is deliberately malformed and must be skipped
+{"type":"message","timestamp":"2025-12-09T00:53:35.000Z","id":"a2","parentId":"t1","message":{"role":"assistant","content":[{"type":"text","text":"Reading the config first."},{"type":"toolCall","id":"toolu_02","name":"read","arguments":{"path":"config.ts"}}],"timestamp":1765241615000}}
+{"type":"message","timestamp":"2025-12-09T00:53:38.000Z","id":"a3","parentId":"a2","message":{"role":"assistant","content":[{"type":"text","text":"Now applying the AST edit."},{"type":"toolCall","id":"toolu_03","name":"ast_edit","arguments":{"paths":["src/parse.ts","src/helper.ts"]}}],"timestamp":1765241618000}}
+{"type":"model_change","timestamp":"2025-12-09T00:53:39.000Z","model":"claude-opus-4-5"}
+{"type":"message","timestamp":"2025-12-09T00:53:40.000Z","id":"a4","parentId":"a3","message":{"role":"assistant","content":[{"type":"text","text":"Done - parser rewritten."}],"timestamp":1765241620000}}

@@ -214,7 +214,10 @@ flowchart LR
 | Codex CLI | `~/.codex/sessions/**/rollout-*.jsonl` | 지원 |
 | Gemini CLI | `~/.gemini/tmp/*/chats/*.json` | 지원 |
 | OpenCode | `~/.local/share/opencode/storage/{session,message,part}/**` | 지원 |
-| Cursor, Cline, Aider, Continue, ... | | 예정 &mdash; PR 환영 |
+| Cline, Roo Code, Kilo Code | VS Code `globalStorage/<ext>/tasks/<id>/` (파서 하나로 세 툴) | 지원 |
+| gajae-code (& Pi) | `~/.gjc/agent/sessions/**/*.jsonl` | 지원 |
+| Continue | `~/.continue/sessions/*.json` | 지원 |
+| Cursor, Aider, Zed, ... | | 예정 &mdash; PR 환영 |
 
 ### sessionwiki의 자리
 
@@ -225,7 +228,7 @@ AI 세션 기록 탐색은 이미 활발한 분야입니다 &mdash; 네이티브
 - **무설정 CJK 검색.** trigram 색인이 한국어·일본어·중국어(그리고 부분 단어)를 기본으로 검색합니다 &mdash; 대부분의 도구가 약한 지점입니다.
 - **검색을 넘는 큐레이션 레이어.** 태그·노트·`related`·`brief`·`stats` &mdash; [세션 엔지니어링](#세션-엔지니어링), 아카이브가 커져도 탐색 가능하게.
 
-솔직한 트레이드오프: *지금 당장* 가장 넓은 도구 커버리지가 필요하다면 sessionwiki는 4개(Claude Code·Codex·Gemini CLI·OpenCode)를 지원하며 늘려가는 중입니다 &mdash; 어댑터가 [PR](#어댑터-추가하기)로 가장 도움받는 부분입니다. 이 도구들을 주로 쓰거나, CJK가 중요하거나, 어디서나 도는 단일 바이너리를 원한다면 이 도구가 맞습니다.
+솔직한 트레이드오프: *지금 당장* 가장 넓은 도구 커버리지가 필요하다면 sessionwiki는 9개(Claude Code·Codex·Gemini CLI·OpenCode·Cline·Roo Code·Kilo Code·gajae-code·Continue)를 지원하며 늘려가는 중입니다 &mdash; 어댑터가 [PR](#어댑터-추가하기)로 가장 도움받는 부분입니다. 이 도구들을 주로 쓰거나, CJK가 중요하거나, 어디서나 도는 단일 바이너리를 원한다면 이 도구가 맞습니다.
 
 ## 어댑터 추가하기
 
@@ -244,7 +247,7 @@ pub trait Adapter {
 
 ## 로드맵
 
-- 더 많은 어댑터 &mdash; Cursor, Cline, Continue, Aider 등. PR로 가장 도움받는 부분([어댑터 추가하기](#어댑터-추가하기))
+- 더 많은 어댑터 &mdash; Cursor, Aider, Zed, gptme 등. PR로 가장 도움받는 부분([어댑터 추가하기](#어댑터-추가하기))
 - 더 정밀한 프로비넌스 &mdash; 세션의 편집을 파일의 git 히스토리와 대조해 `trace`가 주변 커밋·줄 범위까지 좁히도록
 - `sync` &mdash; 여러 머신의 인덱스 병합
 - `clean` &mdash; 거대한 옛 세션 저장소의 디스크 안전 회수
