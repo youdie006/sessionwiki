@@ -41,25 +41,19 @@ SERVER=$!
 trap 'kill $SERVER 2>/dev/null || true' EXIT
 sleep 2
 
-# 3. Record the real interaction to a webm.
+# 3. Record the real interaction to a webm + a timeline of scene focus rects.
 rm -rf "$REC"; mkdir -p "$REC"
 WEBM=$(node "$ROOT/scripts/record_web_demo.cjs" "$PW" "http://127.0.0.1:$PORT" "$REC")
 echo "recorded $WEBM"
 
-# 4. Encode two artifacts:
+# 4. Apply the ad-style focus zoom (follows the action via the measured
+# timeline) and encode both artifacts:
+#  - demo-web.mp4: H.264, hardware-decoded, smooth - the HD version linked from
+#    the README (drop it into a GitHub issue for a native inline-player URL).
 #  - demo-web.webp: the README hero. Animated WebP AUTOPLAYS and loops inline on
-#    GitHub (a committed mp4 does not - GitHub's native video player is
-#    click-to-play). Kept at a sane 13fps so software decode does not stutter
-#    the way the old 60fps zoom version did.
-#  - demo-web.mp4: a smoother, hardware-decoded HD version, linked from the
-#    README; drop it into a GitHub issue for a native inline player URL.
-ffmpeg -nostdin -loglevel error -ss 0.6 -i "$WEBM" -t 17 \
-  -vf "fps=13,scale=800:-2:flags=lanczos" \
-  -vcodec libwebp -lossless 0 -q:v 52 -loop 0 \
-  "$DOCS/demo-web.webp" -y
-ffmpeg -nostdin -loglevel error -i "$WEBM" \
-  -vf "fps=30,scale=960:-2:flags=lanczos" \
-  -c:v libx264 -crf 23 -preset slow -pix_fmt yuv420p -movflags +faststart \
-  "$DOCS/demo-web.mp4" -y
+#    GitHub (a committed mp4 does not); kept at a sane 14fps so software decode
+#    does not stutter the way the old 60fps version did.
+python3 "$ROOT/scripts/zoom_web_demo.py" "$WEBM" "$REC/timeline.json" \
+  "$DOCS/demo-web.mp4" "$DOCS/demo-web.webp"
 
 echo "wrote $DOCS/demo-web.webp ($(du -h "$DOCS/demo-web.webp" | cut -f1)) + demo-web.mp4 ($(du -h "$DOCS/demo-web.mp4" | cut -f1))"
