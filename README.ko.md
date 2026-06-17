@@ -213,7 +213,7 @@ flowchart LR
 | Claude Code | `~/.claude/projects/**/*.jsonl` (중첩 서브에이전트 트랜스크립트 포함) | 지원 |
 | Codex CLI | `~/.codex/sessions/**/rollout-*.jsonl` | 지원 |
 | Gemini CLI | `~/.gemini/tmp/*/chats/*.json` | 지원 |
-| OpenCode | `~/.local/share/opencode/storage/{session,message,part}/**` | 지원 |
+| OpenCode | `~/.local/share/opencode/opencode.db` (SQLite; 레거시 `storage/**` JSON도) | 지원 |
 | Cline, Roo Code, Kilo Code | VS Code `globalStorage/<ext>/tasks/<id>/` (파서 하나로 세 툴) | 지원 |
 | gajae-code (& Pi) | `~/.gjc/agent/sessions/**/*.jsonl` | 지원 |
 | Continue | `~/.continue/sessions/*.json` | 지원 |

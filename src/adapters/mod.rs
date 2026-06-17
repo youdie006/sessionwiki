@@ -18,6 +18,20 @@ use std::path::{Path, PathBuf};
 /// Adding support for a new tool means implementing this trait in a new
 /// module and registering it in `all()`. PRs for new adapters are the main
 /// way this project grows.
+/// A store that holds many sessions in one place (e.g. a SQLite database)
+/// rather than one file per session. Returned by [`Adapter::store`] when the
+/// file-per-session model does not fit; the indexer then enumerates sessions
+/// from `keys` (re-parsing only changed ones) instead of `discover`/`parse`.
+pub struct Store {
+    /// `(stable key, change-token)` for every session, cheap to compute without
+    /// a full parse. The change-token (e.g. the session's updated-time in ms)
+    /// drives incremental re-indexing; the key identifies the session for
+    /// [`Adapter::parse_key`]. The key doubles as the session's stored path.
+    pub keys: Vec<(String, i64)>,
+    /// The backing files (the database), for `scan` size accounting.
+    pub files: Vec<PathBuf>,
+}
+
 pub trait Adapter {
     fn name(&self) -> &'static str;
     /// Store root, e.g. ~/.claude/projects. May not exist on this machine.
@@ -27,6 +41,17 @@ pub trait Adapter {
     /// Parse one session file. Must never panic on malformed input;
     /// skip bad lines and return what could be read.
     fn parse(&self, path: &Path) -> Result<Session>;
+    /// A shared store (many sessions in one database) for tools that do not use
+    /// one file per session. When `Some`, the indexer uses it instead of
+    /// `discover`/`parse`. Default `None` = ordinary file-per-session adapter.
+    fn store(&self) -> Option<Store> {
+        None
+    }
+    /// Parse one session out of a shared store by its key (from `store().keys`).
+    /// Only called for adapters that return a [`Store`].
+    fn parse_key(&self, _key: &str) -> Result<Session> {
+        anyhow::bail!("this adapter is not a shared store")
+    }
 }
 
 pub fn all() -> Vec<Box<dyn Adapter>> {
@@ -52,6 +77,36 @@ pub fn report(adapter: &dyn Adapter) -> Option<StoreReport> {
     let root = adapter.root()?;
     if !root.exists() {
         return None;
+    }
+    // Shared store (e.g. SQLite): size is the backing files, count is the
+    // session count, and the time span comes from the per-session change-tokens.
+    if let Some(store) = adapter.store() {
+        let bytes = store
+            .files
+            .iter()
+            .filter_map(|f| f.metadata().ok())
+            .map(|m| m.len())
+            .sum();
+        let oldest = store
+            .keys
+            .iter()
+            .map(|(_, t)| *t)
+            .min()
+            .and_then(DateTime::from_timestamp_millis);
+        let newest = store
+            .keys
+            .iter()
+            .map(|(_, t)| *t)
+            .max()
+            .and_then(DateTime::from_timestamp_millis);
+        return Some(StoreReport {
+            tool: adapter.name(),
+            root,
+            files: store.keys.len(),
+            bytes,
+            oldest,
+            newest,
+        });
     }
     let files = adapter.discover();
     let mut bytes: u64 = 0;
