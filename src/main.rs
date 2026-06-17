@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use sessionwiki::{commands, web};
 
 /// Find, search, and read every AI coding session on your machine -
-/// across Claude Code, Codex, and Gemini CLI. 100% local.
+/// across Claude Code, Codex, Gemini CLI, and OpenCode. 100% local.
 #[derive(Parser)]
 #[command(name = "sessionwiki", version, about, max_term_width = 100)]
 struct Cli {

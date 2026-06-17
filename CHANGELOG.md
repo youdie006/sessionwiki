@@ -7,6 +7,11 @@ semantic versioning once it reaches 1.0.
 ## [Unreleased]
 
 ### Added
+- OpenCode adapter: indexes sst/opencode sessions from
+  `~/.local/share/opencode/storage` (the multi-file session/message/part JSON
+  layout, joined in id order), including the files each session edited (the
+  `edit`/`write` tools' `filePath` and `patch` file lists) for `trace`. Brings
+  supported tools to four.
 - Provenance: sessions are linked to the files they edited or created, read
   from their tool calls (Claude's `Edit`/`Write`/`MultiEdit`, Codex's
   `apply_patch`). New commands: `files <id>` (a session's edits) and

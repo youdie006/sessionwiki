@@ -1,0 +1,17 @@
+{
+  "id": "prt_003",
+  "sessionID": "ses_aaa",
+  "messageID": "msg_002",
+  "type": "tool",
+  "tool": "edit",
+  "callID": "toolu_1",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/home/dev/myapp/src/http/client.ts",
+      "oldString": "a",
+      "newString": "b"
+    },
+    "output": "Edited"
+  }
+}

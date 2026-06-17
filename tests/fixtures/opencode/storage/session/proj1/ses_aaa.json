@@ -1,0 +1,11 @@
+{
+  "id": "ses_aaa",
+  "projectID": "proj1",
+  "directory": "/home/dev/myapp",
+  "title": "Add retry to the HTTP client",
+  "version": "0.7.0",
+  "time": {
+    "created": 1718630400000,
+    "updated": 1718630521340
+  }
+}

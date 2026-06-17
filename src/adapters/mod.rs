@@ -1,6 +1,7 @@
 mod claude_code;
 mod codex;
 mod gemini;
+mod opencode;
 
 use crate::model::{Session, StoreReport};
 use anyhow::Result;
@@ -29,6 +30,7 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
         Box::new(claude_code::ClaudeCode),
         Box::new(codex::Codex),
         Box::new(gemini::Gemini),
+        Box::new(opencode::OpenCode),
     ]
 }
 

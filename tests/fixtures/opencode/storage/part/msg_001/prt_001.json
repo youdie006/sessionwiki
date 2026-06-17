@@ -1,0 +1,7 @@
+{
+  "id": "prt_001",
+  "sessionID": "ses_aaa",
+  "messageID": "msg_001",
+  "type": "text",
+  "text": "Add a retry with exponential backoff to fetchUser()."
+}

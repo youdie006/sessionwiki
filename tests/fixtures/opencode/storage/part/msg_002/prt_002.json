@@ -1,0 +1,7 @@
+{
+  "id": "prt_002",
+  "sessionID": "ses_aaa",
+  "messageID": "msg_002",
+  "type": "text",
+  "text": "Done - wrapped fetchUser in a 3-attempt retry with jitter."
+}
