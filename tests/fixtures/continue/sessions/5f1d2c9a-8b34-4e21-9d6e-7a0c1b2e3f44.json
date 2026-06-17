@@ -1,0 +1,46 @@
+{
+  "sessionId": "5f1d2c9a-8b34-4e21-9d6e-7a0c1b2e3f44",
+  "title": "Add retry to the HTTP client",
+  "workspaceDirectory": "/home/alex/projects/acme-api",
+  "history": [
+    {
+      "message": { "role": "user", "content": "Add a retry wrapper to src/http.ts" },
+      "contextItems": []
+    },
+    {
+      "message": {
+        "role": "assistant",
+        "content": "I'll edit the file to add retries.",
+        "toolCalls": [
+          {
+            "id": "toolu_01AbC",
+            "type": "function",
+            "function": {
+              "name": "edit_existing_file",
+              "arguments": "{\"filepath\":\"src/http.ts\",\"changes\":\"...\"}"
+            }
+          }
+        ]
+      },
+      "contextItems": [],
+      "toolCallStates": [
+        {
+          "toolCallId": "toolu_01AbC",
+          "toolCall": {
+            "id": "toolu_01AbC",
+            "type": "function",
+            "function": { "name": "edit_existing_file", "arguments": "{\"filepath\":\"src/http.ts\"}" }
+          },
+          "status": "done",
+          "parsedArgs": { "filepath": "src/http.ts", "changes": "export async function withRetry(fn){ /* ... */ }" }
+        }
+      ]
+    },
+    {
+      "message": { "role": "tool", "content": "Edit applied to src/http.ts", "toolCallId": "toolu_01AbC" },
+      "contextItems": []
+    }
+  ],
+  "mode": "agent",
+  "chatModelTitle": "Claude Sonnet 4.5"
+}

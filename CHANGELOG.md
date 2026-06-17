@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning once it reaches 1.0.
 
+## [Unreleased]
+
+### Added
+- Five new adapters, bringing supported tools to nine: the **Cline family**
+  (Cline, Roo Code, Kilo Code) from one parser over their shared VS Code
+  `globalStorage/<ext>/tasks/<id>/` layout - handling both native `tool_use`
+  blocks and the XML-in-text tool calls Cline writes, and pulling edited files
+  from either; **gajae-code** (and upstream Pi) from `~/.gjc/agent/sessions`
+  JSONL; and **Continue** from `~/.continue/sessions/*.json`. Each extracts the
+  files a session edited so they show up in `trace`.
+
 ## [0.8.0] - 2026-06-17
 
 ### Added

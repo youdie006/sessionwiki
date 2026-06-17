@@ -1,0 +1,49 @@
+[
+  {
+    "role": "user",
+    "content": "<task>\nAdd a hello function to src/main.py\n</task>"
+  },
+  {
+    "role": "assistant",
+    "content": [
+      {
+        "type": "text",
+        "text": "I'll create the function.\n\n<write_to_file>\n<path>src/main.py</path>\n<content>\ndef hello():\n    return 'hi'\n</content>\n</write_to_file>"
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      { "type": "text", "text": "[write_to_file for 'src/main.py'] Result:" },
+      {
+        "type": "text",
+        "text": "The content was successfully saved to src/main.py.\n\n<environment_details>\n# Current Working Directory (/home/dev/app)\nsrc/main.py\n</environment_details>"
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": [
+      { "type": "text", "text": "Now I'll add a test." },
+      {
+        "type": "tool_use",
+        "id": "toolu_2",
+        "name": "write_to_file",
+        "input": { "path": "tests/test_main.py", "content": "def test_hello():\n    assert hello() == 'hi'\n" }
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      { "type": "tool_result", "tool_use_id": "toolu_2", "content": "The content was successfully saved to tests/test_main.py." }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": [
+      { "type": "text", "text": "Done - added hello() and a test." }
+    ]
+  }
+]
