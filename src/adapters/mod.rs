@@ -30,6 +30,11 @@ pub struct Store {
     pub keys: Vec<(String, i64)>,
     /// The backing files (the database), for `scan` size accounting.
     pub files: Vec<PathBuf>,
+    /// True if a backing store existed but could not be read this run (locked,
+    /// half-written, permissions). The indexer then skips deletion
+    /// reconciliation, so a transient read failure cannot archive the whole
+    /// corpus off an incomplete key set.
+    pub had_error: bool,
 }
 
 pub trait Adapter {
@@ -75,28 +80,34 @@ pub fn by_name(name: &str) -> Option<Box<dyn Adapter>> {
 /// Filesystem-only summary of a store, used by `scan`. No parsing involved.
 pub fn report(adapter: &dyn Adapter) -> Option<StoreReport> {
     let root = adapter.root()?;
-    if !root.exists() {
-        return None;
-    }
-    // Shared store (e.g. SQLite): size is the backing files, count is the
-    // session count, and the time span comes from the per-session change-tokens.
+    // Shared store (e.g. SQLite): presence comes from the store itself (the db
+    // can live outside `root` via OPENCODE_DB), so this is checked before the
+    // root-exists gate. Size is the backing files, count is the sessions, and
+    // the time span comes from the per-session change-tokens.
     if let Some(store) = adapter.store() {
+        if store.keys.is_empty() {
+            return None; // present but no sessions yet - not worth a scan row
+        }
         let bytes = store
             .files
             .iter()
             .filter_map(|f| f.metadata().ok())
             .map(|m| m.len())
             .sum();
+        // Tokens are last-activity ms; drop the 0 sentinel (a missing timestamp)
+        // so it cannot backdate the span to 1970.
         let oldest = store
             .keys
             .iter()
             .map(|(_, t)| *t)
+            .filter(|t| *t > 0)
             .min()
             .and_then(DateTime::from_timestamp_millis);
         let newest = store
             .keys
             .iter()
             .map(|(_, t)| *t)
+            .filter(|t| *t > 0)
             .max()
             .and_then(DateTime::from_timestamp_millis);
         return Some(StoreReport {
@@ -107,6 +118,9 @@ pub fn report(adapter: &dyn Adapter) -> Option<StoreReport> {
             oldest,
             newest,
         });
+    }
+    if !root.exists() {
+        return None;
     }
     let files = adapter.discover();
     let mut bytes: u64 = 0;
@@ -126,6 +140,9 @@ pub fn report(adapter: &dyn Adapter) -> Option<StoreReport> {
                 newest = Some(t);
             }
         }
+    }
+    if count == 0 {
+        return None; // root exists but holds no session files
     }
     Some(StoreReport {
         tool: adapter.name(),

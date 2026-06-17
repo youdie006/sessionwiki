@@ -55,51 +55,73 @@ impl Adapter for OpenCode {
             return None;
         }
         let mut keys: Vec<(String, i64)> = Vec::new();
+        let mut had_error = false;
         for db in &dbs {
-            let Ok(conn) = open_ro(db) else { continue };
-            let Ok(mut stmt) = conn.prepare("SELECT id, time_updated, time_created FROM session")
-            else {
-                continue;
+            let conn = match open_ro(db) {
+                Ok(c) => c,
+                Err(_) => {
+                    had_error = true;
+                    continue;
+                }
             };
-            let Ok(rows) = stmt.query_map([], |r| {
+            let mut stmt = match conn.prepare("SELECT id, time_updated, time_created FROM session")
+            {
+                Ok(s) => s,
+                Err(_) => {
+                    had_error = true;
+                    continue;
+                }
+            };
+            let rows = stmt.query_map([], |r| {
                 let id: String = r.get(0)?;
                 let updated: Option<i64> = r.get(1)?;
                 let created: Option<i64> = r.get(2)?;
                 Ok((id, updated.or(created).unwrap_or(0)))
-            }) else {
-                continue;
-            };
-            for (id, token) in rows.flatten() {
-                keys.push((make_key(db, &id), token));
+            });
+            match rows {
+                Ok(rows) => {
+                    for (id, token) in rows.flatten() {
+                        keys.push((make_key(db, &id), token));
+                    }
+                }
+                Err(_) => had_error = true,
             }
         }
-        Some(Store { keys, files: dbs })
+        Some(Store {
+            keys,
+            files: dbs,
+            had_error,
+        })
     }
 
     fn parse_key(&self, key: &str) -> Result<Session> {
         let (db, sid) = key.split_once(KEY_SEP).context("malformed opencode key")?;
         let conn = open_ro(Path::new(db)).with_context(|| format!("open {db}"))?;
 
-        let (project, raw_title, created, updated, parent): (
-            String,
-            String,
-            Option<i64>,
-            Option<i64>,
-            Option<String>,
-        ) = conn.query_row(
-            "SELECT directory, title, time_created, time_updated, parent_id
-             FROM session WHERE id = ?1",
-            params![sid],
-            |r| {
-                Ok((
-                    r.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                    r.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                ))
-            },
-        )?;
+        let (project, raw_title, created, updated): (String, String, Option<i64>, Option<i64>) =
+            conn.query_row(
+                "SELECT directory, title, time_created, time_updated
+                 FROM session WHERE id = ?1",
+                params![sid],
+                |r| {
+                    Ok((
+                        r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                        r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                        r.get(2)?,
+                        r.get(3)?,
+                    ))
+                },
+            )?;
+        // parent_id is fetched separately and tolerantly: an older or partial
+        // schema without the column degrades to "not a subagent" rather than
+        // failing the whole session.
+        let parent: Option<String> = conn
+            .query_row(
+                "SELECT parent_id FROM session WHERE id = ?1",
+                params![sid],
+                |r| r.get(0),
+            )
+            .unwrap_or(None);
 
         // role per message, in transcript order.
         let mut mstmt = conn.prepare(
@@ -166,6 +188,15 @@ impl Adapter for OpenCode {
                             ts,
                         );
                     }
+                    Some("patch") => {
+                        if let Some(Value::Array(files)) = p.get("files") {
+                            for f in files {
+                                if let Some(fp) = f.as_str() {
+                                    touched.push(fp.to_string());
+                                }
+                            }
+                        }
+                    }
                     // reasoning / step-* / file / snapshot - skip.
                     _ => {}
                 }
@@ -181,7 +212,7 @@ impl Adapter for OpenCode {
         Ok(Session {
             id: short_id(key),
             tool: self.name(),
-            path: PathBuf::from(key),
+            path: PathBuf::from(display_path(key)),
             project,
             started: created.and_then(DateTime::from_timestamp_millis),
             ended: updated.and_then(DateTime::from_timestamp_millis),
@@ -202,6 +233,13 @@ impl Adapter for OpenCode {
 const KEY_SEP: char = '\u{1f}';
 fn make_key(db: &Path, session_id: &str) -> String {
     format!("{}{KEY_SEP}{session_id}", db.display())
+}
+
+/// A human-facing form of a shared-store key for `Session.path` (shown in
+/// `show`/`brief`/web). The raw key carries a U+001F separator that must not
+/// leak into output or an LLM briefing; render it as `<db>#<id>`.
+fn display_path(key: &str) -> String {
+    key.replace(KEY_SEP, "#")
 }
 
 /// `$XDG_DATA_HOME/opencode`, or `~/.local/share/opencode`.
@@ -242,15 +280,19 @@ fn db_paths() -> Vec<PathBuf> {
     out
 }
 
-/// Open another tool's database without disturbing it. Read-only; fall back to
-/// read-write-without-create if a read-only handle can't be obtained (some
-/// WAL setups), still never creating or writing.
+/// Open another tool's database strictly read-only - never creating, writing,
+/// checkpointing, or recovering it. A plain read-only handle can fail on a WAL
+/// db when the shared-memory file is missing/locked; the fallback retries with
+/// an `immutable=1` URI, which tells SQLite to assume the file cannot change and
+/// skip all locking and shared-memory, so it still cannot write. (Trade-off:
+/// changes a running OpenCode makes mid-read may be missed - fine for indexing.)
 fn open_ro(db: &Path) -> Result<Connection> {
     Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .or_else(|_| {
+            let uri = format!("file:{}?immutable=1", db.display());
             Connection::open_with_flags(
-                db,
-                OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                &uri,
+                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
             )
         })
         .map_err(Into::into)
