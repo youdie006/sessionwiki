@@ -1,0 +1,7 @@
+{"role": "system", "content": "You are gptme v0.31.0, a general-purpose AI assistant powered by LLMs.\nCurrently using model: openrouter/anthropic/claude-3-5-sonnet.\nYou have the ability to self-correct.", "timestamp": "2026-06-08T10:00:00.000000", "pinned": true, "hide": true}
+{"role": "user", "content": "Why is the CORS preflight failing on /auth routes?", "timestamp": "2026-06-08T10:00:01.000000"}
+{"role": "assistant", "content": "The `Access-Control-Allow-Methods` header is missing `OPTIONS` in the middleware. Let me check the config.\n```bash\ngrep -r 'cors' src/\n```", "timestamp": "2026-06-08T10:00:05.000000"}
+{"role": "user", "content": "$ grep -r 'cors' src/\nsrc/middleware.py:    allow_methods=[\"GET\", \"POST\"]", "timestamp": "2026-06-08T10:00:07.000000"}
+{"role": "assistant", "content": "Found it. The `allow_methods` list excludes `OPTIONS`. Fixing now.", "timestamp": "2026-06-08T10:00:10.000000"}
+this is not valid json and must be silently skipped
+{"role": "system", "content": "Context compacted.", "timestamp": "2026-06-08T10:00:15.000000"}

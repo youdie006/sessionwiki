@@ -340,8 +340,48 @@ fn every_adapter_is_addressable_by_name() {
         "kilo-code",
         "gajae-code",
         "continue",
+        "gptme",
     ] {
         assert!(adapters::by_name(tool).is_some(), "{tool} should resolve");
     }
     assert!(adapters::by_name("nonexistent").is_none());
+}
+
+#[test]
+fn gptme_session() {
+    let s = parse(
+        "gptme",
+        "gptme/fix-cors-bug-20260608-abcd/conversation.jsonl",
+    );
+
+    // Session name comes from the parent directory name.
+    assert_eq!(s.project, "fix-cors-bug-20260608-abcd");
+    assert_eq!(s.tool, "gptme");
+    assert!(!s.subagent);
+
+    // System prompt (pinned:true) is dropped; malformed line skipped;
+    // bare system-role line skipped. Only user and assistant messages remain.
+    assert_eq!(roles(&s), ["user", "assistant", "user", "assistant"]);
+
+    // Title from the first user message.
+    assert_eq!(
+        s.title,
+        "Why is the CORS preflight failing on /auth routes?"
+    );
+
+    // Timestamps parsed correctly.
+    assert!(s.started.is_some());
+    assert!(s.ended.is_some());
+    assert!(s.started.unwrap() < s.ended.unwrap());
+}
+
+#[test]
+fn gptme_malformed_lines_do_not_panic() {
+    // The fixture contains a bare non-JSON line — parse must succeed and
+    // return whatever messages it could read.
+    let s = parse(
+        "gptme",
+        "gptme/fix-cors-bug-20260608-abcd/conversation.jsonl",
+    );
+    assert!(!s.messages.is_empty(), "should have parsed some messages");
 }
