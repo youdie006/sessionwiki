@@ -39,7 +39,10 @@ mod tests {
     #[test]
     fn claude_folder_matches_the_on_disk_encoding() {
         // Verified against ~/.claude/projects folder names on a real machine.
-        assert_eq!(claude_project_folder("/home/dev/project"), "-mnt-d-MyProject");
+        assert_eq!(
+            claude_project_folder("/home/dev/project"),
+            "-mnt-d-MyProject"
+        );
         assert_eq!(
             claude_project_folder("/home/dev/project/coursework"),
             "-mnt-d-MyProject-KU-homework"

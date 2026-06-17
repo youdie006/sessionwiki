@@ -458,7 +458,11 @@ fn print_native_resume(tool: &str, path: &std::path::Path, target: &std::path::P
         println!("resume it there:");
         println!(
             "  {}",
-            cyan(&format!("cd {} && {}", target.display(), info.command_line()))
+            cyan(&format!(
+                "cd {} && {}",
+                target.display(),
+                info.command_line()
+            ))
         );
     }
 }
