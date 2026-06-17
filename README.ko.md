@@ -219,6 +219,12 @@ flowchart LR
 | Continue | `~/.continue/sessions/*.json` | 지원 |
 | Cursor, Aider, Zed, ... | | 예정 &mdash; PR 환영 |
 
+**오마이코드(OMC)·오마이코덱스(OmX)·오마이오픈에이전트(OmO)·lazyclaudecode/lazycodex
+쓰시나요?** 이들은 Claude Code·Codex·OpenCode 위의 하니스라, 대화가 그 도구들의 스토어에
+그대로 기록됩니다 &mdash; 그래서 sessionwiki가 별도 설정 없이 이미 인덱싱하고, 어느 하니스로
+돌렸는지 감지해 `oh-my-claudecode` 같은 태그까지 붙입니다(`list --tag oh-my-claudecode`).
+(가재코드는 예외 &mdash; 독립 에이전트라 자체 어댑터가 있습니다.)
+
 ### sessionwiki의 자리
 
 AI 세션 기록 탐색은 이미 활발한 분야입니다 &mdash; 네이티브 GUI 앱도, 다른 멀티툴 CLI도 있습니다. sessionwiki는 몇 가지에 베팅합니다:

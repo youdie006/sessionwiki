@@ -294,6 +294,14 @@ read-only. See the FAQ above.
 | Continue | `~/.continue/sessions/*.json` | supported |
 | Cursor, Aider, Zed, ... | | planned &mdash; PRs welcome |
 
+**Using a wrapper like oh-my-claudecode, oh-my-codex, oh-my-openagent (OmO), or
+lazyclaudecode/lazycodex?** Those are harnesses over Claude Code, Codex, and
+OpenCode &mdash; the conversations are written to those tools' own stores, so
+sessionwiki already indexes them with no extra setup, and it detects which
+harness drove a session and tags it (e.g. `oh-my-claudecode`) so you can filter
+with `list --tag oh-my-claudecode`. (gajae-code is the exception: it is a
+standalone agent with its own store, and has its own adapter.)
+
 ### Where sessionwiki fits
 
 Browsing AI session history is an active space &mdash; there are native GUI apps

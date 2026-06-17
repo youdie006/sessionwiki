@@ -396,6 +396,16 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
             for p in &session.touched {
                 ins_touched.execute(params![session.id, crate::util::nfc(p)])?;
             }
+            // Tag sessions an "oh-my-*" harness drove (it wraps Claude Code,
+            // Codex, or OpenCode) so they are filterable; derived from the
+            // markers the harness injects, recomputed on every reindex.
+            if matches!(tool, "claude-code" | "codex" | "opencode") {
+                if let Some(h) =
+                    crate::adapters::harness::detect(&session.messages, &session.project)
+                {
+                    add_tag(&tx, &session.id, h)?;
+                }
+            }
         }
         tx.commit()?;
         eprintln!("\r[{tool}] indexed {done}/{total}    ");
