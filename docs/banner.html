@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; }
+  body {
+    font-family: "Pretendard", system-ui, sans-serif;
+    display:flex; align-items:center;
+    position:relative;
+    background: linear-gradient(120deg, var(--bg1) 60%, var(--bg2) 100%);
+  }
+  /* light (default) */
+  body { --bg1:#faf9f6; --bg2:#eceae3; --ink:#1e1d1a; --muted:#6e6b62; --accent:#3b5bd6;
+         --node:#1e1d1a; --line:#d9d6cc; --nodec:#faf9f6; }
+  body[data-theme="dark"] { --bg1:#16161b; --bg2:#1d1d24; --ink:#e7e7ec; --muted:#9b9aa3; --accent:#93a7ef;
+         --node:#e7e7ec; --line:#33333d; --nodec:#16161b; }
+
+  .wrap { padding-left:90px; max-width:760px; z-index:2; }
+  .brand { display:flex; align-items:center; gap:20px; }
+  .brand svg { display:block; }
+  .word { font-weight:800; color:var(--ink); letter-spacing:-0.025em; line-height:1;
+          font-size:60px; }
+  .word .dot { color:var(--accent); }
+  .tag { margin-top:24px; color:var(--ink); font-weight:500; font-size:27px; line-height:1.38;
+         word-break:keep-all; overflow-wrap:break-word; opacity:.88; }
+  .tag .em { color:var(--muted); }
+  .chips { margin-top:28px; color:var(--muted); font-weight:500; font-size:17.5px; letter-spacing:.005em; }
+  .chips .loc { color:var(--accent); font-weight:700; }
+
+  .graph { position:absolute; right:70px; top:50%; transform:translateY(-50%); z-index:1; }
+
+  body[data-size="social"] .wrap { padding-left:96px; }
+  body[data-size="social"] .word { font-size:72px; }
+  body[data-size="social"] .tag { font-size:31px; margin-top:30px; }
+  body[data-size="social"] .chips { font-size:20px; margin-top:34px; }
+  body[data-size="social"] .graph { right:78px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="brand" id="brand"></div>
+    <div class="tag" id="tag"></div>
+    <div class="chips" id="chips"></div>
+  </div>
+  <div class="graph" id="graph"></div>
+
+<script>
+  const q = new URLSearchParams(location.search);
+  const theme = q.get('theme') === 'dark' ? 'dark' : 'light';
+  const lang = q.get('lang') === 'ko' ? 'ko' : 'en';
+  const size = q.get('size') === 'social' ? 'social' : 'banner';
+  document.body.dataset.theme = theme;
+  document.body.dataset.size = size;
+
+  // logo mark (rounded-square node graph) - matches docs/logo-*.svg
+  const sq = theme === 'dark' ? '#16161b' : '#1e1d1a';
+  const lnode = '#f4f2ec';
+  const lline = theme === 'dark' ? '#4a5a78' : '#5b6b86';
+  const lacc = theme === 'dark' ? '#93a7ef' : '#5b7cf0';
+  const logoSz = size === 'social' ? 72 : 62;
+  const logo = `<svg width="${logoSz}" height="${logoSz}" viewBox="0 0 96 96" fill="none">
+    <rect x="6" y="6" width="84" height="84" rx="22" fill="${sq}"/>
+    <g stroke="${lline}" stroke-width="3.2" stroke-linecap="round">
+      <path d="M31 33 L31 63"/><path d="M31 33 L62 26"/><path d="M31 63 L60 70"/>
+      <path d="M62 26 L60 70"/><path d="M31 33 L60 70"/></g>
+    <circle cx="31" cy="33" r="8.5" fill="${lnode}"/><circle cx="31" cy="63" r="6.5" fill="${lnode}"/>
+    <circle cx="60" cy="70" r="6.5" fill="${lnode}"/>
+    <circle cx="62" cy="26" r="9" fill="${lacc}"/><circle cx="62" cy="26" r="3.4" fill="${lnode}"/></svg>`;
+  document.getElementById('brand').innerHTML = logo +
+    '<span class="word">sessionwiki<span class="dot">.</span></span>';
+
+  const t = {
+    en: { tag: 'Every AI coding session you&rsquo;ve ever had <span class="em">&mdash; searchable, linkable, resumable.</span>',
+          chips: '9 AI coding tools &middot; one searchable archive &middot; <span class="loc">100% local</span>' },
+    ko: { tag: '지금까지의 모든 AI 코딩 세션 <span class="em">&mdash; 검색 · 연결 · 이어가기</span>',
+          chips: 'AI 코딩 도구 9종 &middot; 한 곳에서 검색 &middot; <span class="loc">100% 로컬</span>' },
+  }[lang];
+  document.getElementById('tag').innerHTML = t.tag;
+  document.getElementById('chips').innerHTML = t.chips;
+
+  // decorative loose node graph (right side)
+  const gw = size === 'social' ? 430 : 400, gh = size === 'social' ? 460 : 330;
+  const N = { node: getComputedStyle(document.body).getPropertyValue('--node').trim(),
+              line: getComputedStyle(document.body).getPropertyValue('--line').trim(),
+              acc: getComputedStyle(document.body).getPropertyValue('--accent').trim(),
+              ctr: getComputedStyle(document.body).getPropertyValue('--nodec').trim() };
+  // node coords on a 420x380 canvas, scaled to gw/gh
+  const pts = { a:[55,80], b:[230,46], c:[372,150], d:[160,180], e:[315,255], f:[92,300], g:[262,330] };
+  const edges = [['a','b'],['a','d'],['b','c'],['b','e'],['d','e'],['d','f'],['e','g'],['f','g'],['a','e']];
+  const sx = gw/420, sy = gh/380;
+  const P = k => [pts[k][0]*sx, pts[k][1]*sy];
+  let svg = `<svg width="${gw}" height="${gh}" viewBox="0 0 ${gw} ${gh}" fill="none">`;
+  svg += `<g stroke="${N.line}" stroke-width="2.4" stroke-linecap="round">`;
+  for (const [u,v] of edges){ const a=P(u),b=P(v); svg+=`<path d="M${a[0]} ${a[1]} L${b[0]} ${b[1]}"/>`; }
+  svg += `</g>`;
+  const R = { a:13, b:0, c:11, d:16, e:13, f:11, g:10 };
+  for (const k of Object.keys(pts)){ const p=P(k); if(k==='b') continue;
+    svg += `<circle cx="${p[0]}" cy="${p[1]}" r="${R[k]}" fill="${N.node}"/>`; }
+  const b=P('b');
+  svg += `<circle cx="${b[0]}" cy="${b[1]}" r="15" fill="${N.acc}"/><circle cx="${b[0]}" cy="${b[1]}" r="5.5" fill="${N.ctr}"/>`;
+  svg += `</svg>`;
+  document.getElementById('graph').innerHTML = svg;
+</script>
+</body>
+</html>
