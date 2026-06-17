@@ -341,7 +341,7 @@ fn index_one(
     // Tag sessions an oh-my-* harness drove (it wraps Claude Code / Codex /
     // OpenCode) so they are filterable; recomputed on every reindex.
     if matches!(session.tool, "claude-code" | "codex" | "opencode") {
-        if let Some(h) = crate::adapters::harness::detect(&session.messages, &session.project) {
+        if let Some(h) = crate::adapters::harness::detect(&session.project) {
             add_tag(tx, &session.id, h)?;
         }
     }
@@ -649,7 +649,10 @@ pub fn recent(
          FROM files f WHERE 1=1",
     );
     let mut args: Vec<String> = Vec::new();
-    if !include_subagents {
+    // A tag filter is an explicit ask for *those* sessions; don't hide subagent
+    // hits behind the main-only default (the tag cloud counts every kind, so a
+    // sub-only tag would otherwise show in the cloud but return nothing here).
+    if !include_subagents && tag.is_none() {
         sql.push_str(" AND kind = 'main'");
     }
     if let Some(t) = tool {

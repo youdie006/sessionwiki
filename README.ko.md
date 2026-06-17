@@ -221,9 +221,11 @@ flowchart LR
 
 **오마이코드(OMC)·오마이코덱스(OmX)·오마이오픈에이전트(OmO)·lazyclaudecode/lazycodex
 쓰시나요?** 이들은 Claude Code·Codex·OpenCode 위의 하니스라, 대화가 그 도구들의 스토어에
-그대로 기록됩니다 &mdash; 그래서 sessionwiki가 별도 설정 없이 이미 인덱싱하고, 어느 하니스로
-돌렸는지 감지해 `oh-my-claudecode` 같은 태그까지 붙입니다(`list --tag oh-my-claudecode`).
-(가재코드는 예외 &mdash; 독립 에이전트라 자체 어댑터가 있습니다.)
+그대로 기록됩니다 &mdash; 그래서 sessionwiki가 별도 설정 없이 이미 인덱싱합니다. 세션의 프로젝트에
+하니스의 오케스트레이션 디렉터리(`.omc`/`.omo`)가 남아 있으면 그걸로 태그를 붙여
+(`list --tag oh-my-claudecode`) 필터할 수 있습니다 &mdash; 트랜스크립트가 아니라 파일시스템 신호라,
+그 도구를 *언급*만 한 세션은 잘못 태깅되지 않습니다. (오마이코덱스는 그런 디렉터리가 없어 태깅 안 됨;
+가재코드는 자체 어댑터를 가진 독립 에이전트.)
 
 ### sessionwiki의 자리
 

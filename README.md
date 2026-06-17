@@ -297,10 +297,13 @@ read-only. See the FAQ above.
 **Using a wrapper like oh-my-claudecode, oh-my-codex, oh-my-openagent (OmO), or
 lazyclaudecode/lazycodex?** Those are harnesses over Claude Code, Codex, and
 OpenCode &mdash; the conversations are written to those tools' own stores, so
-sessionwiki already indexes them with no extra setup, and it detects which
-harness drove a session and tags it (e.g. `oh-my-claudecode`) so you can filter
-with `list --tag oh-my-claudecode`. (gajae-code is the exception: it is a
-standalone agent with its own store, and has its own adapter.)
+sessionwiki already indexes them with no extra setup. When a session's project
+still carries the harness's orchestration directory (`.omc` / `.omo`),
+sessionwiki tags it (`oh-my-claudecode` / `oh-my-openagent`) so you can filter
+with `list --tag oh-my-claudecode`; that filesystem signal is used rather than
+the transcript, so a session that merely *discusses* a harness is never
+mislabeled. (oh-my-codex leaves no such directory and is not tagged; gajae-code
+is a standalone agent with its own adapter.)
 
 ### Where sessionwiki fits
 
