@@ -35,8 +35,6 @@ gemini                50     1.2 MB  2026-04-02   2026-06-10    ~/.gemini/tmp
 
 <img src="docs/demo-web.webp" width="820" alt="sessionwiki 웹 UI: 검색창 실제 타이핑, 태그·resume 명령이 달린 트랜스크립트, 파일 프로비넌스, 태그 필터, 다크 모드">
 
-<sub>검색창 실제 타이핑, 태그와 원커맨드 resume이 달린 트랜스크립트, 파일 프로비넌스, 태그 필터, 다크 모드. <a href="docs/demo-web.mp4">&#9654; 더 부드러운 HD (MP4)</a>.</sub>
-
 ## 무엇을 할 수 있나
 
 - **찾기** &mdash; 이 머신의 모든 세션 저장소: 어떤 툴이, 어디에, 몇 개, 몇 GB &mdash; 즉시.
@@ -50,13 +48,19 @@ gemini                50     1.2 MB  2026-04-02   2026-06-10    ~/.gemini/tmp
 
 ## 설치
 
-**빌드된 바이너리** (툴체인 불필요). macOS / Linux:
+**빌드된 바이너리** (툴체인 불필요). macOS / Linux / WSL:
 
 ```console
 curl -sSL https://raw.githubusercontent.com/youdie006/sessionwiki/main/scripts/install.sh | sh
 ```
 
-스크립트가 플랫폼에 맞는 아카이브를 [최신 릴리스](https://github.com/youdie006/sessionwiki/releases/latest)에서 받아 `~/.local/bin`에 설치합니다. Windows는 릴리스 페이지에서 `.zip`을 받으세요.
+**Windows** (네이티브 PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/youdie006/sessionwiki/main/scripts/install.ps1 | iex
+```
+
+각 스크립트가 플랫폼에 맞는 아카이브를 [최신 릴리스](https://github.com/youdie006/sessionwiki/releases/latest)에서 받아 체크섬을 검증하고 바이너리를 설치합니다(`~/.local/bin`, Windows는 `%LOCALAPPDATA%\Programs\sessionwiki`). **WSL은 리눅스**이므로 위 셸 한 줄을 쓰면 됩니다 &mdash; 리눅스 바이너리가 설치되고 WSL 홈의 세션 저장소를 읽습니다.
 
 **Rust(stable)** 가 있다면:
 

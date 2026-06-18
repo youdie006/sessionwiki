@@ -6,6 +6,11 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Added
+- Windows install: `scripts/install.ps1`, a PowerShell one-liner (`irm ... | iex`)
+  that downloads + checksum-verifies the latest Windows binary and adds it to
+  PATH. The shell installer already covers WSL, which is Linux.
+
 ## [0.13.0] - 2026-06-18
 
 ### Security

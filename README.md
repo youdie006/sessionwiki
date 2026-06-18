@@ -51,20 +51,26 @@ And a web UI when you would rather read than grep &mdash; `sessionwiki web`:
 
 <img src="docs/demo-web.webp" width="820" alt="The sessionwiki web UI: real typing in the search, an open transcript with tags, a note and a resume command, file provenance, tag filtering, and dark mode">
 
-<sub>Real typing in the search, an open transcript with tags and a one-command resume, file provenance, tag filtering, and dark mode. <a href="docs/demo-web.mp4">&#9654; Smoother HD version (MP4)</a>.</sub>
-
 ## Install
 
-**Prebuilt binary** (no toolchain needed). macOS / Linux:
+**Prebuilt binary** (no toolchain needed). macOS / Linux / WSL:
 
 ```console
 curl -sSL https://raw.githubusercontent.com/youdie006/sessionwiki/main/scripts/install.sh | sh
 ```
 
-The script downloads the right archive for your platform from the
-[latest release](https://github.com/youdie006/sessionwiki/releases/latest) and
-installs it to `~/.local/bin`. On Windows, download the `.zip` from the
-releases page.
+**Windows** (native PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/youdie006/sessionwiki/main/scripts/install.ps1 | iex
+```
+
+Each script downloads the right archive for your platform from the
+[latest release](https://github.com/youdie006/sessionwiki/releases/latest),
+verifies its checksum, and installs the binary (`~/.local/bin`, or
+`%LOCALAPPDATA%\Programs\sessionwiki` on Windows). **WSL is Linux** &mdash; use
+the shell one-liner above; it installs the Linux binary and reads the session
+stores in your WSL home.
 
 **With Rust** (stable):
 
