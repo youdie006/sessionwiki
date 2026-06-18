@@ -136,6 +136,7 @@ a navigable, maintained one. They read the index, so they are instant.
 | `forget <id>` | Permanently drop a session from the index and archive. The escape hatch for [archive mode](#nothing-gets-lost-archive-mode) when you want a kept session gone. |
 | `projects` | One row per project: session count, message volume, last activity. A page per codebase. |
 | `stats` | Totals plus a breakdown by tool, by month, files linked to sessions, and how many sessions were kept after the tools deleted them. |
+| `digest [--since 7d]` | A markdown rollup of recent sessions grouped by project &mdash; what you worked on, the files each touched, and any cached synopsis. `--since 2w`/`24h`/`90m`, `--project`, `--tool`, `--json`. The standup / PR-body / "what did I ship this week" view, assembled from the index. |
 
 ### Trace code back to its session
 

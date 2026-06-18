@@ -1128,6 +1128,149 @@ pub fn files(id: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Parse a time window like `7d`, `2w`, `24h`, `90m` (a bare number is days).
+fn parse_duration(s: &str) -> Result<chrono::Duration> {
+    let s = s.trim();
+    let split = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    let (num, unit) = s.split_at(split);
+    let n: i64 = match num.parse() {
+        Ok(n) if n >= 0 => n,
+        _ => bail!("invalid --since '{s}' (try 7d, 2w, 24h, 90m)"),
+    };
+    Ok(match unit {
+        "" | "d" => chrono::Duration::days(n),
+        "w" => chrono::Duration::weeks(n),
+        "h" => chrono::Duration::hours(n),
+        "m" => chrono::Duration::minutes(n),
+        other => bail!("unknown --since unit '{other}' (use d, w, h, or m)"),
+    })
+}
+
+/// A markdown rollup of recent sessions grouped by project: what you worked on,
+/// the files each session touched, and any cached synopsis. Composes the
+/// timeline, provenance, and summaries the index already has, over a window.
+pub fn digest(
+    since: &str,
+    tool: Option<&str>,
+    project: Option<&str>,
+    json: bool,
+    no_sync: bool,
+) -> Result<()> {
+    let cutoff = chrono::Utc::now() - parse_duration(since)?;
+    let mut conn = index::open()?;
+    if !no_sync {
+        index::sync(&mut conn, tool)?;
+    }
+    // recent() returns newest-first main sessions with the tool/project filters;
+    // keep the ones inside the window.
+    let rows = index::recent(&conn, 5000, tool, project, None, false)?;
+    let in_window: Vec<index::SessionRow> = rows
+        .into_iter()
+        .filter(|r| {
+            r.started
+                .as_deref()
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .is_some_and(|t| t.with_timezone(&chrono::Utc) >= cutoff)
+        })
+        .collect();
+
+    // Group by project, preserving newest-activity-first order.
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: std::collections::HashMap<String, Vec<&index::SessionRow>> =
+        std::collections::HashMap::new();
+    for r in &in_window {
+        let key = r.project.clone();
+        if !groups.contains_key(&key) {
+            order.push(key.clone());
+        }
+        groups.entry(key).or_default().push(r);
+    }
+
+    let day = |r: &index::SessionRow| {
+        r.started
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| t.format("%Y-%m-%d").to_string())
+            .unwrap_or_else(|| "?".into())
+    };
+
+    if json {
+        let projects: Vec<serde_json::Value> = order
+            .iter()
+            .map(|p| {
+                let sessions: Vec<serde_json::Value> = groups[p]
+                    .iter()
+                    .map(|r| {
+                        let files = index::files_for(&conn, &r.session_id).unwrap_or_default();
+                        serde_json::json!({
+                            "id": r.session_id,
+                            "tool": r.tool,
+                            "title": r.title,
+                            "started": r.started,
+                            "msgs": r.msg_count,
+                            "files": files,
+                            "summary": r.summary,
+                        })
+                    })
+                    .collect();
+                serde_json::json!({ "project": p, "sessions": sessions })
+            })
+            .collect();
+        let v = serde_json::json!({
+            "since": since,
+            "sessions": in_window.len(),
+            "projects": order.len(),
+            "generated_at": chrono::Utc::now().to_rfc3339(),
+            "by_project": projects,
+        });
+        println!("{}", serde_json::to_string(&v)?);
+        return Ok(());
+    }
+
+    println!("{}", bold(&format!("# Digest - last {since}")));
+    println!();
+    if in_window.is_empty() {
+        println!("No sessions in this window.");
+        return Ok(());
+    }
+    println!(
+        "{} session(s) across {} project(s).",
+        in_window.len(),
+        order.len()
+    );
+    for p in &order {
+        let sessions = &groups[p];
+        println!();
+        println!("## {} ({} session(s))", project_label(p), sessions.len());
+        for r in sessions {
+            println!(
+                "- **{}**  {}  {}",
+                day(r),
+                truncate(&r.title, 80),
+                dim(&format!("[{}]", r.tool))
+            );
+            if let Some(s) = &r.summary {
+                println!("  {}", dim(s));
+            }
+            let files = index::files_for(&conn, &r.session_id).unwrap_or_default();
+            if !files.is_empty() {
+                let shown: Vec<&str> = files.iter().take(8).map(String::as_str).collect();
+                let more = files.len().saturating_sub(shown.len());
+                let suffix = if more > 0 {
+                    format!(", +{more} more")
+                } else {
+                    String::new()
+                };
+                println!(
+                    "  {}",
+                    dim(&format!("touched: {}{}", shown.join(", "), suffix))
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Reverse lookup: which AI sessions touched a file, newest first. This is the
 /// provenance link read from the code side - trace a file back to the
 /// conversations that edited it, across every tool, with no setup or hooks.
@@ -1273,5 +1416,25 @@ fn project_label(p: &str) -> String {
         )
     } else {
         p.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_duration_units() {
+        assert_eq!(parse_duration("7d").unwrap(), chrono::Duration::days(7));
+        assert_eq!(parse_duration("2w").unwrap(), chrono::Duration::weeks(2));
+        assert_eq!(parse_duration("24h").unwrap(), chrono::Duration::hours(24));
+        assert_eq!(
+            parse_duration("90m").unwrap(),
+            chrono::Duration::minutes(90)
+        );
+        assert_eq!(parse_duration("5").unwrap(), chrono::Duration::days(5));
+        assert!(parse_duration("7x").is_err());
+        assert!(parse_duration("abc").is_err());
+        assert!(parse_duration("-3d").is_err());
     }
 }

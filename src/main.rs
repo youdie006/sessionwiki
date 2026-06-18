@@ -230,6 +230,24 @@ enum Command {
         #[arg(long)]
         tool: Option<String>,
     },
+    /// Markdown rollup of recent sessions by project (files touched, synopses)
+    Digest {
+        /// Time window: 7d, 2w, 24h, 90m (a bare number is days)
+        #[arg(long, default_value = "7d")]
+        since: String,
+        /// Limit to one tool
+        #[arg(long)]
+        tool: Option<String>,
+        /// Limit to one project (substring match)
+        #[arg(long)]
+        project: Option<String>,
+        /// Emit JSON instead of markdown
+        #[arg(long)]
+        json: bool,
+        /// Skip the index sync; only sync if the id is not already indexed
+        #[arg(long)]
+        no_sync: bool,
+    },
     /// List projects with session counts (a page per project)
     Projects,
     /// Usage breakdown across tools, projects, and months
@@ -334,6 +352,13 @@ fn main() {
         } => commands::trace(&path, json, no_sync),
         Command::Forget { id } => commands::forget(&id),
         Command::Sync { tool } => commands::sync_cmd(tool.as_deref()),
+        Command::Digest {
+            since,
+            tool,
+            project,
+            json,
+            no_sync,
+        } => commands::digest(&since, tool.as_deref(), project.as_deref(), json, no_sync),
         Command::Projects => commands::projects(),
         Command::Stats => commands::stats(),
     };

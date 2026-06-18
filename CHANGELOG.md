@@ -6,6 +6,13 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Added
+- `digest [--since 7d]`: a markdown rollup of recent sessions grouped by project
+  &mdash; what you worked on, the files each session touched, and any cached
+  synopsis. It composes the timeline, provenance, and summaries the index already
+  has, over a time window (`--since 2w`/`24h`/`90m`, `--project`, `--tool`,
+  `--json`). The standup / PR-description / "what did I ship this week" view.
+
 ### Security
 - `resume` no longer auto-launches the upstream tool (`claude`/`codex`) in the
   directory a session file *claims* unless that directory can be verified as the
