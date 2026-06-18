@@ -7,6 +7,17 @@ license = "MIT"
 repository = "https://github.com/youdie006/sessionwiki"
 keywords = ["claude-code", "codex", "gemini-cli", "sessions", "search"]
 categories = ["command-line-utilities"]
+# Keep the published crate lean: the README demo media and banner-build tooling
+# are only for the GitHub page, not needed to build or use the crate.
+exclude = [
+    "docs/*.webp",
+    "docs/*.mp4",
+    "docs/banner*.png",
+    "docs/banner.html",
+    "docs/social-preview.png",
+    "scripts/make_banner.*",
+    ".playwright-mcp",
+]
 
 [dependencies]
 anyhow = "1"
