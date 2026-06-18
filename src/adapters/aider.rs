@@ -9,7 +9,9 @@
 use crate::model::{Message, Role, Session};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Instant;
+use walkdir::WalkDir;
 
 struct Run {
     started: Option<DateTime<Utc>>,
@@ -124,6 +126,96 @@ fn parse_turns(body: &str) -> (Vec<Message>, Vec<String>) {
     }
     flush(&mut messages, cur_role, &mut buf);
     (messages, touched)
+}
+
+const HISTORY_FILE: &str = ".aider.chat.history.md";
+const MAX_DEPTH: usize = 4;
+const MAX_DIRS: usize = 50_000;
+const MAX_FILES: usize = 5_000;
+const WALK_BUDGET_SECS: u64 = 2;
+const SKIP_DIRS: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    ".cache",
+    "Library",
+    "go",
+    ".cargo",
+    ".rustup",
+    ".npm",
+    ".pnpm-store",
+    ".gradle",
+    ".m2",
+    "vendor",
+    "dist",
+    "build",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".svn",
+    ".hg",
+];
+
+fn aider_roots() -> Vec<PathBuf> {
+    if let Some(v) = std::env::var_os("SESSIONWIKI_AIDER_ROOTS") {
+        return std::env::split_paths(&v)
+            .filter_map(|p| std::fs::canonicalize(p).ok())
+            .collect();
+    }
+    // Default: a bounded, capped walk of the home directory (NOT unbounded - the
+    // depth/dir/file/time caps below keep it cheap; an over-cap sets had_error).
+    dirs::home_dir().into_iter().collect()
+}
+
+fn is_skipped(entry: &walkdir::DirEntry) -> bool {
+    entry.file_type().is_dir()
+        && entry
+            .file_name()
+            .to_str()
+            .is_some_and(|n| SKIP_DIRS.contains(&n))
+}
+
+/// Find `.aider.chat.history.md` files under `roots`, bounded and reading
+/// nothing but matching files. Returns (files, had_error). `had_error` is set on
+/// ANY cap-hit or walk error so the indexer skips deletion reconciliation on a
+/// partial result (the only safe guard for this rootless adapter). Logs nothing.
+fn discover_history(roots: &[PathBuf]) -> (Vec<PathBuf>, bool) {
+    let mut files = Vec::new();
+    let mut had_error = false;
+    let mut dirs = 0usize;
+    let start = Instant::now();
+    'outer: for root in roots {
+        let walker = WalkDir::new(root)
+            .max_depth(MAX_DEPTH)
+            .follow_links(false) // never escape via symlinks (first walk over user space)
+            .into_iter()
+            .filter_entry(|e| !is_skipped(e));
+        for entry in walker {
+            if start.elapsed().as_secs() >= WALK_BUDGET_SECS {
+                had_error = true;
+                break 'outer;
+            }
+            match entry {
+                Ok(e) => {
+                    if e.file_type().is_dir() {
+                        dirs += 1;
+                        if dirs > MAX_DIRS {
+                            had_error = true;
+                            break 'outer;
+                        }
+                    } else if e.file_name() == HISTORY_FILE {
+                        files.push(e.into_path());
+                        if files.len() > MAX_FILES {
+                            had_error = true;
+                            break 'outer;
+                        }
+                    }
+                }
+                Err(_) => had_error = true, // permission etc.: incomplete walk
+            }
+        }
+    }
+    (files, had_error)
 }
 
 /// U+001F, matching the shared-store key separator used by the OpenCode adapter,
@@ -264,5 +356,24 @@ mod tests {
         assert!(!s.subagent);
         // id is stable for the same (path, idx)
         assert_eq!(s.id, build_session(&path, 0).unwrap().id);
+    }
+
+    #[test]
+    fn discover_finds_history_and_skips_node_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("proj");
+        std::fs::create_dir_all(repo.join("node_modules/skipme")).unwrap();
+        std::fs::write(repo.join(".aider.chat.history.md"), "x\n").unwrap();
+        std::fs::write(repo.join("README.md"), "x\n").unwrap();
+        std::fs::write(
+            repo.join("node_modules/skipme/.aider.chat.history.md"),
+            "x\n",
+        )
+        .unwrap();
+
+        let (files, had_error) = discover_history(&[dir.path().to_path_buf()]);
+        assert_eq!(files.len(), 1, "found the repo file, skipped node_modules");
+        assert!(files[0].ends_with(".aider.chat.history.md"));
+        assert!(!had_error);
     }
 }
