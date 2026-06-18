@@ -7,7 +7,7 @@
 
 <a href="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml"><img src="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
-<a href="https://github.com/youdie006/sessionwiki/releases"><img src="docs/release-badge.png" height="20" alt="Latest release v0.10.0"></a>
+<a href="https://github.com/youdie006/sessionwiki/releases"><img src="docs/release-badge.png" height="20" alt="Latest release v0.11.0"></a>
 
 <sub><b>English</b> &middot; <a href="README.ko.md">한국어</a></sub>
 
@@ -179,26 +179,20 @@ archived 1 session(s) the tool removed (1 kept that your tools have deleted)
 a1b2c3d4  claude-code  3w ago  12  …/api-server  Fix CORS preflight…  [archived]
 ```
 
-It is automatic and silent (no copy step to remember), costs almost nothing
-(the distilled transcript was already in the index), and is reversible:
-`forget <id>` drops an archived session for good, and a session that reappears
-on disk un-archives itself. The original tool can no longer reopen it, but you
-can still read it, `brief` it into a new session, and `trace` the code back to
-it. This is the part a generation-time hook can't do: it works for the
-thousands of sessions that already exist, and for the ones the tool already
-deleted while you weren't looking.
+It is automatic and reversible: `forget <id>` drops an archived session for good,
+and a session that reappears on disk un-archives itself. The original tool can no
+longer reopen it, but you can still read, `brief`, and `trace` it. This is the
+part a generation-time hook can't do &mdash; it works for the sessions that
+already exist, and the ones the tool deleted while you weren't looking.
 
-**It also runs the other way, as a way to reclaim disk.** Raw session stores
-get big &mdash; the 47 GB in the scan above is mostly Codex JSONL, and heavy
-users reach tens of GB. The index keeps only a distilled copy of each session
-(the conversation and its file links, minus the bulky tool-output noise), so it
-is far smaller than the originals &mdash; roughly 7&times; on that machine. Delete
-the old raw sessions you no longer want taking up space and `search`, `trace`,
-`brief`, and reading keep working, served from the index. The tradeoff is
-honest: an archived session is the distilled transcript, not the byte-exact
-original with its raw tool dumps &mdash; but that distilled conversation is
-exactly what you reach for when you are trying to get back to the one that
-solved something, not the gigabytes you were storing to get there.
+**It also reclaims disk.** The index keeps only a distilled copy of each session
+(the conversation and its file links, minus bulky tool output), so it is far
+smaller than the raw stores &mdash; roughly 7&times; on the machine above (47 GB
+&rarr; ~7 GB). Delete the old raw sessions to free the space and `search`,
+`trace`, `brief`, and reading still work from the index. The tradeoff: an
+archived session is the distilled transcript, not the byte-exact original &mdash;
+which is exactly the part you want when you are hunting for the conversation that
+solved something.
 
 ## Pick up where you left off
 
@@ -258,43 +252,13 @@ session metadata, including nested subagent transcripts, across all tools at
 once &mdash; and the id it returns plugs straight into `show`, `resume`, and `brief`.
 </details>
 
-<details>
-<summary><b>FAQ: does anything ever leave my machine?</b></summary>
-<br>
-
-No. There is not a single network call in the codebase &mdash; it is small enough
-to verify with one grep. No telemetry, no accounts. The web UI binds to
-127.0.0.1 only. `summarize` is the one feature that touches an LLM, and it
-does so by running a CLI you chose, locally, only when you invoke it.
-</details>
-
-<details>
-<summary><b>FAQ: how big is the index?</b></summary>
-<br>
-
-Expect a low double-digit percentage of your stores' size; tens of GB of
-history produce a few GB of index. It is a cache &mdash; delete it whenever you
-want and the next run rebuilds it. Cached summaries, curation, and archived
-sessions are kept separately so they survive.
-</details>
-
-<details>
-<summary><b>FAQ: what about sessions my tool deletes?</b></summary>
-<br>
-
-Sessions sessionwiki already indexed are kept: when a tool prunes the original,
-the session is [archived](#nothing-gets-lost-archive-mode), not lost, so
-`search`/`trace`/`brief` keep working for it. Sessions that were deleted
-*before* you ever ran sessionwiki are gone &mdash; it can only keep what it has
-seen, so install early. Archiving is automatic; `forget <id>` drops one for
-good.
-</details>
-
 ## Privacy
 
-Sessions contain your code and your conversations, so the bar is simple:
-no network calls, no telemetry, index stored locally, originals opened
-read-only. See the FAQ above.
+Sessions contain your code and your conversations, so the bar is simple: **not a
+single network call in the codebase** (small enough to verify with one grep), no
+telemetry, no accounts. The index is local; originals are opened read-only. The
+one feature that touches an LLM is `summarize`, and it does so by running a CLI
+*you* chose, locally, only when you invoke it.
 
 ## Supported tools
 
@@ -309,16 +273,12 @@ read-only. See the FAQ above.
 | Continue | `~/.continue/sessions/*.json` | supported |
 | Cursor, Aider, Zed, ... | | planned &mdash; PRs welcome |
 
-**Using a wrapper like oh-my-claudecode, oh-my-codex, oh-my-openagent (OmO), or
-lazyclaudecode/lazycodex?** Those are harnesses over Claude Code, Codex, and
-OpenCode &mdash; the conversations are written to those tools' own stores, so
-sessionwiki already indexes them with no extra setup. When a session's project
-still carries the harness's orchestration directory (`.omc` / `.omo`),
-sessionwiki tags it (`oh-my-claudecode` / `oh-my-openagent`) so you can filter
-with `list --tag oh-my-claudecode`; that filesystem signal is used rather than
-the transcript, so a session that merely *discusses* a harness is never
-mislabeled. (oh-my-codex leaves no such directory and is not tagged; gajae-code
-is a standalone agent with its own adapter.)
+**Using a wrapper like oh-my-claudecode or oh-my-openagent?** Those run on top of
+Claude Code / Codex / OpenCode, so their conversations already live in those
+tools' stores and get indexed automatically. When the harness's `.omc` / `.omo`
+directory is present in a project, sessionwiki tags the session so `list --tag
+oh-my-claudecode` works &mdash; a filesystem signal, so a session that merely
+*discusses* a harness is never mislabeled.
 
 ### Where sessionwiki fits
 
