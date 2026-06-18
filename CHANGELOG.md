@@ -7,6 +7,11 @@ semantic versioning once it reaches 1.0.
 ## [Unreleased]
 
 ### Added
+- **gptme adapter**: indexes sessions from [gptme](https://github.com/gptme/gptme)
+  (`~/.local/share/gptme/logs/<session>/conversation.jsonl`). Drops `pinned: true`
+  system-prompt boilerplate and bare `system` role lines; handles Python's naive
+  `datetime.now().isoformat()` timestamps (no UTC offset) by falling back to
+  UTC-assumed parsing. Size-capped against `MAX_SESSION_FILE_BYTES`.
 - Windows install: `scripts/install.ps1`, a PowerShell one-liner (`irm ... | iex`)
   that downloads + checksum-verifies the latest Windows binary and adds it to
   PATH. The shell installer already covers WSL, which is Linux.
