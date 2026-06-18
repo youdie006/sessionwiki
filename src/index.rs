@@ -899,9 +899,18 @@ fn snippet_around(text: &str, needle: &str) -> String {
 pub fn resolve(conn: &Connection, id_prefix: &str) -> Result<Vec<SessionRow>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT session_id, tool, path, project, title, started, msg_count, kind, {SUMMARY_SQL}, {TAGS_SQL}, (archived_at IS NOT NULL)
-         FROM files f WHERE session_id LIKE ?1 LIMIT 10",
+         FROM files f WHERE session_id LIKE ?1 ESCAPE '\\' LIMIT 10",
     ))?;
-    let rows = stmt.query_map(params![format!("{id_prefix}%")], |r| {
+    // Escape LIKE metacharacters ('\' first) so an id prefix like "%" or "_"
+    // can't turn the prefix match into a wildcard that resolves every session.
+    let pattern = format!(
+        "{}%",
+        id_prefix
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
+    let rows = stmt.query_map(params![pattern], |r| {
         Ok(SessionRow {
             session_id: r.get(0)?,
             tool: r.get(1)?,

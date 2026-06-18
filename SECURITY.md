@@ -21,10 +21,13 @@ posture is deliberately small:
     or deletes an existing session.
   - `resume <id>` launches the original tool (`claude` / `codex`) in the session's
     recorded project directory. A session file is untrusted input and can claim
-    any directory, so sessionwiki verifies that directory before launching (for
-    Claude Code, against the store folder the session actually lives in) and will
-    not auto-launch into one it can't confirm &mdash; it prints the command for
-    you to run after a look instead.
+    any directory (with an attacker-planted `CLAUDE.md` / `AGENTS.md` there), so
+    sessionwiki verifies that directory before launching: for Claude Code it
+    checks the recorded cwd against the store folder the session actually lives in.
+    Codex and Gemini sessions are not tied to a directory, so their cwd cannot be
+    confirmed and `resume` never auto-launches them &mdash; it prints the command
+    for you to run after a look. It only auto-launches when the directory is
+    verified.
 
 ## Reporting a vulnerability
 

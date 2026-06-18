@@ -39,7 +39,10 @@ trap 'rm -rf "$tmp"' EXIT
 echo "downloading $asset ..."
 curl -fsSL -o "$tmp/$asset" "$base/$asset"
 
-# Verify the release's published checksum (defense in depth on top of HTTPS).
+# Verify the published checksum. Note: the checksum is served from the same
+# GitHub release as the binary, so this only catches a corrupted/truncated
+# download - it is NOT supply-chain integrity (a malicious release would serve a
+# matching hash). Real integrity here is HTTPS + the maintainer's GitHub account.
 if curl -fsSL -o "$tmp/$asset.sha256" "$base/$asset.sha256" 2>/dev/null && [ -s "$tmp/$asset.sha256" ]; then
   expected="$(awk '{print $1}' "$tmp/$asset.sha256")"
   if command -v sha256sum >/dev/null 2>&1; then

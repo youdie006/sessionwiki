@@ -36,7 +36,17 @@ pub fn serve(port: u16, no_open: bool, sync: bool) -> Result<()> {
             .iter()
             .find(|h| h.field.equiv("Host"))
             .map(|h| h.value.as_str().to_string());
-        if !host_matches(host.as_deref(), port) {
+        let origin = request
+            .headers()
+            .iter()
+            .find(|h| h.field.equiv("Origin"))
+            .map(|h| h.value.as_str().to_string());
+        // Host check defeats DNS rebinding (an attacker hostname rebound to
+        // 127.0.0.1 carries its name in Host). The Origin check is a second layer
+        // against a plain cross-origin fetch from a malicious site, which the
+        // browser stamps with its Origin - we don't rely on the same-origin
+        // policy alone.
+        if !host_matches(host.as_deref(), port) || !origin_ok(origin.as_deref(), port) {
             let _ = request.respond(Response::from_string("forbidden").with_status_code(403));
             continue;
         }
@@ -82,6 +92,20 @@ fn host_matches(host: Option<&str>, port: u16) -> bool {
                 || h == format!("[::1]:{port}")
         }
         None => false,
+    }
+}
+
+/// A present Origin that is not our own loopback origin means a cross-origin
+/// request (e.g. a `fetch` from a malicious site) - refuse it. A missing Origin
+/// (top-level navigation, same-origin GET) is allowed.
+fn origin_ok(origin: Option<&str>, port: u16) -> bool {
+    match origin {
+        None => true,
+        Some(o) => {
+            o == format!("http://127.0.0.1:{port}")
+                || o == format!("http://localhost:{port}")
+                || o == format!("http://[::1]:{port}")
+        }
     }
 }
 
@@ -301,7 +325,7 @@ const INDEX_HTML: &str = include_str!("webui.html");
 
 #[cfg(test)]
 mod tests {
-    use super::host_matches;
+    use super::{host_matches, origin_ok};
 
     #[test]
     fn host_matches_only_loopback() {
@@ -313,5 +337,15 @@ mod tests {
         assert!(!host_matches(Some("127.0.0.1:7575"), 7576)); // wrong port
         assert!(!host_matches(Some("127.0.0.1"), 7575)); // no port
         assert!(!host_matches(None, 7575)); // missing Host
+    }
+
+    #[test]
+    fn origin_ok_rejects_cross_origin() {
+        assert!(origin_ok(None, 7575)); // same-origin GET / navigation
+        assert!(origin_ok(Some("http://127.0.0.1:7575"), 7575));
+        assert!(origin_ok(Some("http://localhost:7575"), 7575));
+        assert!(!origin_ok(Some("http://evil.com"), 7575)); // cross-origin fetch
+        assert!(!origin_ok(Some("https://127.0.0.1:7575"), 7575)); // wrong scheme
+        assert!(!origin_ok(Some("http://127.0.0.1:7576"), 7575)); // wrong port
     }
 }

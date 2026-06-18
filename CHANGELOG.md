@@ -6,6 +6,22 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Security
+Hardening from a red-team pass of the launch surface (all confirmed with PoCs):
+- The local web server now rejects requests whose `Host` header isn't the
+  loopback name it bound (defeats DNS rebinding) and whose `Origin` is a
+  different site (defeats a plain cross-origin `fetch`), so a malicious page you
+  visit while `web` is running can't read your sessions from `127.0.0.1`.
+- `resume` no longer auto-launches Codex or Gemini in a directory the session
+  file claims. Those tools aren't directory-scoped, so a planted session could
+  name any directory (with an attacker's `AGENTS.md` there) and have `resume`
+  load it; it now prints the command for you to run unless the directory is
+  verified, which only Claude Code's store layout allows.
+- `resolve` escapes `LIKE` wildcards in a session-id prefix, so a web request for
+  id `%` can no longer match and dump an arbitrary session.
+- install.sh documents honestly that its checksum only detects a corrupted
+  download, not a malicious release (the hash is co-located with the binary).
+
 ## [0.12.0] - 2026-06-18
 
 ### Added

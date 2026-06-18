@@ -113,9 +113,11 @@ fn safe_cwd(tool: &str, path: &Path, project: &str) -> (Option<PathBuf>, bool) {
         folder.as_deref()
             == Some(crate::migrate::claude_project_folder(&canon.to_string_lossy()).as_str())
     } else {
-        // Other tools are not folder-scoped, so a real local directory is the
-        // most we can confirm; that is weaker, hence documented in SECURITY.md.
-        true
+        // Codex / Gemini are not folder-scoped, so the recorded cwd cannot be
+        // tied to this session at all - a planted session can name any directory
+        // (with an attacker-planted AGENTS.md / .codex there). Never auto-launch
+        // into it; resume prints the command for the user to run after a look.
+        false
     };
     (Some(canon), verified)
 }
@@ -171,6 +173,12 @@ mod tests {
                 .unwrap()
                 .verified_cwd
         );
+
+        // Codex/Gemini are never auto-trusted, even for an existing directory:
+        // their cwd can't be tied to the session, so a planted one can't make
+        // resume launch there.
+        let cdx2 = Path::new("/x/rollout-1-0a000000-0000-4000-8000-000000000001.jsonl");
+        assert!(!for_session("codex", cdx2, &canon).unwrap().verified_cwd);
 
         std::fs::remove_dir_all(&base).ok();
     }
