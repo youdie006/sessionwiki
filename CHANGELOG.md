@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-06-18
+
 ### Added
 - `digest [--since 7d]`: a markdown rollup of recent sessions grouped by project
   &mdash; what you worked on, the files each session touched, and any cached
@@ -239,6 +241,7 @@ semantic versioning once it reaches 1.0.
   incremental SQLite FTS5 index. Adapters for Claude Code, Codex, and Gemini
   CLI. 100% local, no telemetry.
 
+[0.12.0]: https://github.com/youdie006/sessionwiki/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/youdie006/sessionwiki/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/youdie006/sessionwiki/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/youdie006/sessionwiki/compare/v0.8.0...v0.9.0
