@@ -124,9 +124,11 @@ impl Adapter for OpenCode {
             .unwrap_or(None);
 
         // role per message, in transcript order.
+        // LIMIT caps memory if a malicious db packs millions of rows into one
+        // session; a real session is orders of magnitude below this.
         let mut mstmt = conn.prepare(
             "SELECT id, time_created, data FROM message
-             WHERE session_id = ?1 ORDER BY time_created, id",
+             WHERE session_id = ?1 ORDER BY time_created, id LIMIT 200000",
         )?;
         let messages_meta: Vec<(String, Option<i64>, Value)> = mstmt
             .query_map(params![sid], |r| {
@@ -141,7 +143,7 @@ impl Adapter for OpenCode {
         // content parts, grouped per message in order.
         let mut pstmt = conn.prepare(
             "SELECT message_id, data FROM part
-             WHERE session_id = ?1 ORDER BY time_created, id",
+             WHERE session_id = ?1 ORDER BY time_created, id LIMIT 200000",
         )?;
         let mut parts: HashMap<String, Vec<Value>> = HashMap::new();
         let prows = pstmt.query_map(params![sid], |r| {
@@ -301,7 +303,7 @@ fn open_ro(db: &Path) -> Result<Connection> {
 // --- legacy JSON layout (pre-1.2.0) ---
 
 fn parse_json(tool: &'static str, path: &Path) -> Result<Session> {
-    let raw = std::fs::read_to_string(path).with_context(|| format!("open {}", path.display()))?;
+    let raw = crate::util::read_to_string_capped(path)?;
     let s: Value =
         serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
 
@@ -334,7 +336,7 @@ fn parse_json(tool: &'static str, path: &Path) -> Result<Session> {
 
     if let Some(store) = store {
         for msg_path in sorted_json(&store.join("message").join(&session_id)) {
-            let Ok(mraw) = std::fs::read_to_string(&msg_path) else {
+            let Ok(mraw) = crate::util::read_to_string_capped(&msg_path) else {
                 continue;
             };
             let Ok(m) = serde_json::from_str::<Value>(&mraw) else {
@@ -353,7 +355,7 @@ fn parse_json(tool: &'static str, path: &Path) -> Result<Session> {
             let ts = m.pointer("/time/created").and_then(epoch_ms);
 
             for part_path in sorted_json(&store.join("part").join(&mid)) {
-                let Ok(praw) = std::fs::read_to_string(&part_path) else {
+                let Ok(praw) = crate::util::read_to_string_capped(&part_path) else {
                     continue;
                 };
                 let Ok(p) = serde_json::from_str::<Value>(&praw) else {

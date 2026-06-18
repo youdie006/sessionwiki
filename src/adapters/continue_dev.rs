@@ -65,7 +65,7 @@ const EDIT_TOOLS: &[&str] = &[
 ];
 
 fn parse_session(tool: &'static str, path: &Path) -> Result<Session> {
-    let raw = std::fs::read_to_string(path).with_context(|| format!("open {}", path.display()))?;
+    let raw = crate::util::read_to_string_capped(path)?;
     let s: Value =
         serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
 
@@ -206,7 +206,7 @@ fn tool_calls(item: &Value) -> Vec<(String, String, String)> {
 fn started_from_index(path: &Path) -> Option<DateTime<Utc>> {
     let id = path.file_stem()?.to_string_lossy();
     let index = path.parent()?.join("sessions.json");
-    let raw = std::fs::read_to_string(index).ok()?;
+    let raw = crate::util::read_to_string_capped(&index).ok()?;
     let list: Value = serde_json::from_str(&raw).ok()?;
     let created = list.as_array()?.iter().find_map(|e| {
         let sid = e.get("sessionId").and_then(Value::as_str)?;

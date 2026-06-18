@@ -1,7 +1,7 @@
 use super::{dedup_paths, parse_ts, title_from_messages, Adapter};
 use crate::model::{Message, Role, Session};
 use crate::util::{short_id, truncate};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -82,7 +82,7 @@ fn sessions_dirs() -> Vec<PathBuf> {
 const EDIT_TOOLS: &[&str] = &["write", "edit", "apply_patch", "ast_edit"];
 
 fn parse_jsonl(tool: &'static str, path: &Path) -> Result<Session> {
-    let raw = std::fs::read_to_string(path).with_context(|| format!("open {}", path.display()))?;
+    let raw = crate::util::read_to_string_capped(path)?;
 
     let mut session_id = String::new();
     let mut project = String::new();

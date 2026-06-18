@@ -9,6 +9,11 @@ pub struct ResumeInfo {
     /// The tool resolves sessions relative to the project, so the command
     /// should run there. None when the session has no usable cwd.
     pub cwd: Option<PathBuf>,
+    /// Whether `cwd` is trusted as genuinely belonging to this session. A
+    /// session file is untrusted input and can claim any directory, so a caller
+    /// that *launches* the tool there (loading that dir's CLAUDE.md/.mcp.json/
+    /// etc.) must not do so automatically when this is false.
+    pub verified_cwd: bool,
     pub note: Option<String>,
 }
 
@@ -24,7 +29,7 @@ impl ResumeInfo {
 }
 
 pub fn for_session(tool: &str, path: &Path, project: &str) -> Option<ResumeInfo> {
-    let cwd = (!project.is_empty() && project.starts_with('/')).then(|| PathBuf::from(project));
+    let (cwd, verified_cwd) = safe_cwd(tool, path, project);
     match tool {
         "claude-code" => {
             let p = path.to_string_lossy();
@@ -45,6 +50,7 @@ pub fn for_session(tool: &str, path: &Path, project: &str) -> Option<ResumeInfo>
                     program: "claude",
                     args: vec!["--resume".into(), parent],
                     cwd,
+                    verified_cwd,
                     note: Some("this is a subagent transcript; resuming its parent session".into()),
                 });
             }
@@ -53,6 +59,7 @@ pub fn for_session(tool: &str, path: &Path, project: &str) -> Option<ResumeInfo>
                 program: "claude",
                 args: vec!["--resume".into(), id],
                 cwd,
+                verified_cwd,
                 note: None,
             })
         }
@@ -64,6 +71,7 @@ pub fn for_session(tool: &str, path: &Path, project: &str) -> Option<ResumeInfo>
                 program: "codex",
                 args: vec!["resume".into(), id],
                 cwd,
+                verified_cwd,
                 note: None,
             })
         }
@@ -73,10 +81,97 @@ pub fn for_session(tool: &str, path: &Path, project: &str) -> Option<ResumeInfo>
     }
 }
 
+/// Decide which working directory to resume in, and whether we trust it.
+///
+/// A session's recorded project/cwd is *self-asserted data from the file*, which
+/// is untrusted input: a planted or prompt-poisoned session could point it at an
+/// attacker directory, and launching `claude`/`codex` there would load that
+/// directory's `CLAUDE.md` / `AGENTS.md` / `.mcp.json` / settings into the
+/// resumed agent. So we only trust a cwd that is a real local directory, and for
+/// Claude Code we additionally require it to match the store folder the session
+/// actually lives in (the folder name encodes the cwd), which a planted file in
+/// some other folder cannot fake.
+fn safe_cwd(tool: &str, path: &Path, project: &str) -> (Option<PathBuf>, bool) {
+    if project.is_empty() || !project.starts_with('/') {
+        // No directory claim; resuming in the user's own shell cwd is fine.
+        return (None, true);
+    }
+    let Ok(canon) = std::fs::canonicalize(project) else {
+        // Recorded directory does not resolve on this machine. Keep the claimed
+        // path so the caller can show "run it where the project lives", but it
+        // is not verified, so the caller must not auto-launch into it.
+        return (Some(PathBuf::from(project)), false);
+    };
+    if !canon.is_dir() {
+        return (Some(canon), false);
+    }
+    let verified = if tool == "claude-code" {
+        let folder = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned());
+        folder.as_deref()
+            == Some(crate::migrate::claude_project_folder(&canon.to_string_lossy()).as_str())
+    } else {
+        // Other tools are not folder-scoped, so a real local directory is the
+        // most we can confirm; that is weaker, hence documented in SECURITY.md.
+        true
+    };
+    (Some(canon), verified)
+}
+
 fn looks_like_uuid(s: &str) -> bool {
     s.len() == 36
         && s.bytes().enumerate().all(|(i, b)| match i {
             8 | 13 | 18 | 23 => b == b'-',
             _ => b.is_ascii_hexdigit(),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ID: &str = "0a000000-0000-4000-8000-000000000001.jsonl";
+
+    #[test]
+    fn resume_only_trusts_a_cwd_it_can_verify() {
+        let base = std::env::temp_dir().join(format!("sw-resume-{}", std::process::id()));
+        let proj = base.join("realproj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let canon = std::fs::canonicalize(&proj)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+
+        // Claude Code session stored under the folder that encodes this cwd -> trusted.
+        let good = base
+            .join(crate::migrate::claude_project_folder(&canon))
+            .join(ID);
+        assert!(
+            for_session("claude-code", &good, &canon)
+                .unwrap()
+                .verified_cwd
+        );
+
+        // Same cwd claim, but the file lives under a different folder (a planted
+        // session pointing at someone else's directory) -> not trusted.
+        let bad = base.join("-totally-different").join(ID);
+        assert!(
+            !for_session("claude-code", &bad, &canon)
+                .unwrap()
+                .verified_cwd
+        );
+
+        // A recorded directory that doesn't exist on this machine -> not trusted,
+        // so resume won't auto-launch into it.
+        let cdx = Path::new("/x/rollout-1-0a000000-0000-4000-8000-000000000001.jsonl");
+        assert!(
+            !for_session("codex", cdx, "/no/such/dir/here")
+                .unwrap()
+                .verified_cwd
+        );
+
+        std::fs::remove_dir_all(&base).ok();
+    }
 }

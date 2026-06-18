@@ -6,6 +6,24 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Security
+- `resume` no longer auto-launches the upstream tool (`claude`/`codex`) in the
+  directory a session file *claims* unless that directory can be verified as the
+  session's own &mdash; for Claude Code, by matching the store folder the session
+  lives in (the folder name encodes the cwd). A session file is untrusted input;
+  before this, a planted or prompt-poisoned session could point its `cwd` at an
+  attacker directory and have `resume` launch the agent there, loading that
+  directory's `CLAUDE.md` / `.mcp.json` / settings. When the directory can't be
+  verified, `resume` now prints the command for you to run instead of launching.
+- Session-file reads are size-capped (256 MB) and the OpenCode SQLite message/
+  part reads are `LIMIT`ed, so a malicious oversized file or a db packing
+  millions of rows into one session can't exhaust memory.
+
+### Changed
+- `SECURITY.md` now documents that `migrate` writes copies into the target tool's
+  store and that `resume` validates the session-derived directory, instead of
+  implying the tool only ever reads.
+
 ## [0.11.0] - 2026-06-18
 
 ### Added

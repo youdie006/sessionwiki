@@ -41,6 +41,9 @@ impl Adapter for Codex {
 
     fn parse(&self, path: &Path) -> Result<Session> {
         let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+        if file.metadata().map(|m| m.len()).unwrap_or(0) > crate::util::MAX_SESSION_FILE_BYTES {
+            anyhow::bail!("{} is over the size cap; skipping", path.display());
+        }
         let reader = BufReader::new(file);
 
         let mut messages: Vec<Message> = Vec::new();

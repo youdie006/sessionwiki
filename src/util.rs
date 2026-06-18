@@ -1,4 +1,28 @@
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
+use std::path::Path;
+
+/// The largest session file we will read into memory. Session transcripts are
+/// text; a file past this is malformed or hostile, so it is skipped rather than
+/// allowed to exhaust memory.
+pub const MAX_SESSION_FILE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Read a file to a string, refusing anything over [`MAX_SESSION_FILE_BYTES`]
+/// so a malicious or corrupt session file can't OOM the process.
+pub fn read_to_string_capped(path: &Path) -> Result<String> {
+    let len = std::fs::metadata(path)
+        .with_context(|| format!("stat {}", path.display()))?
+        .len();
+    if len > MAX_SESSION_FILE_BYTES {
+        bail!(
+            "{} is {} - over the {} cap; skipping",
+            path.display(),
+            human_size(len),
+            human_size(MAX_SESSION_FILE_BYTES)
+        );
+    }
+    std::fs::read_to_string(path).with_context(|| format!("open {}", path.display()))
+}
 
 /// Stable short id from a path string. FNV-1a is implemented by hand because
 /// std's DefaultHasher is not guaranteed stable across Rust releases.

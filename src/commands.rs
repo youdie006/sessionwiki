@@ -423,7 +423,7 @@ pub fn migrate_cmd(id: &str, target_dir: &str, no_sync: bool) -> Result<()> {
             }
             // Rewrite the chat's own projectHash so Gemini lists it under the
             // target project; everything else is copied verbatim.
-            let raw = std::fs::read_to_string(&src)?;
+            let raw = crate::util::read_to_string_capped(&src)?;
             let mut v: serde_json::Value =
                 serde_json::from_str(&raw).with_context(|| format!("parse {}", src.display()))?;
             if let Some(obj) = v.as_object_mut() {
@@ -745,6 +745,23 @@ pub fn resume_cmd(id: &str, print_only: bool, no_sync: bool) -> Result<()> {
     }
     println!("  {}", cyan(&info.command_line()));
     if print_only {
+        return Ok(());
+    }
+
+    // The session's recorded directory is untrusted input (a planted or
+    // prompt-poisoned session can claim any path). If we could not verify it
+    // belongs to this session, do not auto-launch the tool there - that would
+    // load the directory's CLAUDE.md/.mcp.json/settings into the resumed agent.
+    // Print the command and let the user run it after a look.
+    if info.cwd.is_some() && !info.verified_cwd {
+        eprintln!(
+            "{}",
+            dim("note: could not confirm this session's recorded directory is its own")
+        );
+        eprintln!(
+            "{}",
+            dim("not launching automatically - run the command above yourself if it looks right")
+        );
         return Ok(());
     }
 

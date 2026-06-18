@@ -41,8 +41,7 @@ impl Adapter for Gemini {
     }
 
     fn parse(&self, path: &Path) -> Result<Session> {
-        let raw =
-            std::fs::read_to_string(path).with_context(|| format!("open {}", path.display()))?;
+        let raw = crate::util::read_to_string_capped(path)?;
         let v: Value =
             serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
 

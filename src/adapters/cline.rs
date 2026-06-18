@@ -173,7 +173,7 @@ const TOOL_TAGS: &[&str] = &[
 ];
 
 fn parse_task(tool: &'static str, path: &Path) -> Result<Session> {
-    let raw = std::fs::read_to_string(path).with_context(|| format!("open {}", path.display()))?;
+    let raw = crate::util::read_to_string_capped(path)?;
     let history: Value =
         serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
     let entries = history.as_array().cloned().unwrap_or_default();
@@ -244,7 +244,7 @@ fn parse_task(tool: &'static str, path: &Path) -> Result<Session> {
 
     let ui = task_dir
         .map(|d| d.join("ui_messages.json"))
-        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|p| crate::util::read_to_string_capped(&p).ok())
         .and_then(|s| serde_json::from_str::<Value>(&s).ok());
     let task_id = task_dir
         .and_then(|d| d.file_name())
