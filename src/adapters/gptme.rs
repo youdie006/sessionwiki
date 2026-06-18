@@ -53,7 +53,7 @@ impl Adapter for Gptme {
 
         for line in reader.lines() {
             let Ok(line) = line else { continue };
-            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            let Ok(Value::Object(mut v)) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
 
@@ -80,11 +80,17 @@ impl Adapter for Gptme {
                 ended = Some(t);
             }
 
-            let text = match v.get("content") {
-                Some(Value::String(s)) => s.clone(),
+            let text = match v.remove("content") {
+                Some(Value::String(s)) => s,
                 Some(Value::Array(blocks)) => blocks
-                    .iter()
-                    .filter_map(|b| b.get("content").and_then(Value::as_str))
+                    .into_iter()
+                    .filter_map(|b| match b {
+                        Value::Object(mut map) => match map.remove("content") {
+                            Some(Value::String(s)) => Some(s),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
                     .collect::<Vec<_>>()
                     .join("\n"),
                 _ => continue,
@@ -126,9 +132,5 @@ impl Adapter for Gptme {
 /// timestamps with no UTC offset (e.g. `2026-06-08T10:00:01.000000`).
 /// Try RFC 3339 first; fall back to naive-datetime parsing and assume UTC.
 fn parse_gptme_ts(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-    parse_ts(s).or_else(|| {
-        NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f")
-            .ok()
-            .map(|n| n.and_utc())
-    })
+    parse_ts(s).or_else(|| s.parse::<NaiveDateTime>().ok().map(|n| n.and_utc()))
 }
