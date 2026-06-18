@@ -1078,6 +1078,46 @@ pub fn sessions_for_file(
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// Like `sessions_for_file` but returns the start/end epoch window and project
+/// that blame's commit->session attribution needs. Matches both an exact stored
+/// path and any stored path ending in the query suffix, so a repo-relative query
+/// (e.g. `src/auth.rs`) catches Claude Code's absolute touched paths and Codex's
+/// relative ones alike (NFC-normalized).
+pub fn sessions_touching(
+    conn: &Connection,
+    query: &str,
+) -> Result<Vec<crate::blame::TouchingSession>> {
+    let q = crate::util::nfc(query.trim().trim_start_matches("./"));
+    let suffix = format!("%/{q}");
+    let mut stmt = conn.prepare(
+        "SELECT f.session_id, f.tool, f.title, f.project, f.started, f.ended, (f.archived_at IS NOT NULL)
+         FROM touched t JOIN files f ON f.session_id = t.session_id
+         WHERE t.path = ?1 OR t.path LIKE ?2
+         GROUP BY f.session_id",
+    )?;
+    let rows = stmt.query_map(params![q, suffix], |r| {
+        let started: Option<String> = r.get(4)?;
+        let ended: Option<String> = r.get(5)?;
+        Ok(crate::blame::TouchingSession {
+            session_id: r.get(0)?,
+            tool: r.get(1)?,
+            title: r.get(2)?,
+            project: r.get(3)?,
+            started: started.as_deref().and_then(to_epoch),
+            ended: ended.as_deref().and_then(to_epoch),
+            archived: r.get(6)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Parse a stored timestamp (RFC3339) to epoch seconds; None if unparseable.
+fn to_epoch(s: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.timestamp())
+}
+
 // --- archive: serving and forgetting sessions whose originals are gone ---
 
 /// Reconstruct a `Session` from the index alone, for sessions whose original
