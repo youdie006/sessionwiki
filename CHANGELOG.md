@@ -6,6 +6,14 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Security
+- `truncate()` - the choke point that renders session titles to the terminal in
+  `list`/`search`/`trace`/`resume` - now strips C0/C1/DEL control characters, not
+  just newlines and tabs. A session title is untrusted input (a planted session
+  can set any title), so an unstripped ESC could have injected ANSI/terminal
+  escape sequences into output. The web UI was already safe (it builds the DOM
+  with `textContent`, never `innerHTML`).
+
 ## [0.14.0] - 2026-06-18
 
 ### Added

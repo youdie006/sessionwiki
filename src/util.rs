@@ -85,9 +85,19 @@ pub fn rel_time(ts: Option<DateTime<Utc>>) -> String {
 }
 
 pub fn truncate(s: &str, max: usize) -> String {
+    // Session titles (and other indexed strings) are untrusted input: a planted
+    // or prompt-poisoned session can set any title, and this is the choke point
+    // that renders titles to the terminal across list/search/trace/resume/blame.
+    // Strip control characters so a title can't smuggle ANSI/terminal-control
+    // escapes into our output. \n and \t become spaces; every other C0 control,
+    // DEL, and the C1 range is dropped (same posture as clean_snippet).
     let clean: String = s
         .chars()
-        .map(|c| if c == '\n' || c == '\t' { ' ' } else { c })
+        .filter_map(|c| match c {
+            '\n' | '\t' => Some(' '),
+            c if (c as u32) < 0x20 || c == '\u{7f}' || ('\u{80}'..='\u{9f}').contains(&c) => None,
+            c => Some(c),
+        })
         .collect();
     let clean = clean.trim();
     if clean.chars().count() <= max {
@@ -126,4 +136,36 @@ pub fn yellow(s: &str) -> String {
 }
 pub fn green(s: &str) -> String {
     paint("32", s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate;
+
+    #[test]
+    fn truncate_strips_control_characters() {
+        // ESC, DEL, and C1 controls are dropped so an untrusted title cannot
+        // inject terminal escape sequences; the remaining literal text stays.
+        let title = "ok\u{1b}[31mred\u{7f}\u{9b}end";
+        let out = truncate(title, 100);
+        assert!(!out.contains('\u{1b}'), "ESC must be stripped");
+        assert!(!out.contains('\u{7f}'), "DEL must be stripped");
+        assert!(!out.contains('\u{9b}'), "C1 must be stripped");
+        assert_eq!(out, "ok[31mredend");
+    }
+
+    #[test]
+    fn truncate_collapses_whitespace_controls() {
+        assert_eq!(truncate("a\nb\tc", 100), "a b c");
+    }
+
+    #[test]
+    fn truncate_adds_ellipsis_when_too_long() {
+        assert_eq!(truncate("abcdef", 4), "abc\u{2026}");
+    }
+
+    #[test]
+    fn truncate_keeps_unicode_titles() {
+        assert_eq!(truncate("한국어 검색", 100), "한국어 검색");
+    }
 }
