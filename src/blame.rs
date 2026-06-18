@@ -50,6 +50,34 @@ pub fn parse_line_porcelain(out: &str) -> Vec<LineBlame> {
     result
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Run {
+    pub start: usize,
+    pub end: usize,
+    pub commit: String,
+    pub author_time: i64,
+}
+
+/// Collapse per-line blame into contiguous runs sharing one commit.
+pub fn group_runs(lines: &[LineBlame]) -> Vec<Run> {
+    let mut runs: Vec<Run> = Vec::new();
+    for lb in lines {
+        if let Some(last) = runs.last_mut() {
+            if last.commit == lb.commit && lb.line == last.end + 1 {
+                last.end = lb.line;
+                continue;
+            }
+        }
+        runs.push(Run {
+            start: lb.line,
+            end: lb.line,
+            commit: lb.commit.clone(),
+            author_time: lb.author_time,
+        });
+    }
+    runs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,6 +120,56 @@ filename src/a.rs
                 commit: "def456def456def456def456def456def456def4".into(),
                 author_time: 1_700_000_500
             }
+        );
+    }
+
+    #[test]
+    fn groups_consecutive_lines_by_commit() {
+        let lines = vec![
+            LineBlame {
+                line: 1,
+                commit: "a".into(),
+                author_time: 10,
+            },
+            LineBlame {
+                line: 2,
+                commit: "a".into(),
+                author_time: 10,
+            },
+            LineBlame {
+                line: 3,
+                commit: "b".into(),
+                author_time: 20,
+            },
+            LineBlame {
+                line: 4,
+                commit: "a".into(),
+                author_time: 10,
+            },
+        ];
+        let runs = group_runs(&lines);
+        assert_eq!(
+            runs,
+            vec![
+                Run {
+                    start: 1,
+                    end: 2,
+                    commit: "a".into(),
+                    author_time: 10
+                },
+                Run {
+                    start: 3,
+                    end: 3,
+                    commit: "b".into(),
+                    author_time: 20
+                },
+                Run {
+                    start: 4,
+                    end: 4,
+                    commit: "a".into(),
+                    author_time: 10
+                },
+            ]
         );
     }
 }
