@@ -6,8 +6,10 @@
 //! No per-message timestamps; `started` is the run header (local time, assumed
 //! UTC). Reads are size-capped; discovery is bounded and logs nothing.
 
-use crate::model::{Message, Role};
+use crate::model::{Message, Role, Session};
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use std::path::Path;
 
 struct Run {
     started: Option<DateTime<Utc>>,
@@ -124,6 +126,61 @@ fn parse_turns(body: &str) -> (Vec<Message>, Vec<String>) {
     (messages, touched)
 }
 
+/// U+001F, matching the shared-store key separator used by the OpenCode adapter,
+/// so display rendering stays uniform. Never appears in a path.
+const KEY_SEP: char = '\u{1f}';
+
+fn make_key(path: &str, idx: usize) -> String {
+    format!("{path}{KEY_SEP}{idx}")
+}
+
+/// Render a store key as `<path>#<idx>` for human/`show`/web output.
+fn display_path(key: &str) -> String {
+    match key.split_once(KEY_SEP) {
+        Some((p, i)) => format!("{p}#{i}"),
+        None => key.to_string(),
+    }
+}
+
+fn title_from(messages: &[Message]) -> String {
+    messages
+        .iter()
+        .find(|m| m.role == Role::User && !m.text.trim().is_empty())
+        .map(|m| {
+            let t = m.text.trim();
+            t.lines().next().unwrap_or(t).chars().take(80).collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Read a history file, split it, and assemble the run at `idx` into a Session.
+fn build_session(path: &Path, idx: usize) -> Result<Session> {
+    let content = crate::util::read_to_string_capped(path)
+        .with_context(|| format!("read {}", path.display()))?;
+    let runs = split_runs(&content);
+    let run = runs
+        .get(idx)
+        .with_context(|| format!("no run {idx} in {}", path.display()))?;
+    let (messages, touched) = parse_turns(&run.body);
+    let key = make_key(&path.to_string_lossy(), idx);
+    let project = path
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok(Session {
+        id: crate::util::short_id(&key),
+        tool: "aider",
+        path: std::path::PathBuf::from(display_path(&key)),
+        project,
+        started: run.started,
+        ended: None,
+        title: title_from(&messages),
+        subagent: false,
+        messages,
+        touched,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,5 +238,31 @@ mod tests {
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[1].role, Role::Assistant);
         assert!(msgs[1].text.contains("para one") && msgs[1].text.contains("para two"));
+    }
+
+    #[test]
+    fn build_session_from_a_fixture_file() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("sw-aider-t3");
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("myrepo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let path = repo.join(".aider.chat.history.md");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(
+            f,
+            "# aider chat started at 2026-06-09 14:01:00\n#### add retry\nDone.\n> Applied edit to src/x.py\n"
+        )
+        .unwrap();
+
+        let s = build_session(&path, 0).unwrap();
+        assert_eq!(s.tool, "aider");
+        assert_eq!(s.project, repo.to_string_lossy());
+        assert_eq!(s.title, "add retry");
+        assert_eq!(s.touched, vec!["src/x.py"]);
+        assert!(s.started.is_some());
+        assert!(!s.subagent);
+        // id is stable for the same (path, idx)
+        assert_eq!(s.id, build_session(&path, 0).unwrap().id);
     }
 }
