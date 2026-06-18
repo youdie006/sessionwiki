@@ -7,6 +7,7 @@
 //! and [`index`] (an incremental SQLite FTS5 index over parsed sessions).
 
 pub mod adapters;
+pub mod blame;
 pub mod commands;
 pub mod index;
 pub mod migrate;
