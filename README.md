@@ -41,15 +41,11 @@ That is one real machine. Run it on yours &mdash; the number is usually a surpri
 
 ## What you can do with it
 
-- **Find** every session store on the machine: which tools, where, how many, how big &mdash; instant.
-- **Search** every message of every tool at once. Substring matching, so partial identifiers and CJK text work with zero language setup.
-- **Read** any session as a clean transcript: rendered code blocks, collapsed tool calls, an outline of long sessions.
-- **Summarize** sessions into cached one-line synopses using your own LLM CLI &mdash; then never wonder "what was this one about" again.
-- **Resume** a session in its original tool, in the right project directory, with one command.
-- **Carry context across tools**: brief a Claude Code session into Codex, or anywhere else.
-- **Trace a file back to the sessions that edited it** &mdash; `trace src/auth.rs` lists the AI conversations behind a file, across every tool. The link between your sessions and the code they produced. See [provenance](#trace-code-back-to-its-session).
-- **Keep what your tools delete** &mdash; sessions are [archived](#nothing-gets-lost-archive-mode) when the tool prunes them, so search and trace never go dark on old work.
-- **Curate and connect**: tag and annotate sessions, jump to related ones, and see where your agent time goes &mdash; [session engineering](#session-engineering), not just search.
+- **Search** every message of every tool at once &mdash; substring + CJK, zero setup.
+- **Read & resume** &mdash; any session as a clean transcript; reopen it in its original tool, or `brief` it into another (even a different tool).
+- **Trace** a file back to the AI conversations that wrote it, across every tool &mdash; the link between your sessions and your code. See [provenance](#trace-code-back-to-its-session).
+- **Keep & reclaim** &mdash; sessions are [archived](#nothing-gets-lost-archive-mode) when a tool deletes them, so search never goes dark; delete the bulky originals to reclaim disk and still search them.
+- **Curate** &mdash; tag, note, and jump to [related](#session-engineering) sessions, and see where your agent time goes.
 
 And a web UI when you would rather read than grep &mdash; `sessionwiki web`:
 
@@ -280,38 +276,29 @@ directory is present in a project, sessionwiki tags the session so `list --tag
 oh-my-claudecode` works &mdash; a filesystem signal, so a session that merely
 *discusses* a harness is never mislabeled.
 
-### Where sessionwiki fits
+### How it compares
 
-Browsing AI session history is an active space. There are GUI viewers (e.g.
-[Claudia](https://github.com/getAsterisk/claudia)), history extensions (e.g.
-[SpecStory](https://specstory.com)), and single-tool log renderers (e.g.
-[claude-code-log](https://github.com/daaain/claude-code-log)). They are good at
-what they do. sessionwiki makes one different bet:
+Browsing AI session history is an active space. Each of these is good at what it
+does; sessionwiki's bet is the one thing none of them do &mdash; link the
+conversation to the code it produced.
 
-**It links the conversation to the code it produced.**
-[`trace <file>`](#trace-code-back-to-its-session) goes from a file to the AI
-conversations that edited it &mdash; retroactively, with no hooks, across every
-tool at once, and [even for sessions your tool has since deleted](#nothing-gets-lost-archive-mode).
-A generation-time hook can't do this for the thousands of sessions you already
-have; a single-tool viewer can't do it across tools. That is the one thing here
-that nothing else does.
+| | Great at | What sessionwiki adds |
+|---|---|---|
+| [Claudia](https://github.com/getAsterisk/claudia) | A polished Claude Code GUI | Cross-tool, CLI *and* web, and `trace` links code back to its conversation |
+| [SpecStory](https://specstory.com) | Capturing chat history as you work | Works retroactively over the sessions you already have &mdash; no capture step |
+| [claude-code-log](https://github.com/daaain/claude-code-log) | Rendering one tool's transcripts to HTML | Every tool at once, full-text search, and provenance |
+| [cass](https://github.com/Dicklesworthstone/coding_agent_session_search) | Fast cross-tool + cross-machine search | File&rarr;conversation provenance, archived deleted sessions, curation, web UI |
 
-The rest is table stakes, done carefully:
-
-- **Cross-platform, CLI _and_ web, one static binary** &mdash; the same on Linux,
-  macOS, and Windows, over SSH, in a container; not a single-OS GUI.
-- **CJK search with zero setup** &mdash; the trigram index searches Korean,
-  Japanese, and Chinese (and partial words) out of the box.
-- **A curation layer, not just search** &mdash; tags, notes, `related`, `brief`,
-  and `stats`: [session engineering](#session-engineering), so the archive stays
-  navigable as it grows.
+**`trace <file>`** goes from a file to the AI conversations that edited it
+&mdash; retroactively, no hooks, across every tool, [even for sessions your tool
+has since deleted](#nothing-gets-lost-archive-mode). A generation-time hook can't
+do that for the sessions you already have; a single-tool viewer can't do it
+across tools.
 
 Honest tradeoff: a dedicated single-tool viewer will have more tool-specific
-polish than sessionwiki's adapter for that one tool. sessionwiki's bet is the
-cross-tool spine plus code provenance, over the nine tools it supports today
-(Claude Code, Codex, Gemini CLI, OpenCode, Cline, Roo Code, Kilo Code,
-gajae-code, Continue) and growing &mdash; adapters are the #1 thing
-[PRs](#adding-an-adapter) help with.
+polish than sessionwiki's adapter for that one tool. The bet is the cross-tool
+spine plus code provenance, over [nine tools today](#supported-tools) and
+growing &mdash; adapters are the #1 thing [PRs](#adding-an-adapter) help with.
 
 ## Adding an adapter
 
