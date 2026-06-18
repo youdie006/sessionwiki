@@ -21,7 +21,7 @@ if (-not $tag) { Write-Error "could not determine the latest release tag" }
 
 $asset = "sessionwiki-$tag-$target.zip"
 $base = "https://github.com/$repo/releases/download/$tag"
-$tmp = Join-Path $env:TEMP ("sessionwiki-" + [System.Guid]::NewGuid().ToString())
+$tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("sessionwiki-" + [System.Guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 try {
     $zip = Join-Path $tmp $asset
@@ -45,14 +45,20 @@ try {
 
     Expand-Archive -Path $zip -DestinationPath $tmp -Force
     New-Item -ItemType Directory -Force -Path $binDir | Out-Null
-    Copy-Item (Join-Path $tmp "sessionwiki-$tag-$target\sessionwiki.exe") (Join-Path $binDir "sessionwiki.exe") -Force
-    Write-Host "installed sessionwiki $tag to $binDir\sessionwiki.exe"
+    $src = Join-Path (Join-Path $tmp "sessionwiki-$tag-$target") "sessionwiki.exe"
+    $dest = Join-Path $binDir "sessionwiki.exe"
+    Copy-Item $src $dest -Force
+    Write-Host "installed sessionwiki $tag to $dest"
 
-    # Add to the user PATH if missing (takes effect in new shells).
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($userPath -notlike "*$binDir*") {
-        [Environment]::SetEnvironmentVariable("Path", "$userPath;$binDir", "User")
-        Write-Host "added $binDir to your user PATH - open a new terminal to use 'sessionwiki'"
+    # Add to the user PATH if missing (Windows only; takes effect in new shells).
+    if ($env:OS -eq 'Windows_NT') {
+        $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+        if ($userPath -notlike "*$binDir*") {
+            [Environment]::SetEnvironmentVariable("Path", "$userPath;$binDir", "User")
+            Write-Host "added $binDir to your user PATH - open a new terminal to use 'sessionwiki'"
+        }
+    } else {
+        Write-Host "note: add $binDir to your PATH"
     }
 } finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
