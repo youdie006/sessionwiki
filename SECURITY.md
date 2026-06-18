@@ -15,7 +15,7 @@ posture is deliberately small:
   never writes to your session stores.
 - **Your existing session files are never modified.** Tags, notes, and summaries
   live in sessionwiki's own index, not in your tools' files.
-- **Two commands act beyond the index, explicitly and on demand:**
+- **Three commands act beyond the index, explicitly and on demand:**
   - `migrate <id> <dir>` *copies* a session into another tool's store so you can
     resume it from a different directory. It writes a new file; it never modifies
     or deletes an existing session.
@@ -28,6 +28,14 @@ posture is deliberately small:
     confirmed and `resume` never auto-launches them &mdash; it prints the command
     for you to run after a look. It only auto-launches when the directory is
     verified.
+  - `blame <file>` shells out to `git` in the file's repository to attribute
+    lines. Because a repository's own config can make git run commands, the
+    child runs hardened: system config disabled, pager off, `core.fsmonitor`
+    and `core.hooksPath` neutralized, inherited `GIT_*` cleared, and
+    `safe.directory` never bypassed. The file path is passed after `--` (never
+    parsed as a flag) and `-L` is validated to integers. Untrusted session
+    titles and git author strings are control-stripped before they reach the
+    terminal.
 
 ## Reporting a vulnerability
 

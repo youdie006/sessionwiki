@@ -6,6 +6,16 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Added
+- `blame <file> [-L start,end]`: git blame for the AI era - attributes each line
+  to the AI session most likely behind the commit that last changed it, by
+  joining `git blame --line-porcelain` with the index's per-file touch records
+  and session time windows. Best-effort by design (`ambiguous`/`unattributed`
+  are normal) and it falls back to file-level `trace` whenever git can't carry
+  the weight. The git child runs with a hardened environment (no system config,
+  no pager, `core.fsmonitor`/hooks neutralized, inherited `GIT_*` cleared), the
+  path is passed after `--`, and `-L` is validated. `--json` for agents.
+
 ### Security
 - `truncate()` - the choke point that renders session titles to the terminal in
   `list`/`search`/`trace`/`resume` - now strips C0/C1/DEL control characters, not

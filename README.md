@@ -137,6 +137,7 @@ a navigable, maintained one. They read the index, so they are instant.
 | `related <id>` | Sessions about the same thing: same project first, then sessions that edited the same files, then anything sharing a tag. The "see also" for your work. |
 | `files <id>` | The files a session edited or created &mdash; its side of the provenance link. |
 | `trace <path>` | The AI sessions that touched a file, newest first. Matches a relative path against the absolute one on disk, so `trace src/auth.rs` just works. See [below](#trace-code-back-to-its-session). |
+| `blame <path>` | git blame for the AI era: attributes each line to the AI session most likely behind the commit that last changed it, by joining `git blame` with the index. `-L 40,80` for a range. Best-effort, not proof of authorship &mdash; `ambiguous`/`unattributed` are normal, and it falls back to file-level `trace`. |
 | `tag <id> <tag>...` | Tag a session (`--rm` to remove). No id lists every tag in use. Filter with `list --tag`. Tags are stored in the index and survive reindexing &mdash; the original session files are never touched. |
 | `note <id> "text"` | Pin a freeform note on a session; omit the text to read it back. |
 | `forget <id>` | Permanently drop a session from the index and archive. The escape hatch for [archive mode](#nothing-gets-lost-archive-mode) when you want a kept session gone. |
@@ -331,8 +332,6 @@ drift between tool versions, so parse defensively and return what you can.
 
 - more adapters &mdash; Cursor, Aider, Zed, ... the #1 thing PRs
   help with (see [adding an adapter](#adding-an-adapter))
-- richer provenance &mdash; correlate a session's edits with the file's git
-  history so `trace` can narrow to the commits and line ranges around it
 - `merge` &mdash; combine indexes from multiple machines into one
 - `clean` &mdash; reclaim disk from huge old session stores, safely
 - prebuilt binaries for every platform
