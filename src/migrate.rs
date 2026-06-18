@@ -37,32 +37,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn claude_folder_matches_the_on_disk_encoding() {
-        // Verified against ~/.claude/projects folder names on a real machine.
+    fn claude_folder_matches_the_observed_encoding() {
+        // Claude Code names the project folder by turning every '/', '.', and
+        // '_' in the absolute path into '-' (so '.' yields a doubled dash after
+        // the leading separator).
         assert_eq!(
-            claude_project_folder("/home/dev/project"),
-            "-mnt-d-MyProject"
+            claude_project_folder("/home/dev/myproject"),
+            "-home-dev-myproject"
         );
         assert_eq!(
-            claude_project_folder("/home/dev/project/coursework"),
-            "-mnt-d-MyProject-KU-homework"
+            claude_project_folder("/home/dev/my_project"),
+            "-home-dev-my-project"
         );
         assert_eq!(
-            claude_project_folder("/home/dev/.claude"),
-            "-home-dev--claude"
+            claude_project_folder("/home/dev/.config"),
+            "-home-dev--config"
         );
         assert_eq!(
-            claude_project_folder("/home/dev/open-design/.od/x"),
-            "-home-dev-open-design--od-x"
+            claude_project_folder("/home/dev/a.b/c_d"),
+            "-home-dev-a-b-c-d"
         );
     }
 
     #[test]
-    fn gemini_hash_matches_the_on_disk_folder() {
-        // sha256("/home/dev/project") - the folder that exists under ~/.gemini/tmp.
+    fn gemini_hash_is_sha256_of_the_path() {
+        // Gemini's tmp folder is the SHA-256 hex of the absolute project path.
         assert_eq!(
-            gemini_project_hash("/home/dev/project"),
-            "47df4ac14c4d3f1e338e79a789a20a276ac099f7e598e3e2aa152de05da46083"
+            gemini_project_hash("/home/dev/myproject"),
+            "5ea998fd0e431a6b5f864ca7d6386eacfa7b33d53df16df5f0faeb1c0cd2d021"
         );
     }
 }
