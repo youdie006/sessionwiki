@@ -85,23 +85,6 @@ fn host_matches(host: Option<&str>, port: u16) -> bool {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::host_matches;
-
-    #[test]
-    fn host_matches_only_loopback() {
-        assert!(host_matches(Some("127.0.0.1:7575"), 7575));
-        assert!(host_matches(Some("localhost:7575"), 7575));
-        assert!(host_matches(Some("[::1]:7575"), 7575));
-        // DNS-rebinding and cross-origin attempts:
-        assert!(!host_matches(Some("evil.com:7575"), 7575));
-        assert!(!host_matches(Some("127.0.0.1:7575"), 7576)); // wrong port
-        assert!(!host_matches(Some("127.0.0.1"), 7575)); // no port
-        assert!(!host_matches(None, 7575)); // missing Host
-    }
-}
-
 fn html(body: &str) -> Result<Boxed> {
     Ok(Response::from_string(body)
         .with_header(
@@ -315,3 +298,20 @@ fn open_browser(url: &str) {
 }
 
 const INDEX_HTML: &str = include_str!("webui.html");
+
+#[cfg(test)]
+mod tests {
+    use super::host_matches;
+
+    #[test]
+    fn host_matches_only_loopback() {
+        assert!(host_matches(Some("127.0.0.1:7575"), 7575));
+        assert!(host_matches(Some("localhost:7575"), 7575));
+        assert!(host_matches(Some("[::1]:7575"), 7575));
+        // DNS-rebinding and cross-origin attempts:
+        assert!(!host_matches(Some("evil.com:7575"), 7575));
+        assert!(!host_matches(Some("127.0.0.1:7575"), 7576)); // wrong port
+        assert!(!host_matches(Some("127.0.0.1"), 7575)); // no port
+        assert!(!host_matches(None, 7575)); // missing Host
+    }
+}
