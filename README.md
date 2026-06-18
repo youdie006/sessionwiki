@@ -69,7 +69,7 @@ releases page.
 **With Rust** (stable):
 
 ```console
-cargo install --git https://github.com/youdie006/sessionwiki
+cargo install sessionwiki
 ```
 
 Either way it is a single binary with no runtime dependencies.

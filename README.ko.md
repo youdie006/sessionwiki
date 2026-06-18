@@ -61,7 +61,7 @@ curl -sSL https://raw.githubusercontent.com/youdie006/sessionwiki/main/scripts/i
 **Rust(stable)** 가 있다면:
 
 ```console
-cargo install --git https://github.com/youdie006/sessionwiki
+cargo install sessionwiki
 ```
 
 어느 쪽이든 런타임 의존성 없는 단일 바이너리입니다.
