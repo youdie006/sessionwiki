@@ -9,7 +9,7 @@
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 <a href="https://github.com/youdie006/sessionwiki/releases"><img src="docs/release-badge.png" height="20" alt="Latest release v0.13.0"></a>
 
-<sub><b>English</b> &middot; <a href="README.ko.md">한국어</a></sub>
+<b>English</b> &middot; <a href="README.ko.md">한국어</a>
 
 <a href="#install"><img src="docs/nav/install.png" height="20" alt="Install"></a>
 <a href="#quick-start"><img src="docs/nav/quick-start.png" height="20" alt="Quick start"></a>
