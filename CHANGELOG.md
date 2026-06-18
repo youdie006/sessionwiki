@@ -6,8 +6,10 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-06-18
+
 ### Added
-- **gptme adapter**: indexes sessions from [gptme](https://github.com/gptme/gptme)
+- **gptme adapter** (10th tool): indexes sessions from [gptme](https://github.com/gptme/gptme)
   (`~/.local/share/gptme/logs/<session>/conversation.jsonl`). Drops `pinned: true`
   system-prompt boilerplate and bare `system` role lines; handles Python's naive
   `datetime.now().isoformat()` timestamps (no UTC offset) by falling back to
@@ -269,6 +271,7 @@ Hardening from a red-team pass of the launch surface (all confirmed with PoCs):
   incremental SQLite FTS5 index. Adapters for Claude Code, Codex, and Gemini
   CLI. 100% local, no telemetry.
 
+[0.14.0]: https://github.com/youdie006/sessionwiki/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/youdie006/sessionwiki/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/youdie006/sessionwiki/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/youdie006/sessionwiki/compare/v0.10.0...v0.11.0
