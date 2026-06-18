@@ -78,9 +78,151 @@ pub fn group_runs(lines: &[LineBlame]) -> Vec<Run> {
     runs
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct TouchingSession {
+    pub session_id: String,
+    pub tool: String,
+    pub title: String,
+    pub project: String,
+    pub started: Option<i64>,
+    pub ended: Option<i64>,
+    pub archived: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Attribution {
+    Confident(TouchingSession),
+    Ambiguous(Vec<TouchingSession>),
+    Unattributed,
+}
+
+/// How long after a session ends a commit may still be attributed to it
+/// (commits often land well after the conversation). Tunable.
+pub const LAG_WINDOW_SECS: i64 = 14 * 24 * 3600;
+
+fn project_is_ancestor(project: &str, repo_path: &str) -> bool {
+    !project.is_empty() && repo_path.starts_with(project)
+}
+
+/// Map a commit's author-time to the session most likely behind it, among the
+/// sessions that touched the file. (a) sessions whose [started,ended] window
+/// contains author_time; (b) else the most recent session that ended at/before
+/// author_time within LAG_WINDOW_SECS; project-ancestor breaks ties. >=2 keep
+/// as ambiguous; none -> unattributed.
+pub fn attribute_commit(
+    author_time: i64,
+    repo_path: &str,
+    candidates: &[TouchingSession],
+) -> Attribution {
+    let containing: Vec<&TouchingSession> = candidates
+        .iter()
+        .filter(|s| {
+            matches!((s.started, s.ended), (Some(a), Some(b)) if a <= author_time && author_time <= b)
+        })
+        .collect();
+    if containing.len() == 1 {
+        return Attribution::Confident(containing[0].clone());
+    }
+    if containing.len() > 1 {
+        return disambiguate(containing, repo_path);
+    }
+    // (b) most-recent-before within the lag window
+    let mut before: Vec<&TouchingSession> = candidates
+        .iter()
+        .filter(|s| matches!(s.ended, Some(e) if e <= author_time && author_time - e <= LAG_WINDOW_SECS))
+        .collect();
+    if before.is_empty() {
+        return Attribution::Unattributed;
+    }
+    let newest = before
+        .iter()
+        .filter_map(|s| s.ended)
+        .max()
+        .unwrap_or(i64::MIN);
+    before.retain(|s| s.ended == Some(newest));
+    if before.len() == 1 {
+        Attribution::Confident(before[0].clone())
+    } else {
+        disambiguate(before, repo_path)
+    }
+}
+
+fn disambiguate(mut tied: Vec<&TouchingSession>, repo_path: &str) -> Attribution {
+    let ancestors: Vec<&TouchingSession> = tied
+        .iter()
+        .copied()
+        .filter(|s| project_is_ancestor(&s.project, repo_path))
+        .collect();
+    if ancestors.len() == 1 {
+        return Attribution::Confident(ancestors[0].clone());
+    }
+    if !ancestors.is_empty() {
+        tied = ancestors;
+    }
+    Attribution::Ambiguous(tied.into_iter().cloned().collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sess(id: &str, started: i64, ended: i64, project: &str) -> TouchingSession {
+        TouchingSession {
+            session_id: id.into(),
+            tool: "claude-code".into(),
+            title: id.into(),
+            project: project.into(),
+            started: Some(started),
+            ended: Some(ended),
+            archived: false,
+        }
+    }
+
+    #[test]
+    fn confident_when_one_window_contains_the_commit() {
+        let c = vec![sess("s1", 100, 200, "/repo")];
+        match attribute_commit(150, "/repo", &c) {
+            Attribution::Confident(s) => assert_eq!(s.session_id, "s1"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn ambiguous_when_two_windows_contain_the_commit() {
+        let c = vec![sess("s1", 100, 200, "/repo"), sess("s2", 140, 260, "/repo")];
+        match attribute_commit(150, "/repo", &c) {
+            Attribution::Ambiguous(v) => assert_eq!(v.len(), 2),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn falls_back_to_most_recent_before_within_lag_window() {
+        let c = vec![sess("s1", 100, 200, "/repo"), sess("s2", 900, 990, "/repo")];
+        match attribute_commit(1000, "/repo", &c) {
+            Attribution::Confident(s) => assert_eq!(s.session_id, "s2"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn unattributed_when_nothing_qualifies() {
+        let c = vec![sess("s1", 100, 200, "/repo")];
+        assert_eq!(
+            attribute_commit(200 + LAG_WINDOW_SECS + 1, "/repo", &c),
+            Attribution::Unattributed
+        );
+    }
+
+    #[test]
+    fn project_ancestor_breaks_a_tie_in_the_lag_window() {
+        let a = sess("a", 100, 500, "/other");
+        let b = sess("b", 100, 500, "/repo");
+        match attribute_commit(1000, "/repo/src", &[a, b]) {
+            Attribution::Confident(s) => assert_eq!(s.session_id, "b"),
+            other => panic!("{other:?}"),
+        }
+    }
 
     const SAMPLE: &str = "\
 abc123abc123abc123abc123abc123abc123abcd 1 1 2
