@@ -26,6 +26,20 @@ pub fn serve(port: u16, no_open: bool, sync: bool) -> Result<()> {
     }
 
     for request in server.incoming_requests() {
+        // Defend against DNS rebinding: a page on a malicious site can rebind its
+        // own hostname to 127.0.0.1 and have the browser fetch this server, then
+        // read your sessions same-origin. Such a request carries the attacker's
+        // hostname in the Host header, so only serve requests addressed to the
+        // loopback name we actually bound.
+        let host = request
+            .headers()
+            .iter()
+            .find(|h| h.field.equiv("Host"))
+            .map(|h| h.value.as_str().to_string());
+        if !host_matches(host.as_deref(), port) {
+            let _ = request.respond(Response::from_string("forbidden").with_status_code(403));
+            continue;
+        }
         let url = request.url().to_string();
         let (path, query) = url.split_once('?').unwrap_or((url.as_str(), ""));
         let result = match path {
@@ -57,6 +71,36 @@ pub fn serve(port: u16, no_open: bool, sync: bool) -> Result<()> {
 }
 
 type Boxed = Response<Box<dyn std::io::Read + Send>>;
+
+/// True only for the loopback host:port we bound. Anything else (notably an
+/// attacker hostname rebound to 127.0.0.1) is rejected, defeating DNS rebinding.
+fn host_matches(host: Option<&str>, port: u16) -> bool {
+    match host {
+        Some(h) => {
+            h == format!("127.0.0.1:{port}")
+                || h == format!("localhost:{port}")
+                || h == format!("[::1]:{port}")
+        }
+        None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::host_matches;
+
+    #[test]
+    fn host_matches_only_loopback() {
+        assert!(host_matches(Some("127.0.0.1:7575"), 7575));
+        assert!(host_matches(Some("localhost:7575"), 7575));
+        assert!(host_matches(Some("[::1]:7575"), 7575));
+        // DNS-rebinding and cross-origin attempts:
+        assert!(!host_matches(Some("evil.com:7575"), 7575));
+        assert!(!host_matches(Some("127.0.0.1:7575"), 7576)); // wrong port
+        assert!(!host_matches(Some("127.0.0.1"), 7575)); // no port
+        assert!(!host_matches(None, 7575)); // missing Host
+    }
+}
 
 fn html(body: &str) -> Result<Boxed> {
     Ok(Response::from_string(body)

@@ -32,12 +32,33 @@ if [ -z "${tag:-}" ]; then
 fi
 
 asset="sessionwiki-$tag-$target.tar.gz"
-url="https://github.com/$REPO/releases/download/$tag/$asset"
+base="https://github.com/$REPO/releases/download/$tag"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 echo "downloading $asset ..."
-curl -sSL "$url" | tar xz -C "$tmp"
+curl -fsSL -o "$tmp/$asset" "$base/$asset"
+
+# Verify the release's published checksum (defense in depth on top of HTTPS).
+if curl -fsSL -o "$tmp/$asset.sha256" "$base/$asset.sha256" 2>/dev/null && [ -s "$tmp/$asset.sha256" ]; then
+  expected="$(awk '{print $1}' "$tmp/$asset.sha256")"
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "$tmp/$asset" | awk '{print $1}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    actual="$(shasum -a 256 "$tmp/$asset" | awk '{print $1}')"
+  else
+    actual=""
+    echo "note: no sha256 tool found; skipping checksum verification" >&2
+  fi
+  if [ -n "$actual" ] && [ "$actual" != "$expected" ]; then
+    echo "checksum mismatch for $asset (expected $expected, got $actual)" >&2
+    exit 1
+  fi
+else
+  echo "note: could not fetch a checksum for $asset; skipping verification" >&2
+fi
+
+tar xzf "$tmp/$asset" -C "$tmp"
 
 mkdir -p "$BIN_DIR"
 install -m 0755 "$tmp/sessionwiki-$tag-$target/sessionwiki" "$BIN_DIR/sessionwiki"
