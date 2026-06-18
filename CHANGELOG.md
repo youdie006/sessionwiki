@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-06-18
+
 ### Security
 Hardening from a red-team pass of the launch surface (all confirmed with PoCs):
 - The local web server now rejects requests whose `Host` header isn't the
@@ -257,6 +259,7 @@ Hardening from a red-team pass of the launch surface (all confirmed with PoCs):
   incremental SQLite FTS5 index. Adapters for Claude Code, Codex, and Gemini
   CLI. 100% local, no telemetry.
 
+[0.13.0]: https://github.com/youdie006/sessionwiki/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/youdie006/sessionwiki/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/youdie006/sessionwiki/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/youdie006/sessionwiki/compare/v0.9.0...v0.10.0
