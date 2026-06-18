@@ -378,6 +378,7 @@ fn every_adapter_is_addressable_by_name() {
         "gajae-code",
         "continue",
         "gptme",
+        "aider",
     ] {
         assert!(adapters::by_name(tool).is_some(), "{tool} should resolve");
     }

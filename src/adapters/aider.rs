@@ -6,6 +6,7 @@
 //! No per-message timestamps; `started` is the run header (local time, assumed
 //! UTC). Reads are size-capped; discovery is bounded and logs nothing.
 
+use crate::adapters::{Adapter, Store};
 use crate::model::{Message, Role, Session};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -271,6 +272,63 @@ fn build_session(path: &Path, idx: usize) -> Result<Session> {
         messages,
         touched,
     })
+}
+
+pub struct Aider;
+
+impl Adapter for Aider {
+    fn name(&self) -> &'static str {
+        "aider"
+    }
+
+    /// Rootless: returns home (or the first configured root) so the tool appears
+    /// in `scan`/`report`. Because that always exists, `store_present` is always
+    /// true, so `Store.had_error` (not `store_present`) guards against archiving
+    /// the corpus on a partial walk.
+    fn root(&self) -> Option<PathBuf> {
+        aider_roots().into_iter().next()
+    }
+
+    fn discover(&self) -> Vec<PathBuf> {
+        Vec::new() // shared-store adapter; see `store`
+    }
+
+    fn parse(&self, _path: &Path) -> Result<Session> {
+        anyhow::bail!("aider is a shared-store adapter; use parse_key")
+    }
+
+    fn store(&self) -> Option<Store> {
+        let (history_files, had_error) = discover_history(&aider_roots());
+        let mut keys: Vec<(String, i64)> = Vec::new();
+        for path in &history_files {
+            // token = file mtime (ms), shared across all runs of the file, so any
+            // write re-parses the whole file (one capped read).
+            let token = std::fs::metadata(path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let Ok(content) = crate::util::read_to_string_capped(path) else {
+                continue;
+            };
+            let runs = split_runs(&content);
+            for idx in 0..runs.len() {
+                keys.push((make_key(&path.to_string_lossy(), idx), token));
+            }
+        }
+        Some(Store {
+            keys,
+            files: history_files,
+            had_error,
+        })
+    }
+
+    fn parse_key(&self, key: &str) -> Result<Session> {
+        let (path, idx) = key.split_once(KEY_SEP).context("malformed aider key")?;
+        let idx: usize = idx.parse().context("bad run index")?;
+        build_session(Path::new(path), idx)
+    }
 }
 
 #[cfg(test)]
