@@ -6,6 +6,7 @@
 //! No per-message timestamps; `started` is the run header (local time, assumed
 //! UTC). Reads are size-capped; discovery is bounded and logs nothing.
 
+use crate::model::{Message, Role};
 use chrono::{DateTime, Utc};
 
 struct Run {
@@ -49,6 +50,80 @@ fn split_runs(content: &str) -> Vec<Run> {
     runs
 }
 
+fn push_unique(v: &mut Vec<String>, s: &str) {
+    let s = s.trim().to_string();
+    if !s.is_empty() && !v.contains(&s) {
+        v.push(s);
+    }
+}
+
+fn flush(messages: &mut Vec<Message>, role: Option<Role>, buf: &mut Vec<String>) {
+    if let Some(role) = role {
+        let text = buf.join("\n").trim().to_string();
+        // Keep empty user turns (aider writes `#### ` for empty input); drop
+        // empty assistant/tool noise.
+        if !text.is_empty() || role == Role::User {
+            messages.push(Message {
+                role,
+                text,
+                ts: None,
+            });
+        }
+    }
+    buf.clear();
+}
+
+/// Reconstruct turns from one run body. `#### ` = user, `> ` = tool (every aider
+/// tool/warning/error line is blockquoted), blank lines continue the current
+/// turn, everything else is assistant (the default container). Edited files come
+/// from `> Applied edit to` / `> Creating empty file` (relative paths). Known
+/// limitation: an assistant `#### ` heading or `> ` blockquote is misclassified.
+fn parse_turns(body: &str) -> (Vec<Message>, Vec<String>) {
+    let mut messages: Vec<Message> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+    let mut cur_role: Option<Role> = None;
+    let mut buf: Vec<String> = Vec::new();
+
+    for raw in body.lines() {
+        let (line_role, content): (Option<Role>, String) =
+            if let Some(r) = raw.strip_prefix("#### ") {
+                (Some(Role::User), r.trim_end().to_string())
+            } else if raw == "####" {
+                (Some(Role::User), String::new())
+            } else if let Some(r) = raw.strip_prefix("> ") {
+                if let Some(p) = r.strip_prefix("Applied edit to ") {
+                    push_unique(&mut touched, p);
+                } else if let Some(p) = r.strip_prefix("Creating empty file ") {
+                    push_unique(&mut touched, p);
+                }
+                (Some(Role::Tool), r.to_string())
+            } else if raw == ">" {
+                (Some(Role::Tool), String::new())
+            } else if raw.trim().is_empty() {
+                (None, String::new()) // blank: continue the current turn
+            } else {
+                (Some(Role::Assistant), raw.to_string())
+            };
+
+        match line_role {
+            Some(role) => {
+                if cur_role != Some(role) {
+                    flush(&mut messages, cur_role, &mut buf);
+                    cur_role = Some(role);
+                }
+                buf.push(content);
+            }
+            None => {
+                if cur_role.is_some() {
+                    buf.push(String::new());
+                }
+            }
+        }
+    }
+    flush(&mut messages, cur_role, &mut buf);
+    (messages, touched)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,5 +151,35 @@ mod tests {
     fn parse_aider_ts_handles_naive_local_as_utc_and_rejects_garbage() {
         assert!(parse_aider_ts("2026-06-09 14:01:00").is_some());
         assert!(parse_aider_ts("not a date").is_none());
+    }
+
+    #[test]
+    fn assistant_markdown_and_tool_lines_classified() {
+        let body = "#### fix the bug\n\
+                    Here is the fix.\n\
+                    Some prose.\n\
+                    > Applied edit to src/a.py\n\
+                    > Applied edit to src/a.py\n\
+                    > Creating empty file src/b.py\n\
+                    > Did not apply edit to src/c.py (--dry-run)\n";
+        let (msgs, touched) = parse_turns(body);
+        let roles: Vec<Role> = msgs.iter().map(|m| m.role).collect();
+        assert_eq!(roles, vec![Role::User, Role::Assistant, Role::Tool]);
+        assert_eq!(msgs[0].text, "fix the bug");
+        assert!(msgs[1].text.contains("Here is the fix."));
+        assert_eq!(touched, vec!["src/a.py", "src/b.py"]); // dedup; dry-run ignored
+        assert!(msgs.iter().all(|m| m.ts.is_none()));
+    }
+
+    #[test]
+    fn blank_lines_do_not_split_an_assistant_message() {
+        let body = "#### q\n\
+                    para one\n\
+                    \n\
+                    para two\n";
+        let (msgs, _) = parse_turns(body);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[1].role, Role::Assistant);
+        assert!(msgs[1].text.contains("para one") && msgs[1].text.contains("para two"));
     }
 }
