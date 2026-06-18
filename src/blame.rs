@@ -1,6 +1,10 @@
-//! `blame` core: git-blame porcelain parsing, run grouping, and the
-//! commit -> session attribution heuristic. Pure functions, unit-testable
-//! without invoking git or opening a database.
+//! `blame` core: git-blame porcelain parsing, run grouping, the commit ->
+//! session attribution heuristic, and the hardened git invocation. The parsing
+//! and attribution are pure and unit-testable without git or a database.
+
+use anyhow::{bail, Context, Result};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LineBlame {
@@ -160,6 +164,76 @@ fn disambiguate(mut tied: Vec<&TouchingSession>, repo_path: &str) -> Attribution
         tied = ancestors;
     }
     Attribution::Ambiguous(tied.into_iter().cloned().collect())
+}
+
+/// Cap on git blame output we will buffer, so a huge file can't exhaust memory.
+pub const MAX_BLAME_BYTES: usize = 16 * 1024 * 1024;
+
+/// Spawn git with a hardened, minimal environment: running inside an untrusted
+/// repository must not execute attacker-controlled config (pager / fsmonitor /
+/// hooks), and inherited `GIT_*` env must not influence the child.
+fn git_command(repo: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(repo);
+    for (k, _) in std::env::vars() {
+        if k.starts_with("GIT_") {
+            cmd.env_remove(k);
+        }
+    }
+    cmd.env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_PAGER", "cat")
+        .args([
+            "--no-pager",
+            "-c",
+            "core.fsmonitor=",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ]);
+    cmd
+}
+
+/// Resolve the git repository root that contains `file`.
+pub fn repo_root(file: &Path) -> Result<PathBuf> {
+    let canon =
+        std::fs::canonicalize(file).with_context(|| format!("resolve {}", file.display()))?;
+    let dir = canon.parent().unwrap_or(&canon);
+    let out = git_command(dir)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .context("run git rev-parse")?;
+    if !out.status.success() {
+        bail!("not inside a git repository");
+    }
+    let root = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if root.is_empty() {
+        bail!("not inside a git repository");
+    }
+    Ok(PathBuf::from(root))
+}
+
+/// Run `git blame --line-porcelain` on `file` (optionally a -L range). The path
+/// is passed after `--` as a single argv element, so a path starting with `-`
+/// can never be read as a flag. `-L` values are validated integers from the
+/// caller. Output is capped to `MAX_BLAME_BYTES`.
+pub fn run_git_blame(repo: &Path, file: &Path, range: Option<(usize, usize)>) -> Result<String> {
+    let mut cmd = git_command(repo);
+    cmd.args(["blame", "--line-porcelain", "-M", "-C"]);
+    if let Some((s, e)) = range {
+        cmd.arg(format!("-L{s},{e}"));
+    }
+    cmd.arg("--").arg(file);
+    let out = cmd.output().context("run git blame")?;
+    if !out.status.success() {
+        bail!(
+            "git blame failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    if out.stdout.len() > MAX_BLAME_BYTES {
+        bail!("git blame output too large; narrow with -L <start>,<end>");
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 #[cfg(test)]
