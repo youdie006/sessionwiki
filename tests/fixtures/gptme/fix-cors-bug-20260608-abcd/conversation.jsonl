@@ -1,0 +1,7 @@
+{"role": "system", "content": "You are a helpful assistant.", "timestamp": "2026-06-08T10:00:00.000000", "pinned": true, "hide": true}
+{"role": "user", "content": "Why is the CORS preflight failing?", "timestamp": "2026-06-08T10:00:01.000000"}
+{"role": "assistant", "content": "The allow_methods list excludes OPTIONS.", "timestamp": "2026-06-08T10:00:05.000000"}
+{"role": "user", "content": "How do I fix that?", "timestamp": "2026-06-08T10:00:10.000000"}
+{"role": "assistant", "content": "Add OPTIONS to the allow_methods list in your CORS middleware configuration.", "timestamp": "2026-06-08T10:00:15.000000"}
+this is not valid json at all
+{"role": "system", "content": "Context injection — compaction notice", "timestamp": "2026-06-08T10:00:20.000000"}

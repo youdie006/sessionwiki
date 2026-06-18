@@ -321,6 +321,43 @@ fn continue_session_with_tool_edit() {
 }
 
 #[test]
+fn gptme_session() {
+    let s = parse(
+        "gptme",
+        "gptme/fix-cors-bug-20260608-abcd/conversation.jsonl",
+    );
+
+    assert_eq!(s.tool, "gptme");
+    // Project label is the session directory name (the slug), not a cwd.
+    assert_eq!(s.project, "fix-cors-bug-20260608-abcd");
+
+    // Pinned system-prompt line and bare system role are both dropped;
+    // the malformed JSON line is silently skipped.
+    assert_eq!(roles(&s), ["user", "assistant", "user", "assistant"]);
+
+    // Naive timestamp fallback (no UTC offset) is parsed and assumed UTC.
+    assert_eq!(
+        s.started,
+        chrono::DateTime::parse_from_rfc3339("2026-06-08T10:00:01Z")
+            .ok()
+            .map(|t| t.with_timezone(&chrono::Utc))
+    );
+
+    // Title comes from first user message.
+    assert!(s.messages[0].text.contains("CORS preflight"));
+}
+
+#[test]
+fn gptme_malformed_lines_do_not_panic() {
+    // A fixture with a bad line must not panic — it is silently skipped.
+    let adapter = adapters::by_name("gptme").unwrap();
+    let result = adapter.parse(&fixture(
+        "gptme/fix-cors-bug-20260608-abcd/conversation.jsonl",
+    ));
+    assert!(result.is_ok());
+}
+
+#[test]
 fn missing_file_errors_without_panicking() {
     let adapter = adapters::by_name("codex").unwrap();
     assert!(adapter
@@ -340,6 +377,7 @@ fn every_adapter_is_addressable_by_name() {
         "kilo-code",
         "gajae-code",
         "continue",
+        "gptme",
     ] {
         assert!(adapters::by_name(tool).is_some(), "{tool} should resolve");
     }

@@ -268,6 +268,7 @@ one feature that touches an LLM is `summarize`, and it does so by running a CLI
 | Cline, Roo Code, Kilo Code | VS Code `globalStorage/<ext>/tasks/<id>/` (one parser, three tools) | supported |
 | gajae-code (& Pi) | `~/.gjc/agent/sessions/**/*.jsonl` | supported |
 | Continue | `~/.continue/sessions/*.json` | supported |
+| gptme | `~/.local/share/gptme/logs/<session>/conversation.jsonl` | supported |
 | Cursor, Aider, Zed, ... | | planned &mdash; PRs welcome |
 
 **Using a wrapper like oh-my-claudecode or oh-my-openagent?** Those run on top of
@@ -322,7 +323,7 @@ drift between tool versions, so parse defensively and return what you can.
 
 ## Roadmap
 
-- more adapters &mdash; Cursor, Aider, Zed, gptme, ... the #1 thing PRs
+- more adapters &mdash; Cursor, Aider, Zed, ... the #1 thing PRs
   help with (see [adding an adapter](#adding-an-adapter))
 - richer provenance &mdash; correlate a session's edits with the file's git
   history so `trace` can narrow to the commits and line ranges around it

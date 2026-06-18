@@ -4,6 +4,7 @@ mod codex;
 mod continue_dev;
 mod gajae;
 mod gemini;
+mod gptme;
 pub mod harness;
 mod opencode;
 
@@ -70,6 +71,7 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
         Box::new(cline::KiloCode),
         Box::new(gajae::GajaeCode),
         Box::new(continue_dev::Continue),
+        Box::new(gptme::Gptme),
     ]
 }
 
