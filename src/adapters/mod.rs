@@ -1,3 +1,4 @@
+mod aider;
 mod claude_code;
 mod cline;
 mod codex;
