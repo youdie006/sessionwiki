@@ -1327,6 +1327,198 @@ pub fn trace(path: &str, json: bool, no_sync: bool) -> Result<()> {
     Ok(())
 }
 
+/// One contiguous line range with its commit and the session attributed to it.
+pub struct BlameRun {
+    pub start: usize,
+    pub end: usize,
+    pub commit: String,
+    pub author_time: i64,
+    pub attribution: crate::blame::Attribution,
+}
+
+/// Attribute each run to a session, looking up the touching sessions once and
+/// memoizing the per-commit attribution (one resolution per distinct commit).
+pub fn blame_runs(
+    conn: &rusqlite::Connection,
+    file_query: &str,
+    repo_path: &str,
+    runs: Vec<crate::blame::Run>,
+) -> Result<Vec<BlameRun>> {
+    use std::collections::HashMap;
+    let candidates = index::sessions_touching(conn, file_query)?;
+    let mut memo: HashMap<String, crate::blame::Attribution> = HashMap::new();
+    let mut out = Vec::new();
+    for r in runs {
+        let attr = memo
+            .entry(r.commit.clone())
+            .or_insert_with(|| {
+                crate::blame::attribute_commit(r.author_time, repo_path, &candidates)
+            })
+            .clone();
+        out.push(BlameRun {
+            start: r.start,
+            end: r.end,
+            commit: r.commit,
+            author_time: r.author_time,
+            attribution: attr,
+        });
+    }
+    Ok(out)
+}
+
+/// git blame for the AI era: attribute each line of a file to the AI session
+/// most likely behind the commit that last changed it. Best-effort - falls back
+/// to file-level `trace` whenever git can't carry the weight.
+pub fn blame(file: &str, range: Option<(usize, usize)>, json: bool, no_sync: bool) -> Result<()> {
+    let path = std::path::Path::new(file);
+    let repo = match crate::blame::repo_root(path) {
+        Ok(r) => r,
+        Err(e) => return blame_fallback(file, json, no_sync, &e.to_string()),
+    };
+    let raw = match crate::blame::run_git_blame(&repo, path, range) {
+        Ok(o) => o,
+        Err(e) => return blame_fallback(file, json, no_sync, &e.to_string()),
+    };
+    let mut conn = index::open()?;
+    if !no_sync {
+        index::sync(&mut conn, None)?;
+    }
+    // Query the index with the repo-relative path: its suffix match then catches
+    // both Claude Code's absolute touched paths and Codex's relative ones.
+    let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let rel = canon
+        .strip_prefix(&repo)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| file.to_string());
+    let runs = crate::blame::group_runs(&crate::blame::parse_line_porcelain(&raw));
+    let repo_path = repo.to_string_lossy().into_owned();
+    let results = blame_runs(&conn, &rel, &repo_path, runs)?;
+    if json {
+        print_blame_json(&results)?;
+    } else {
+        print_blame_human(file, &rel, &results, &conn)?;
+    }
+    Ok(())
+}
+
+fn blame_fallback(file: &str, json: bool, no_sync: bool, reason: &str) -> Result<()> {
+    if !json {
+        eprintln!(
+            "{}",
+            dim(&format!("blame fell back to file-level trace: {reason}"))
+        );
+    }
+    trace(file, json, no_sync)
+}
+
+fn sess_json(s: &crate::blame::TouchingSession) -> serde_json::Value {
+    serde_json::json!({
+        "session_id": s.session_id,
+        "tool": s.tool,
+        "title": s.title,
+        "project": s.project,
+        "archived": s.archived,
+    })
+}
+
+fn print_blame_json(runs: &[BlameRun]) -> Result<()> {
+    use crate::blame::Attribution;
+    let arr: Vec<serde_json::Value> = runs
+        .iter()
+        .map(|r| {
+            let (status, session, candidates) = match &r.attribution {
+                Attribution::Confident(s) => ("confident", Some(sess_json(s)), vec![]),
+                Attribution::Ambiguous(v) => ("ambiguous", None, v.iter().map(sess_json).collect()),
+                Attribution::Unattributed => ("unattributed", None, vec![]),
+            };
+            serde_json::json!({
+                "start": r.start,
+                "end": r.end,
+                "commit": r.commit,
+                "author_time": r.author_time,
+                "status": status,
+                "session": session,
+                "candidates": candidates,
+            })
+        })
+        .collect();
+    println!("{}", serde_json::to_string(&serde_json::Value::Array(arr))?);
+    Ok(())
+}
+
+fn print_blame_human(
+    file: &str,
+    rel: &str,
+    runs: &[BlameRun],
+    conn: &rusqlite::Connection,
+) -> Result<()> {
+    use crate::blame::Attribution;
+    println!(
+        "{}",
+        dim(&format!(
+            "blame {file}: the session most likely behind the commit that last changed each line - not proof of authorship (git show <sha> to verify)."
+        ))
+    );
+    if runs.is_empty() {
+        println!("{}", dim("No committed lines to blame."));
+    }
+    for r in runs {
+        let when = chrono::DateTime::from_timestamp(r.author_time, 0);
+        let short = &r.commit[..r.commit.len().min(8)];
+        let loc = yellow(&format!("L{}-{}", r.start, r.end));
+        let date = dim(&fmt_date(when));
+        match &r.attribution {
+            Attribution::Confident(s) => {
+                let arch = if s.archived { " [archived]" } else { "" };
+                println!(
+                    "{loc}  {date}  {} {}{arch}  {}",
+                    cyan(&s.tool),
+                    truncate(&s.title, 50),
+                    dim(short)
+                );
+            }
+            Attribution::Ambiguous(v) => {
+                let ids: Vec<&str> = v.iter().map(|s| s.session_id.as_str()).collect();
+                println!(
+                    "{loc}  {date}  {}  {}",
+                    yellow(&format!("ambiguous ({} sessions)", v.len())),
+                    dim(&format!("{} [{short}]", ids.join(", ")))
+                );
+            }
+            Attribution::Unattributed => {
+                println!("{loc}  {date}  {}  {}", dim("unattributed"), dim(short));
+            }
+        }
+    }
+    // File-level floor: the sessions that touched this file, always shown so
+    // unattributed/ambiguous lines still have a way back.
+    let hits = index::sessions_for_file(conn, rel, 20)?;
+    if !hits.is_empty() {
+        println!(
+            "\n{}",
+            dim(&format!(
+                "Sessions that touched this file ({}):",
+                hits.len()
+            ))
+        );
+        for (s, _matched) in hits {
+            let when = s
+                .started
+                .as_deref()
+                .and_then(|x| chrono::DateTime::parse_from_rfc3339(x).ok())
+                .map(|t| t.with_timezone(&chrono::Utc));
+            println!(
+                "  {} {} {} {}",
+                yellow(&s.session_id),
+                cyan(&s.tool),
+                dim(&fmt_date(when)),
+                truncate(&s.title, 50)
+            );
+        }
+    }
+    Ok(())
+}
+
 pub fn projects() -> Result<()> {
     let conn = index::open()?;
     let rows = index::projects(&conn)?;
