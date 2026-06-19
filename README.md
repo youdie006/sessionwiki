@@ -44,6 +44,7 @@ That is one real machine. Run it on yours &mdash; the number is usually a surpri
 - **Search** every message of every tool at once &mdash; substring + CJK, zero setup.
 - **Read & resume** &mdash; any session as a clean transcript; reopen it in its original tool, or `brief` it into another (even a different tool).
 - **Trace** a file back to the AI conversations that wrote it, across every tool &mdash; the link between your sessions and your code. See [provenance](#trace-code-back-to-its-session).
+- **Blame** a line back to the AI session behind it &mdash; `git blame` for the AI era, joining git history with the index so `blame src/auth.rs` names the conversation behind each line. Best-effort and heuristic, not proof of authorship; falls back to file-level `trace`.
 - **Keep & reclaim** &mdash; sessions are [archived](#nothing-gets-lost-archive-mode) when a tool deletes them, so search never goes dark; delete the bulky originals to reclaim disk and still search them.
 - **Curate** &mdash; tag, note, and jump to [related](#session-engineering) sessions, and see where your agent time goes.
 
@@ -80,10 +81,11 @@ cargo install sessionwiki
 
 Either way it is a single binary with no runtime dependencies.
 
-### Claude Code plugin (automatic session recall)
+### Claude Code plugin (long-term memory)
 
-Make Claude Code recall your past sessions automatically. Install the
-`sessionwiki` CLI first (above), then add the plugin from this repo:
+Give Claude Code long-term memory of a project: its SessionStart hook makes it
+recall your past sessions automatically. Install the `sessionwiki` CLI first
+(above), then add the plugin from this repo:
 
 ```console
 /plugin marketplace add youdie006/sessionwiki

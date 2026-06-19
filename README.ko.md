@@ -11,13 +11,21 @@
 
 <a href="README.md">English</a> &middot; <b>한국어</b>
 
+<a href="#설치"><img src="docs/nav/install.png" height="20" alt="설치"></a>
+<a href="#빠른-시작"><img src="docs/nav/quick-start.png" height="20" alt="빠른 시작"></a>
+<a href="#명령어"><img src="docs/nav/commands.png" height="20" alt="명령어"></a>
+<a href="#코드를-만든-세션으로-거슬러-가기"><img src="docs/nav/trace.png" height="20" alt="추적"></a>
+<a href="#아무것도-잃지-않기-아카이브-모드"><img src="docs/nav/archive.png" height="20" alt="아카이브"></a>
+<a href="#멈춘-곳에서-다시-시작하기"><img src="docs/nav/resume.png" height="20" alt="이어가기"></a>
+<a href="#어댑터-추가하기"><img src="docs/nav/add-a-tool.png" height="20" alt="어댑터 추가"></a>
+
 <img src="docs/demo-cli.webp" width="760" alt="터미널 녹화: sessionwiki scan이 세 툴에 걸친 47GB 세션을 보여주고, search가 과거 대화를 키워드로 찾고, resume이 원래 툴에서 다시 엽니다">
 
 </div>
 
 3주 전에 Claude가 고쳐준 그 CORS 버그 대화, 아직 디스크에 있습니다 &mdash; 못 찾을 뿐이죠. 모든 AI 코딩 에이전트는 세션을 디스크에 기록합니다. 툴마다 다른 포맷으로, 다른 폴더에, 쓰는 머신마다 제각각. 몇 달이면 해결된 문제로 가득한 대화 수천 개가 쌓이는데, 다시 찾아갈 방법이 없습니다.
 
-**sessionwiki는 툴들이 어차피 남기는 흔적을 읽어 하나의 검색 가능한 아카이브로 만듭니다.** 데몬도, 기록 습관도, 클라우드도 필요 없습니다. 이미 있는 것을 인덱싱할 뿐입니다.
+**sessionwiki는 툴들이 어차피 남기는 흔적을 읽어, 실제로 관리할 수 있는 하나의 검색·연결 가능한 아카이브로 만듭니다.** 데몬도, 기록 습관도, 클라우드도 필요 없습니다. 이미 있는 것을 인덱싱한 다음, 태그를 달고, 서로 연결하고, 멈춘 곳에서 다시 이어갈 수 있게 해줍니다.
 
 ```console
 $ sessionwiki scan
@@ -44,6 +52,7 @@ gemini                50     1.2 MB  2026-04-02   2026-06-10    ~/.gemini/tmp
 - **이어가기** &mdash; 명령 하나로 원래 툴에서, 원래 프로젝트 디렉토리에서 세션을 다시 엽니다.
 - **컨텍스트 이식** &mdash; Claude Code 세션을 Codex로, 어디로든 브리핑해서 넘깁니다.
 - **파일에서 세션 거슬러 가기** &mdash; `trace src/auth.rs`는 한 파일을 편집한 AI 대화들을 툴 가로질러 보여줍니다. 세션과 그것이 만든 코드의 연결. [프로비넌스](#코드를-만든-세션으로-거슬러-가기) 참고.
+- **줄 단위로 거슬러 가기** &mdash; AI 시대의 `git blame`. `blame src/auth.rs`가 git 히스토리와 인덱스를 결합해 각 줄 뒤의 AI 세션을 짚어냅니다. best-effort 휴리스틱이고 저작 증명은 아니며, 파일 단위 `trace`로 폴백합니다.
 - **툴이 지운 것까지 보존** &mdash; 툴이 prune한 세션을 [아카이브](#아무것도-잃지-않기-아카이브-모드)해, 오래된 작업에도 검색·추적이 꺼지지 않습니다.
 
 ## 설치
@@ -70,10 +79,11 @@ cargo install sessionwiki
 
 어느 쪽이든 런타임 의존성 없는 단일 바이너리입니다.
 
-### Claude Code 플러그인 (세션 자동 회상)
+### Claude Code 플러그인 (장기 기억)
 
-Claude Code가 과거 세션을 자동으로 회상하게 만듭니다. 먼저 위에서
-`sessionwiki` CLI를 설치한 뒤, 이 레포에서 플러그인을 추가하세요:
+Claude Code에 프로젝트의 장기 기억을 더합니다: SessionStart 훅이 과거 세션을
+자동으로 회상하게 만듭니다. 먼저 위에서 `sessionwiki` CLI를 설치한 뒤, 이
+레포에서 플러그인을 추가하세요:
 
 ```console
 /plugin marketplace add youdie006/sessionwiki
@@ -129,6 +139,7 @@ sessionwiki web                 # 또는 로컬 웹 UI로 전부 둘러보기
 | `forget <id>` | 세션을 인덱스와 아카이브에서 영구 삭제. [아카이브 모드](#아무것도-잃지-않기-아카이브-모드)에서 보존된 세션을 정말 지우고 싶을 때의 탈출구. |
 | `projects` | 프로젝트별 한 줄: 세션 수, 메시지 양, 마지막 활동. 코드베이스마다 한 페이지. |
 | `stats` | 전체 합계 + 툴별·월별 분포 + 연결된 파일 수 + 툴이 지운 뒤 보존된 세션 수. |
+| `digest [--since 7d]` | 최근 세션을 프로젝트별로 묶은 마크다운 롤업 &mdash; 무엇을 작업했고, 각 세션이 건드린 파일, 캐시된 시놉시스까지. `--since 2w`/`24h`/`90m`, `--project`, `--tool`, `--json`. 스탠드업·PR 본문·"이번 주에 뭐 냈지" 뷰를 인덱스에서 조립. |
 
 ### 코드를 만든 세션으로 거슬러 가기
 
@@ -239,14 +250,18 @@ flowchart LR
 
 ### sessionwiki의 자리
 
-AI 세션 기록 탐색은 이미 활발한 분야입니다 &mdash; 네이티브 GUI 앱도, 다른 멀티툴 CLI도 있습니다. sessionwiki는 몇 가지에 베팅합니다:
+AI 세션 기록 탐색은 이미 활발한 분야입니다. 아래 도구들은 저마다 잘하는 게 있습니다 &mdash; sessionwiki의 베팅은 그중 누구도 하지 않는 한 가지, 대화를 그것이 만든 코드에 잇는 것입니다.
 
-- **세션을 그것이 만든 코드에 연결합니다.** [`trace <파일>`](#코드를-만든-세션으로-거슬러-가기)은 파일에서 그것을 편집한 대화로 거슬러 갑니다 &mdash; 훅 없이, 이미 존재하는 세션에 대해 소급으로. 다른 도구는 대화를 보여줄 뿐, 이건 그걸 당신의 코드베이스에 잇습니다.
-- **크로스플랫폼, CLI _와_ 웹, 단일 정적 바이너리.** Linux·macOS·Windows에서, SSH 너머에서, 컨테이너 안에서 똑같이 돕니다 &mdash; 단일 OS 앱이 아닙니다.
-- **무설정 CJK 검색.** trigram 색인이 한국어·일본어·중국어(그리고 부분 단어)를 기본으로 검색합니다 &mdash; 대부분의 도구가 약한 지점입니다.
-- **검색을 넘는 큐레이션 레이어.** 태그·노트·`related`·`brief`·`stats` &mdash; [세션 엔지니어링](#세션-엔지니어링), 아카이브가 커져도 탐색 가능하게.
+| | 잘하는 것 | sessionwiki가 더하는 것 |
+|---|---|---|
+| [Claudia](https://github.com/getAsterisk/claudia) | 잘 다듬어진 Claude Code GUI | 크로스툴, CLI _와_ 웹, 그리고 `trace`로 코드를 그 대화에 연결 |
+| [SpecStory](https://specstory.com) | 작업하는 동안 대화 기록을 캡처 | 이미 가진 세션에 소급으로 작동 &mdash; 캡처 단계가 필요 없음 |
+| [claude-code-log](https://github.com/daaain/claude-code-log) | 한 툴의 트랜스크립트를 HTML로 렌더링 | 모든 툴을 한 번에, 전문 검색, 그리고 프로비넌스 |
+| [cass](https://github.com/Dicklesworthstone/coding_agent_session_search) | 빠른 크로스툴·크로스머신 검색 | 파일&rarr;대화 프로비넌스, 지워진 세션 아카이브, 큐레이션, 웹 UI |
 
-솔직한 트레이드오프: *지금 당장* 가장 넓은 도구 커버리지가 필요하다면 sessionwiki는 11개(Claude Code·Codex·Gemini CLI·OpenCode·Cline·Roo Code·Kilo Code·gajae-code·Continue·gptme·aider)를 지원하며 늘려가는 중입니다 &mdash; 어댑터가 [PR](#어댑터-추가하기)로 가장 도움받는 부분입니다. 이 도구들을 주로 쓰거나, CJK가 중요하거나, 어디서나 도는 단일 바이너리를 원한다면 이 도구가 맞습니다.
+**`trace <파일>`** 은 한 파일에서 그것을 편집한 AI 대화로 거슬러 갑니다 &mdash; 소급으로, 훅 없이, 모든 툴을 가로질러, [툴이 이미 지워버린 세션까지](#아무것도-잃지-않기-아카이브-모드). 생성 시점 훅은 이미 가진 세션에 대해 이걸 못 하고, 단일 툴 뷰어는 툴을 가로질러 못 합니다.
+
+솔직한 트레이드오프: 한 툴만 다루는 전용 뷰어는 그 툴 하나에 대해서는 sessionwiki의 어댑터보다 더 툴 특화된 완성도를 갖습니다. sessionwiki의 베팅은 크로스툴 척추에 코드 프로비넌스를 더한 것 &mdash; [오늘 11개 툴](#지원-툴)이고 늘려가는 중이며, 어댑터가 [PR](#어댑터-추가하기)로 가장 도움받는 #1 항목입니다.
 
 ## 어댑터 추가하기
 
