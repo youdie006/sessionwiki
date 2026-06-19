@@ -31,6 +31,22 @@ pub fn clean_snippet(raw: &str) -> (String, String) {
     (plain, marked)
 }
 
+/// Strip control bytes from a search snippet before it is rendered to the
+/// terminal, keeping the \x02/\x03 FTS markers (the caller swaps them to ANSI).
+/// A message body is untrusted input, so an unstripped ESC could inject
+/// ANSI/OSC escapes into the operator's terminal.
+pub fn strip_snippet_controls(snippet: &str) -> String {
+    snippet
+        .chars()
+        .filter_map(|c| match c {
+            '\u{2}' | '\u{3}' => Some(c),
+            '\n' | '\t' => Some(' '),
+            c if (c as u32) < 0x20 || c == '\u{7f}' || ('\u{80}'..='\u{9f}').contains(&c) => None,
+            c => Some(c),
+        })
+        .collect()
+}
+
 pub fn scan() -> Result<()> {
     let mut reports = Vec::new();
     for adapter in adapters::all() {
@@ -212,8 +228,9 @@ pub fn search(
             truncate(&project_label(&h.row.project), 28),
             dim(&format!("[{}]{marker}", h.role)),
         );
-        // snippet() wraps matches in \x02 .. \x03; swap for ANSI here.
-        let snip = h.snippet.replace('\n', " ");
+        // snippet() wraps matches in \x02 .. \x03; swap for ANSI here. Strip
+        // other control bytes first (the message body is untrusted input).
+        let snip = strip_snippet_controls(&h.snippet);
         let snip = if color_enabled() {
             snip.replace('\u{2}', "\x1b[1;33m")
                 .replace('\u{3}', "\x1b[0m")

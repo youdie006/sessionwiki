@@ -49,6 +49,21 @@ fn clean_snippet_strips_markers_and_controls() {
 }
 
 #[test]
+fn strip_snippet_controls_drops_esc_keeps_fts_markers() {
+    // The terminal search-snippet path must drop ESC/DEL/C1 (an untrusted body
+    // could inject ANSI/OSC) while keeping the \x02/\x03 FTS markers the caller
+    // swaps to ANSI.
+    let raw = "ok\u{1b}[31mred\u{7f}\u{9b}\u{2}hit\u{3}";
+    let out = commands::strip_snippet_controls(raw);
+    assert!(!out.contains('\u{1b}'), "ESC stripped");
+    assert!(
+        !out.contains('\u{7f}') && !out.contains('\u{9b}'),
+        "DEL/C1 stripped"
+    );
+    assert_eq!(out, "ok[31mred\u{2}hit\u{3}", "markers kept, controls gone");
+}
+
+#[test]
 fn session_row_json_has_pinned_fields() {
     let _g = LOCK.lock().unwrap();
     let conn = fresh();
