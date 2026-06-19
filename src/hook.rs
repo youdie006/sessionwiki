@@ -3,6 +3,8 @@
 //! agent context on exit 0). Empty output when there is no history. Untrusted
 //! session titles/paths are sanitized and fenced as DATA, never instructions.
 
+use std::io::Read;
+
 pub const FENCE_TAG: &str = "sessionwiki-recall";
 
 /// Make an untrusted field safe to embed as DATA inside the fence: drop control
@@ -93,6 +95,71 @@ fn validated_input(stdin: &str) -> Option<(String, String)> {
     Some((cwd, session_id))
 }
 
+/// Strip the cwd prefix to keep paths relative (no absolute paths in
+/// agent-facing output); fall back to the basename for out-of-tree paths.
+pub fn relativize(path: &str, cwd: &str) -> String {
+    let cwd = cwd.trim_end_matches('/');
+    if let Some(rest) = path.strip_prefix(cwd) {
+        return rest.trim_start_matches('/').to_string();
+    }
+    // Already-relative paths (Codex stores these) are kept as-is; only an
+    // absolute path outside the project is reduced to its basename (no leak).
+    if !path.starts_with('/') {
+        return path.to_string();
+    }
+    path.rsplit('/').next().unwrap_or(path).to_string()
+}
+
+/// The SessionStart hook entry point. Reads CC's JSON from stdin (bounded),
+/// prints a fenced project brief to stdout, and ALWAYS returns cleanly (empty
+/// output on any error/garbage/no-history). Never returns Err - a non-zero exit
+/// or a Rust error on stdout would pollute the agent context at session start.
+pub fn session_start() {
+    let mut buf = String::new();
+    // bounded read so a never-closing/huge stdin cannot hang the 10s hook
+    let _ = std::io::stdin().take(64 * 1024).read_to_string(&mut buf);
+    let Some((cwd, session_id)) = validated_input(&buf) else {
+        return;
+    };
+    // canonicalize the launch dir; only an existing absolute dir is briefed
+    let Ok(canon) = std::fs::canonicalize(&cwd) else {
+        return;
+    };
+    let canon = canon.to_string_lossy().into_owned();
+    let Ok(conn) = crate::index::open() else {
+        return; // DB locked/corrupt -> empty, exit 0
+    };
+    let Ok(rows) = crate::index::project_brief(&conn, &canon, 5) else {
+        return;
+    };
+    let nonce = crate::util::short_id(&session_id);
+    let entries: Vec<BriefEntry> = rows
+        .iter()
+        .filter(|r| r.session_id != session_id) // never brief the current session
+        .map(|r| {
+            let files = crate::index::files_for(&conn, &r.session_id)
+                .unwrap_or_default()
+                .iter()
+                .take(3)
+                .map(|p| relativize(p, &canon))
+                .collect();
+            let date = r
+                .started
+                .as_deref()
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_default();
+            BriefEntry {
+                date,
+                tool: r.tool.clone(),
+                files,
+                title: r.title.clone(),
+            }
+        })
+        .collect();
+    print!("{}", render_brief(&entries, &nonce));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +221,15 @@ mod tests {
         ] {
             assert_eq!(validated_input(bad), None, "rejected: {bad}");
         }
+    }
+
+    #[test]
+    fn relativize_strips_cwd_prefix_else_basename() {
+        assert_eq!(
+            relativize("/home/me/app/src/auth.rs", "/home/me/app"),
+            "src/auth.rs"
+        );
+        assert_eq!(relativize("src/auth.rs", "/home/me/app"), "src/auth.rs");
+        assert_eq!(relativize("/other/x.rs", "/home/me/app"), "x.rs");
     }
 }

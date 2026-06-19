@@ -266,6 +266,17 @@ enum Command {
     Projects,
     /// Usage breakdown across tools, projects, and months
     Stats,
+    /// Internal hooks for editor integrations (run by Claude Code, not by hand)
+    Hook {
+        #[command(subcommand)]
+        cmd: HookCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum HookCmd {
+    /// Claude Code SessionStart: print a fenced recall brief for the launch project
+    SessionStart,
 }
 
 fn main() {
@@ -381,6 +392,13 @@ fn main() {
         } => commands::digest(&since, tool.as_deref(), project.as_deref(), json, no_sync),
         Command::Projects => commands::projects(),
         Command::Stats => commands::stats(),
+        Command::Hook {
+            cmd: HookCmd::SessionStart,
+        } => {
+            // Always exit 0 with whatever was printed; never the exit(1) path.
+            sessionwiki::hook::session_start();
+            return;
+        }
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");
