@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sessionwiki hook session-start",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

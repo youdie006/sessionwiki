@@ -13,6 +13,12 @@ semantic versioning once it reaches 1.0.
   `Applied edit to` / `Creating empty file` lines. Discovery is a bounded,
   capped, symlink-safe walk (home by default, `SESSIONWIKI_AIDER_ROOTS` to
   scope) that opens only `.aider.chat.history.md` and logs nothing.
+- Recall loop (Claude Code plugin): a SessionStart hook auto-injects a small,
+  fenced "prior work in this project" brief at the start of a new session, so the
+  agent gets long-term memory without being asked. Exact-project scoped,
+  `--no-sync` (tens of ms), zero output on fresh projects, always exits 0. The
+  injected recall is fenced as untrusted data and sanitized; the LLM synopsis is
+  not auto-injected. New internal `sessionwiki hook session-start` command.
 
 ## [0.15.0] - 2026-06-18
 

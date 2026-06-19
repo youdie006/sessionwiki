@@ -37,6 +37,22 @@ posture is deliberately small:
     titles and git author strings are control-stripped before they reach the
     terminal.
 
+- **The recall hook injects untrusted recall into the agent as fenced data.**
+  The optional Claude Code SessionStart hook (`sessionwiki hook session-start`)
+  auto-injects a brief of your prior sessions in the launch directory into a new
+  agent's context. Session titles are untrusted (a planted/synced/shared session
+  can set any title), so the brief: wraps everything in a labeled
+  `<sessionwiki-recall trust="untrusted-data" nonce=...>` fence that tells the
+  model to treat it as data, not instructions; strips the fence tag, control
+  characters, and markdown structure from each field (so a title cannot forge
+  the fence or impersonate the prompt) and length-caps it; leads with low-free-
+  text fields (date, tool, touched files) and does NOT auto-inject the LLM
+  synopsis; scopes by exact directory match; and prints nothing for a project
+  with no history. The hook is opt-in (installed with the plugin, `startup`-only)
+  and reads the index only (`--no-sync`, no network). Fencing reduces but cannot
+  fully eliminate model prompt-injection; users who sync or share session stores
+  inherit this trust boundary.
+
 ## Reporting a vulnerability
 
 If you find a security issue, please open a
