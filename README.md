@@ -2,7 +2,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.png">
-  <img src="docs/banner.png" alt="sessionwiki — every AI coding session you've ever had: searchable, linkable, resumable, across 10 AI coding tools. 100% local.">
+  <img src="docs/banner.png" alt="sessionwiki — every AI coding session you've ever had: searchable, linkable, resumable, across 11 AI coding tools. 100% local.">
 </picture>
 
 <a href="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml"><img src="https://github.com/youdie006/sessionwiki/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -276,7 +276,8 @@ one feature that touches an LLM is `summarize`, and it does so by running a CLI
 | gajae-code (& Pi) | `~/.gjc/agent/sessions/**/*.jsonl` | supported |
 | Continue | `~/.continue/sessions/*.json` | supported |
 | gptme | `~/.local/share/gptme/logs/<session>/conversation.jsonl` | supported |
-| Cursor, Aider, Zed, ... | | planned &mdash; PRs welcome |
+| aider | per-repo `.aider.chat.history.md` (markdown) | supported |
+| Cursor, Zed, ... | | planned &mdash; PRs welcome |
 
 **Using a wrapper like oh-my-claudecode or oh-my-openagent?** Those run on top of
 Claude Code / Codex / OpenCode, so their conversations already live in those
@@ -306,7 +307,7 @@ across tools.
 
 Honest tradeoff: a dedicated single-tool viewer will have more tool-specific
 polish than sessionwiki's adapter for that one tool. The bet is the cross-tool
-spine plus code provenance, over [ten tools today](#supported-tools) and
+spine plus code provenance, over [eleven tools today](#supported-tools) and
 growing &mdash; adapters are the #1 thing [PRs](#adding-an-adapter) help with.
 
 ## Adding an adapter
@@ -330,7 +331,7 @@ drift between tool versions, so parse defensively and return what you can.
 
 ## Roadmap
 
-- more adapters &mdash; Cursor, Aider, Zed, ... the #1 thing PRs
+- more adapters &mdash; Cursor, Zed, ... the #1 thing PRs
   help with (see [adding an adapter](#adding-an-adapter))
 - `merge` &mdash; combine indexes from multiple machines into one
 - `clean` &mdash; reclaim disk from huge old session stores, safely

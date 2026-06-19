@@ -366,6 +366,27 @@ fn missing_file_errors_without_panicking() {
 }
 
 #[test]
+fn aider_golden() {
+    // aider is a shared store: drive parse_key with `<path>\u{1f}<run-index>`.
+    let path = fixture("aider/myrepo/.aider.chat.history.md");
+    let adapter = adapters::by_name("aider").unwrap();
+    let s = adapter
+        .parse_key(&format!("{}\u{1f}0", path.to_string_lossy()))
+        .unwrap();
+    assert_eq!(s.tool, "aider");
+    assert_eq!(s.title, "add a retry to the webhook");
+    let roles: Vec<&str> = s.messages.iter().map(|m| m.role.label()).collect();
+    assert_eq!(roles, vec!["user", "assistant", "tool"]);
+    assert_eq!(s.touched, vec!["src/webhook.py", "src/retry.py"]); // dry-run ignored
+    assert!(s.started.is_some());
+    assert!(s.messages.iter().all(|m| m.ts.is_none()));
+    // a bad run index errors, never panics
+    assert!(adapter
+        .parse_key(&format!("{}\u{1f}99", path.to_string_lossy()))
+        .is_err());
+}
+
+#[test]
 fn every_adapter_is_addressable_by_name() {
     for tool in [
         "claude-code",

@@ -6,6 +6,14 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Added
+- `aider` adapter (11th tool): indexes Aider sessions from per-repo
+  `.aider.chat.history.md`. Markdown-derived (roles reconstructed from line
+  prefixes, no per-message timestamps); edited files come from aider's
+  `Applied edit to` / `Creating empty file` lines. Discovery is a bounded,
+  capped, symlink-safe walk (home by default, `SESSIONWIKI_AIDER_ROOTS` to
+  scope) that opens only `.aider.chat.history.md` and logs nothing.
+
 ## [0.15.0] - 2026-06-18
 
 ### Added
