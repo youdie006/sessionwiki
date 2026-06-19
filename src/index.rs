@@ -691,6 +691,37 @@ pub fn recent(
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// Recent main sessions whose launch project is EXACTLY this directory (for the
+/// SessionStart recall hook). Exact equality - never the substring `--project`
+/// filter, which over-matches sibling/child paths. Newest first, stable.
+pub fn project_brief(conn: &Connection, project: &str, limit: usize) -> Result<Vec<SessionRow>> {
+    let p = crate::util::nfc(project.trim_end_matches('/'));
+    let mut stmt = conn.prepare(&format!(
+        "SELECT session_id, tool, path, project, title, started, msg_count, kind, {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}, (archived_at IS NOT NULL)
+         FROM files f
+         WHERE f.project = ?1 AND f.kind = 'main'
+         ORDER BY f.started DESC, f.session_id
+         LIMIT ?2"
+    ))?;
+    let rows = stmt.query_map(params![p, limit as i64], |r| {
+        Ok(SessionRow {
+            session_id: r.get(0)?,
+            tool: r.get(1)?,
+            path: r.get(2)?,
+            project: r.get(3)?,
+            title: r.get(4)?,
+            started: r.get(5)?,
+            msg_count: r.get(6)?,
+            kind: r.get(7)?,
+            preview: r.get(8)?,
+            summary: r.get(9)?,
+            tags: r.get(10)?,
+            archived: r.get(11)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 pub struct Hit {
     pub row: SessionRow,
     pub role: String,
