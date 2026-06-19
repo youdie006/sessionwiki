@@ -60,6 +60,102 @@ fn read_or_init_durable_version(conn: &Connection) -> Result<i64> {
     Ok(v.parse().unwrap_or(BASELINE_DURABLE_VERSION))
 }
 
+struct Migration {
+    version: i64,
+    up: &'static str,
+}
+
+/// Forward-only, additive-only durable migrations applied in order. ALTER ADD
+/// COLUMN / CREATE only - never DROP/RENAME a durable column or table. Empty in
+/// v1: the framework is the deliverable.
+const DURABLE_MIGRATIONS: &[Migration] = &[];
+
+/// Apply migrations whose version exceeds the stored durable_version, in one
+/// IMMEDIATE transaction (re-reading the version inside it so a concurrent
+/// process that already migrated makes this a no-op). DDL + version bump are
+/// atomic. Version-gating is the only thing that makes re-running safe, since
+/// SQLite ALTER ADD COLUMN is not idempotent.
+fn run_durable_migrations(conn: &Connection, migrations: &[Migration]) -> Result<()> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let outcome = (|| -> Result<()> {
+        let current: i64 = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'durable_version'",
+                [],
+                |r| r.get::<_, String>(0),
+            )?
+            .parse()
+            .unwrap_or(BASELINE_DURABLE_VERSION);
+        for m in migrations.iter().filter(|m| m.version > current) {
+            conn.execute_batch(m.up)?;
+            conn.execute(
+                "UPDATE meta SET value = ?1 WHERE key = 'durable_version'",
+                params![m.version.to_string()],
+            )?;
+        }
+        Ok(())
+    })();
+    match outcome {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    fn mem() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE notes(session_id TEXT PRIMARY KEY, note TEXT NOT NULL, updated TEXT NOT NULL);
+             INSERT INTO meta VALUES('durable_version','1');
+             INSERT INTO notes VALUES('s1','keep me','t');",
+        )
+        .unwrap();
+        c
+    }
+
+    #[test]
+    fn runner_applies_gated_and_is_idempotent() {
+        let c = mem();
+        let migs = [Migration {
+            version: 2,
+            up: "ALTER TABLE notes ADD COLUMN pinned INTEGER",
+        }];
+        run_durable_migrations(&c, &migs).unwrap();
+        let cols: Vec<String> = c
+            .prepare("SELECT name FROM pragma_table_info('notes')")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(cols.contains(&"pinned".to_string()), "column added");
+        let v: String = c
+            .query_row(
+                "SELECT value FROM meta WHERE key='durable_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(v, "2", "version advanced");
+        let note: String = c
+            .query_row("SELECT note FROM notes WHERE session_id='s1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(note, "keep me", "existing durable row preserved");
+        // re-run is a clean no-op (ADD COLUMN would otherwise error duplicate column)
+        run_durable_migrations(&c, &migs).unwrap();
+    }
+}
+
 pub fn open() -> Result<Connection> {
     let conn = Connection::open(db_path()?)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
