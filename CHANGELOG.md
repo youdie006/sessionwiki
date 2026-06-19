@@ -20,6 +20,14 @@ semantic versioning once it reaches 1.0.
   injected recall is fenced as untrusted data and sanitized; the LLM synopsis is
   not auto-injected. New internal `sessionwiki hook session-start` command.
 
+### Changed
+- Schema stability on the road to 1.0: the durable index tables (summaries,
+  tags, notes, archive) now version independently of the disposable cache via a
+  `meta.durable_version` and a forward-only, additive-only migration runner, so
+  user curation and archived sessions survive every upgrade. All index
+  connections now set a `busy_timeout`. No behavior change in this release (zero
+  migrations registered).
+
 ## [0.15.0] - 2026-06-18
 
 ### Added

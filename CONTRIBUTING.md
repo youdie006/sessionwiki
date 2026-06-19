@@ -65,3 +65,24 @@ sessionwiki is deliberately local-only and read-only with respect to your
 session stores. Features that send data anywhere, or that modify the original
 session files, are out of scope. The `summarize` command shells out to an LLM
 CLI *you* configure and run; the tool itself makes no network calls.
+
+## Durable schema migrations
+
+The index has two schemas with two version counters. The **cache** (files,
+messages, msgs, touched) is disposable: bump `SCHEMA_VERSION` when its shape
+changes and `open()` drops and rebuilds it. The **durable** tables (summaries,
+tags, notes, archive, meta) hold what cannot be re-derived - LLM output, user
+curation, and archived sessions whose originals the tool deleted - so they are
+versioned separately by `meta.durable_version` and must survive every upgrade.
+
+To change a durable table, do NOT edit its `CREATE TABLE` (those are frozen at
+the baseline shape). Append a `Migration` to `DURABLE_MIGRATIONS` in `index.rs`:
+
+- `version` = the previous max + 1.
+- `up` = additive DDL only: `ALTER TABLE ... ADD COLUMN`, `CREATE TABLE`,
+  `CREATE INDEX`, or a backfill `UPDATE`. Never `DROP TABLE`, `DROP COLUMN`, or
+  `RENAME COLUMN` on a durable table - deprecate a column by leaving it unused.
+
+The runner applies migrations in one transaction, gated on `durable_version`
+(so re-running `open()` is a no-op), and `VACUUM INTO`s a backup of `index.db`
+before the first migration of a run. Add a survival test in `tests/schema.rs`.
