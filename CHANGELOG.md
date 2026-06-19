@@ -6,6 +6,13 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-06-19
+
+### Fixed
+- crates.io README: the dark-mode banner now uses an absolute image URL so it
+  renders on the crates.io page, which (unlike GitHub) does not rewrite relative
+  `<source srcset>` paths. Docs only; no code change.
+
 ## [0.16.0] - 2026-06-19
 
 ### Added
