@@ -38,10 +38,33 @@ pub fn db_path() -> Result<PathBuf> {
 /// - LLM output, user curation, and sessions whose originals the tool deleted.
 const SCHEMA_VERSION: i64 = 5;
 
+/// Version of the durable schema this binary ships. The durable CREATE
+/// statements are frozen at this shape; every later durable change is a
+/// migration in DURABLE_MIGRATIONS. Independent of SCHEMA_VERSION (the cache).
+const BASELINE_DURABLE_VERSION: i64 = 1;
+
+/// Read meta.durable_version, seeding the baseline when absent. Absence covers
+/// both a fresh DB (durables just created at baseline) and an existing
+/// pre-feature index (durables already at baseline) - both correctly start at
+/// BASELINE. INSERT OR IGNORE is safe under a concurrent first-open.
+fn read_or_init_durable_version(conn: &Connection) -> Result<i64> {
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES ('durable_version', ?1)",
+        params![BASELINE_DURABLE_VERSION.to_string()],
+    )?;
+    let v: String = conn.query_row(
+        "SELECT value FROM meta WHERE key = 'durable_version'",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(v.parse().unwrap_or(BASELINE_DURABLE_VERSION))
+}
+
 pub fn open() -> Result<Connection> {
     let conn = Connection::open(db_path()?)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.busy_timeout(std::time::Duration::from_millis(5000))?;
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     let bumped = version != SCHEMA_VERSION;
     if bumped {
@@ -142,8 +165,17 @@ pub fn open() -> Result<Connection> {
             path       TEXT NOT NULL,
             PRIMARY KEY (session_id, path)
         );
-        CREATE INDEX IF NOT EXISTS idx_touched_path ON touched(path);",
+        CREATE INDEX IF NOT EXISTS idx_touched_path ON touched(path);
+        -- Durable key/value scratchpad. Holds `durable_version` (the durable-
+        -- schema version, separate from user_version). Never dropped.
+        CREATE TABLE IF NOT EXISTS meta(
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );",
     )?;
+    // Durable-table versioning, independent of user_version (the cache). `meta`
+    // exists from the CREATE batch above.
+    let _durable = read_or_init_durable_version(&conn)?;
     // Replay archived sessions into the cache whenever any are missing from it
     // - after a schema bump (which dropped the cache) or if the cache was
     // cleared some other way. Gated on a count so a normal open does nothing.
