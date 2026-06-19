@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-06-19
+
 ### Added
 - `aider` adapter (11th tool): indexes Aider sessions from per-repo
   `.aider.chat.history.md`. Markdown-derived (roles reconstructed from line
@@ -27,6 +29,11 @@ semantic versioning once it reaches 1.0.
   user curation and archived sessions survive every upgrade. All index
   connections now set a `busy_timeout`. No behavior change in this release (zero
   migrations registered).
+
+### Security
+- `search` strips control bytes (ESC/OSC/C1/DEL) from terminal snippets, so an
+  untrusted session body can no longer inject terminal escape sequences into the
+  operator's terminal. The `--json` output and other commands already did this.
 
 ## [0.15.0] - 2026-06-18
 
