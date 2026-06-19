@@ -31,11 +31,13 @@ pub fn db_path() -> Result<PathBuf> {
     Ok(dir.join("index.db"))
 }
 
-/// Bump when the schema changes. The index is a disposable cache of what is on
-/// disk, so a mismatch drops and rebuilds the derived tables instead of
-/// migrating. The exceptions are the durable tables (summaries, tags, notes,
-/// archive): they hold things that cannot be re-derived from the session files
-/// - LLM output, user curation, and sessions whose originals the tool deleted.
+/// `user_version` versions the disposable cache: a mismatch drops and rebuilds
+/// the derived tables (files/messages/msgs/touched) instead of migrating. The
+/// durable tables (summaries, tags, notes, archive) hold what cannot be
+/// re-derived - LLM output, user curation, and sessions whose originals the tool
+/// deleted - and are versioned separately by `meta.durable_version` via forward,
+/// additive-only migrations that never drop, so they survive every upgrade. The
+/// two counters are independent and must never gate each other.
 const SCHEMA_VERSION: i64 = 5;
 
 /// Version of the durable schema this binary ships. The durable CREATE
@@ -271,7 +273,19 @@ pub fn open() -> Result<Connection> {
     )?;
     // Durable-table versioning, independent of user_version (the cache). `meta`
     // exists from the CREATE batch above.
-    let _durable = read_or_init_durable_version(&conn)?;
+    let durable = read_or_init_durable_version(&conn)?;
+    let latest = DURABLE_MIGRATIONS
+        .iter()
+        .map(|m| m.version)
+        .max()
+        .unwrap_or(BASELINE_DURABLE_VERSION);
+    if durable < latest {
+        // Back up the irreplaceable durable data before the first migration runs.
+        let bak = db_path()?.with_extension(format!("db.bak-v{durable}"));
+        let _ = std::fs::remove_file(&bak);
+        conn.execute("VACUUM INTO ?1", params![bak.to_string_lossy()])?;
+        run_durable_migrations(&conn, DURABLE_MIGRATIONS)?;
+    }
     // Replay archived sessions into the cache whenever any are missing from it
     // - after a schema bump (which dropped the cache) or if the cache was
     // cleared some other way. Gated on a count so a normal open does nothing.
