@@ -69,6 +69,30 @@ pub fn render_brief(entries: &[BriefEntry], nonce: &str) -> String {
     s
 }
 
+#[derive(serde::Deserialize)]
+struct HookInput {
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    session_id: Option<String>,
+}
+
+/// Parse the CC SessionStart hook JSON. Returns (cwd, session_id) ONLY for a
+/// well-formed `startup` event with a non-empty cwd; every other case (parse
+/// error, wrong type, missing/empty cwd, non-startup source) -> None, so the
+/// caller emits nothing and exits 0.
+fn validated_input(stdin: &str) -> Option<(String, String)> {
+    let input: HookInput = serde_json::from_str(stdin).ok()?;
+    if input.source.as_deref() != Some("startup") {
+        return None;
+    }
+    let cwd = input.cwd.filter(|c| !c.is_empty())?;
+    let session_id = input.session_id.unwrap_or_default();
+    Some((cwd, session_id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,5 +137,22 @@ mod tests {
         );
         // the forged closing tag in the title is neutralized: only the real one remains
         assert_eq!(out.matches(&format!("</{FENCE_TAG}")).count(), 1);
+    }
+
+    #[test]
+    fn validated_input_accepts_startup_rejects_everything_else() {
+        let ok = r#"{"cwd":"/p/a","source":"startup","session_id":"abc"}"#;
+        assert_eq!(validated_input(ok), Some(("/p/a".into(), "abc".into())));
+
+        for bad in [
+            r#"{"cwd":"/p/a","source":"resume","session_id":"abc"}"#, // not startup
+            r#"{"source":"startup"}"#,                                // missing cwd
+            r#"{"cwd":"","source":"startup"}"#,                       // empty cwd
+            r#"{"cwd":123,"source":"startup"}"#,                      // wrong type
+            "not json",
+            "",
+        ] {
+            assert_eq!(validated_input(bad), None, "rejected: {bad}");
+        }
     }
 }
