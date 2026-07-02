@@ -269,6 +269,9 @@ fn session_from_run(path: &Path, idx: usize, run: &Run) -> Result<Session> {
 }
 
 /// Read a history file, split it, and assemble the run at `idx` into a Session.
+/// The indexer goes through the cached `parse_key` path instead; this direct
+/// road is for tests.
+#[cfg(test)]
 fn build_session(path: &Path, idx: usize) -> Result<Session> {
     let content = crate::util::read_to_string_capped(path)
         .with_context(|| format!("read {}", path.display()))?;
