@@ -1154,13 +1154,17 @@ fn parse_duration(s: &str) -> Result<chrono::Duration> {
         Ok(n) if n >= 0 => n,
         _ => bail!("invalid --since '{s}' (try 7d, 2w, 24h, 90m)"),
     };
-    Ok(match unit {
-        "" | "d" => chrono::Duration::days(n),
-        "w" => chrono::Duration::weeks(n),
-        "h" => chrono::Duration::hours(n),
-        "m" => chrono::Duration::minutes(n),
+    // The panicking chrono constructors (days(), weeks(), ...) abort on
+    // overflow; the try_ variants turn a huge-but-parseable count into an
+    // error instead of a crash.
+    match unit {
+        "" | "d" => chrono::Duration::try_days(n),
+        "w" => chrono::Duration::try_weeks(n),
+        "h" => chrono::Duration::try_hours(n),
+        "m" => chrono::Duration::try_minutes(n),
         other => bail!("unknown --since unit '{other}' (use d, w, h, or m)"),
-    })
+    }
+    .with_context(|| format!("--since '{s}' is out of range"))
 }
 
 /// A markdown rollup of recent sessions grouped by project: what you worked on,
@@ -1645,5 +1649,14 @@ mod tests {
         assert!(parse_duration("7x").is_err());
         assert!(parse_duration("abc").is_err());
         assert!(parse_duration("-3d").is_err());
+    }
+
+    #[test]
+    fn parse_duration_rejects_out_of_range_instead_of_panicking() {
+        // chrono::Duration constructors panic on overflow; a huge but
+        // i64-parseable count must come back as an error, not a crash.
+        assert!(parse_duration("99999999999999999w").is_err());
+        assert!(parse_duration("9999999999999999999999d").is_err()); // > i64 too
+        assert!(parse_duration("99999999999999999m").is_err());
     }
 }
