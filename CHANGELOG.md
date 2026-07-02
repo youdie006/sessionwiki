@@ -6,6 +6,27 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Added
+- Homebrew: `brew install youdie006/tap/sessionwiki` (macOS and Linux).
+
+### Fixed
+- A partial directory walk (an unreadable project directory) can no longer
+  archive live sessions: file-per-session adapters now report a partial listing
+  and sync skips deletion reconciliation for that run, the same guard shared
+  stores already had.
+- `sync` warns when a session fails to parse and reports honest counts
+  ("indexed 12/14 (2 failed to parse)") instead of silently dropping it.
+- Tags are NFC-normalized on add, filter, and remove, so a tag typed in
+  decomposed form (macOS IME) matches everywhere, like every other indexed
+  string.
+- `resume` checks tool support before file existence, so tools without headless
+  resume (aider, OpenCode) get the right message instead of a false "the
+  session file is gone".
+- `digest --since` with an out-of-range duration returns an error instead of
+  panicking.
+- A failed data-directory migration now warns with instructions instead of
+  silently starting an empty index.
+
 ## [0.16.1] - 2026-06-19
 
 ### Fixed

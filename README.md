@@ -54,6 +54,12 @@ And a web UI when you would rather read than grep &mdash; `sessionwiki web`:
 
 ## Install
 
+**Homebrew** (macOS / Linux):
+
+```console
+brew install youdie006/tap/sessionwiki
+```
+
 **Prebuilt binary** (no toolchain needed). macOS / Linux / WSL:
 
 ```console

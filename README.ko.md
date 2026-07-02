@@ -57,6 +57,12 @@ gemini                50     1.2 MB  2026-04-02   2026-06-10    ~/.gemini/tmp
 
 ## 설치
 
+**Homebrew** (macOS / Linux):
+
+```console
+brew install youdie006/tap/sessionwiki
+```
+
 **빌드된 바이너리** (툴체인 불필요). macOS / Linux / WSL:
 
 ```console
