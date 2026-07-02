@@ -81,6 +81,9 @@ fn read_or_init_durable_version(conn: &Connection) -> Result<i64> {
 /// express (e.g. unicode normalization). Both run inside the same gated
 /// transaction and must stay additive-and-repair-only - never drop durable data.
 enum MigrationStep {
+    // The natural shape for most future migrations (ALTER/CREATE); only data
+    // repairs need `Fix`. Allowed while no registered migration uses it.
+    #[allow(dead_code)]
     Sql(&'static str),
     Fix(fn(&Connection) -> Result<()>),
 }

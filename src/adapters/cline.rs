@@ -480,20 +480,20 @@ mod tests {
         fs::write(task.join("api_conversation_history.json"), "[]").unwrap();
 
         // Clean read: one task file, no error.
-        let d = discover_tasks_in(&[base.clone()], "ext.id");
+        let d = discover_tasks_in(std::slice::from_ref(&base), "ext.id");
         assert_eq!(d.files.len(), 1);
         assert!(!d.had_error);
 
         // The extension dir itself unreadable: exists() on tasks would say
         // false (unreadable ancestor), but the listing is partial and must be
         // flagged - PermissionDenied, not NotFound.
-        fs::set_permissions(&ext, fs::Permissions::from_mode(0)).unwrap();
+        fs::set_permissions(&ext, fs::Permissions::from_mode(0o000)).unwrap();
         if fs::read_dir(&ext).is_ok() {
             // Running as root: permissions don't bite; scenario is void.
             fs::set_permissions(&ext, fs::Permissions::from_mode(0o755)).unwrap();
             return;
         }
-        let d = discover_tasks_in(&[base.clone()], "ext.id");
+        let d = discover_tasks_in(std::slice::from_ref(&base), "ext.id");
         fs::set_permissions(&ext, fs::Permissions::from_mode(0o755)).unwrap();
         assert!(d.had_error, "unreadable ancestor must flag had_error");
         assert!(d.files.is_empty());
