@@ -1,4 +1,4 @@
-use super::{dedup_paths, ok_or_flag, title_from_messages, Adapter, Discovered};
+use super::{dedup_paths, title_from_messages, Adapter, Discovered};
 use crate::model::{Message, Role, Session};
 use crate::util::{short_id, truncate};
 use anyhow::{Context, Result};
@@ -110,24 +110,45 @@ fn primary_root(ext_id: &str) -> Option<PathBuf> {
 /// The history file for every `tasks/<id>/` across all editor variants. Prefers
 /// `api_conversation_history.json`, falling back to the legacy `claude_messages.json`.
 fn discover_tasks(ext_id: &str) -> Discovered {
+    discover_tasks_in(&globalstorage_bases(), ext_id)
+}
+
+fn discover_tasks_in(bases: &[PathBuf], ext_id: &str) -> Discovered {
     let mut out = Vec::new();
     let mut had_error = false;
-    for base in globalstorage_bases() {
+    for base in bases {
         let tasks = base.join(ext_id).join("tasks");
-        // A variant that isn't installed has no tasks dir - normal. A tasks dir
-        // that exists but cannot be listed is a partial result - flag it so the
-        // indexer skips deletion reconciliation this run.
+        // Classify by error kind, not exists(): an unreadable ANCESTOR makes
+        // exists() itself return false, which would hide the partial listing.
+        // NotFound = the variant isn't installed - normal. Anything else
+        // (permission denied on the dir or an ancestor) is a partial result -
+        // flag it so the indexer skips deletion reconciliation this run.
         let entries = match std::fs::read_dir(&tasks) {
             Ok(entries) => entries,
-            Err(_) => {
-                if tasks.exists() {
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
                     had_error = true;
                 }
                 continue;
             }
         };
-        for entry in entries.filter_map(|e| ok_or_flag(e, &mut had_error)) {
-            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => {
+                    had_error = true;
+                    continue;
+                }
+            };
+            let is_dir = match entry.file_type() {
+                Ok(t) => t.is_dir(),
+                Err(_) => {
+                    // Can't even tell what this entry is: partial listing.
+                    had_error = true;
+                    continue;
+                }
+            };
+            if !is_dir {
                 continue;
             }
             let dir = entry.path();
@@ -439,5 +460,47 @@ fn push(messages: &mut Vec<Message>, role: Role, text: &str) {
             text: text.to_string(),
             ts: None,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn unreadable_task_store_flags_a_partial_listing() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join("sessionwiki-test-cline-guard");
+        let _ = fs::remove_dir_all(&base);
+        let ext = base.join("ext.id");
+        let task = ext.join("tasks").join("t1");
+        fs::create_dir_all(&task).unwrap();
+        fs::write(task.join("api_conversation_history.json"), "[]").unwrap();
+
+        // Clean read: one task file, no error.
+        let d = discover_tasks_in(&[base.clone()], "ext.id");
+        assert_eq!(d.files.len(), 1);
+        assert!(!d.had_error);
+
+        // The extension dir itself unreadable: exists() on tasks would say
+        // false (unreadable ancestor), but the listing is partial and must be
+        // flagged - PermissionDenied, not NotFound.
+        fs::set_permissions(&ext, fs::Permissions::from_mode(0)).unwrap();
+        if fs::read_dir(&ext).is_ok() {
+            // Running as root: permissions don't bite; scenario is void.
+            fs::set_permissions(&ext, fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+        let d = discover_tasks_in(&[base.clone()], "ext.id");
+        fs::set_permissions(&ext, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(d.had_error, "unreadable ancestor must flag had_error");
+        assert!(d.files.is_empty());
+
+        // A base that simply is not there: normal, not an error.
+        let d = discover_tasks_in(&[base.join("not-installed")], "ext.id");
+        assert!(!d.had_error);
+        assert!(d.files.is_empty());
     }
 }

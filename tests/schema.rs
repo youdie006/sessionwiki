@@ -28,10 +28,12 @@ fn open_stamps_baseline_durable_version_and_is_idempotent() {
     let _g = LOCK.lock().unwrap();
     fresh_dir("sessionwiki-test-schema-baseline");
     let conn = index::open().unwrap();
-    assert_eq!(durable_version(&conn), "1", "fresh DB stamps baseline");
+    // A fresh DB is stamped at baseline (1), then the registered migrations
+    // run immediately (v2 tag normalization, a no-op on empty tables).
+    assert_eq!(durable_version(&conn), "2", "fresh DB lands on latest");
     drop(conn);
     let conn = index::open().unwrap();
-    assert_eq!(durable_version(&conn), "1", "re-open is a no-op");
+    assert_eq!(durable_version(&conn), "2", "re-open is a no-op");
 }
 
 fn seed_durables(conn: &Connection) {
@@ -97,8 +99,55 @@ fn adopts_baseline_on_a_pre_feature_index() {
     let conn = index::open().unwrap();
     assert_eq!(
         durable_version(&conn),
-        "1",
-        "pre-feature index adopts baseline, no migration re-run"
+        "2",
+        "pre-feature index adopts baseline, then runs forward migrations"
     );
     assert_durables_intact(&conn);
+}
+
+#[test]
+fn migration_v2_heals_legacy_nfd_tags() {
+    let _g = LOCK.lock().unwrap();
+    fresh_dir("sessionwiki-test-schema-tagmig");
+    let conn = index::open().unwrap(); // fresh DB is already at v2
+    conn.execute_batch("DELETE FROM files; DELETE FROM tags;")
+        .unwrap();
+    conn.execute(
+        "INSERT INTO files(path,mtime,size,session_id,tool,project,title,started,ended,msg_count,kind)
+         VALUES('/s/t.jsonl',0,0,'tg1','claude-code','/p','t','2026-06-10T10:00:00+00:00','2026-06-10T10:00:00+00:00',1,'main')",
+        [],
+    ).unwrap();
+    // Simulate rows a pre-fix binary wrote: raw NFD bytes, under durable v1.
+    conn.execute(
+        "INSERT INTO tags(session_id, tag) VALUES ('tg1', ?1)",
+        ["cafe\u{301}"],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE meta SET value = '1' WHERE key = 'durable_version'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    // Upgrade: reopen runs v2, which re-normalizes the stored rows (and takes
+    // the pre-migration backup).
+    let conn = index::open().unwrap();
+    assert_eq!(durable_version(&conn), "2");
+    let stored: String = conn
+        .query_row("SELECT tag FROM tags WHERE session_id='tg1'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(stored, "caf\u{e9}", "legacy NFD row converged on NFC");
+    // ...and it is reachable again through the normalized lookups.
+    let rows = index::recent(&conn, 10, None, None, Some("cafe\u{301}"), false).unwrap();
+    assert_eq!(rows.len(), 1, "legacy tag filterable after the migration");
+    assert_eq!(index::remove_tag(&conn, "tg1", "cafe\u{301}").unwrap(), 1);
+    // The one-time backup of the durable data was taken before migrating.
+    let dir = std::env::temp_dir().join("sessionwiki-test-schema-tagmig");
+    assert!(
+        dir.join("index.db.bak-v1").exists(),
+        "VACUUM INTO backup before the first pending migration"
+    );
 }

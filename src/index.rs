@@ -23,15 +23,19 @@ pub fn db_path() -> Result<PathBuf> {
                 if old.exists() {
                     // A failed rename must not pass silently: the user would
                     // get a fresh empty index while their curation sits
-                    // stranded in the old directory.
+                    // stranded in the old directory. Re-check after failure,
+                    // though - a concurrent first run (hook + CLI) may have
+                    // migrated it already, which is success, not failure.
                     if let Err(e) = std::fs::rename(&old, &dir) {
-                        eprintln!(
-                            "warning: could not migrate {} -> {} ({e}); \
-                             starting a fresh index. Move it manually to keep \
-                             your tags, notes, and archive.",
-                            old.display(),
-                            dir.display()
-                        );
+                        if !dir.exists() && old.exists() {
+                            eprintln!(
+                                "warning: could not migrate {} -> {} ({e}); \
+                                 starting a fresh index. Move it manually to \
+                                 keep your tags, notes, and archive.",
+                                old.display(),
+                                dir.display()
+                            );
+                        }
                     }
                     break;
                 }
@@ -73,15 +77,54 @@ fn read_or_init_durable_version(conn: &Connection) -> Result<i64> {
     Ok(v.parse().unwrap_or(BASELINE_DURABLE_VERSION))
 }
 
+/// One migration step: plain DDL, or Rust code for transformations SQL cannot
+/// express (e.g. unicode normalization). Both run inside the same gated
+/// transaction and must stay additive-and-repair-only - never drop durable data.
+enum MigrationStep {
+    Sql(&'static str),
+    Fix(fn(&Connection) -> Result<()>),
+}
+
 struct Migration {
     version: i64,
-    up: &'static str,
+    step: MigrationStep,
 }
 
 /// Forward-only, additive-only durable migrations applied in order. ALTER ADD
-/// COLUMN / CREATE only - never DROP/RENAME a durable column or table. Empty in
-/// v1: the framework is the deliverable.
-const DURABLE_MIGRATIONS: &[Migration] = &[];
+/// COLUMN / CREATE / data repair only - never DROP/RENAME a durable column or
+/// table.
+const DURABLE_MIGRATIONS: &[Migration] = &[
+    // v2: tags written by pre-0.17 binaries were lowercased but not
+    // NFC-normalized, so a decomposed-form tag (macOS IME) is unreachable by
+    // the normalized lookups. Re-normalize stored rows once.
+    Migration {
+        version: 2,
+        step: MigrationStep::Fix(normalize_stored_tags),
+    },
+];
+
+/// Durable migration v2: converge every stored tag on `norm_tag` form. An NFC
+/// twin that already exists absorbs the row (INSERT OR IGNORE + DELETE).
+fn normalize_stored_tags(conn: &Connection) -> Result<()> {
+    let rows: Vec<(String, String)> = conn
+        .prepare("SELECT session_id, tag FROM tags")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (sid, tag) in rows {
+        let norm = norm_tag(&tag);
+        if norm != tag {
+            conn.execute(
+                "INSERT OR IGNORE INTO tags(session_id, tag) VALUES (?1, ?2)",
+                params![sid, norm],
+            )?;
+            conn.execute(
+                "DELETE FROM tags WHERE session_id = ?1 AND tag = ?2",
+                params![sid, tag],
+            )?;
+        }
+    }
+    Ok(())
+}
 
 /// Apply migrations whose version exceeds the stored durable_version, in one
 /// IMMEDIATE transaction (re-reading the version inside it so a concurrent
@@ -100,7 +143,10 @@ fn run_durable_migrations(conn: &Connection, migrations: &[Migration]) -> Result
             .parse()
             .unwrap_or(BASELINE_DURABLE_VERSION);
         for m in migrations.iter().filter(|m| m.version > current) {
-            conn.execute_batch(m.up)?;
+            match m.step {
+                MigrationStep::Sql(sql) => conn.execute_batch(sql)?,
+                MigrationStep::Fix(f) => f(conn)?,
+            }
             conn.execute(
                 "UPDATE meta SET value = ?1 WHERE key = 'durable_version'",
                 params![m.version.to_string()],
@@ -139,7 +185,7 @@ mod migration_tests {
         let c = mem();
         let migs = [Migration {
             version: 2,
-            up: "ALTER TABLE notes ADD COLUMN pinned INTEGER",
+            step: MigrationStep::Sql("ALTER TABLE notes ADD COLUMN pinned INTEGER"),
         }];
         run_durable_migrations(&c, &migs).unwrap();
         let cols: Vec<String> = c
@@ -597,7 +643,18 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
         let mut pending: Vec<(PathBuf, i64, i64)> = Vec::new();
 
         for f in discovered.files {
-            let Ok(meta) = f.metadata() else { continue };
+            let meta = match f.metadata() {
+                Ok(m) => m,
+                Err(e) => {
+                    // The file was just discovered, so it exists: a failed
+                    // stat must keep it in `seen` (dropping it would let
+                    // reconciliation archive a live session) and be warned,
+                    // not swallowed.
+                    eprintln!("\r[{tool}] failed to stat {}: {e}", f.display());
+                    seen.push(f.to_string_lossy().into_owned());
+                    continue;
+                }
+            };
             let mtime = meta
                 .modified()
                 .ok()

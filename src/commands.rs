@@ -1180,7 +1180,11 @@ pub fn digest(
     json: bool,
     no_sync: bool,
 ) -> Result<()> {
-    let cutoff = chrono::Utc::now() - parse_duration(since)?;
+    // checked: a huge (but constructible) duration would panic bare `-` by
+    // landing before chrono's representable time.
+    let cutoff = chrono::Utc::now()
+        .checked_sub_signed(parse_duration(since)?)
+        .with_context(|| format!("--since '{since}' is out of range"))?;
     let mut conn = index::open()?;
     if !no_sync {
         index::sync(&mut conn, tool)?;
