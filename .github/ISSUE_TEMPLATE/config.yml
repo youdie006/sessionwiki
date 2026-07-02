@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability (report privately)
+    url: https://github.com/youdie006/sessionwiki/security/advisories/new
+    about: Please report security or privacy issues privately here, not as a public issue.
