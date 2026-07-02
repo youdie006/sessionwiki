@@ -21,7 +21,18 @@ pub fn db_path() -> Result<PathBuf> {
             for old_name in ["sessiondex", "session-atlas"] {
                 let old = parent.join(old_name);
                 if old.exists() {
-                    let _ = std::fs::rename(&old, &dir);
+                    // A failed rename must not pass silently: the user would
+                    // get a fresh empty index while their curation sits
+                    // stranded in the old directory.
+                    if let Err(e) = std::fs::rename(&old, &dir) {
+                        eprintln!(
+                            "warning: could not migrate {} -> {} ({e}); \
+                             starting a fresh index. Move it manually to keep \
+                             your tags, notes, and archive.",
+                            old.display(),
+                            dir.display()
+                        );
+                    }
                     break;
                 }
             }
