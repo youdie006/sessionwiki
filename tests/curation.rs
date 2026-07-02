@@ -748,3 +748,37 @@ fn long_query_still_uses_fts_unchanged() {
         .iter()
         .any(|h| h.row.session_id == "g1"));
 }
+
+#[test]
+fn tags_are_nfc_normalized_on_add_filter_and_remove() {
+    let _g = LOCK.lock().unwrap();
+    let conn = fresh_index();
+    seed(
+        &conn,
+        "nfc1",
+        "codex",
+        "/proj/api",
+        "accent tag",
+        "2026-06-10T10:00:00+00:00",
+    );
+    // "cafe" + combining acute accent = the decomposed (NFD) form of "café",
+    // as produced by macOS IMEs. All entry points must converge on NFC.
+    let nfd = "cafe\u{301}";
+    let nfc = "caf\u{e9}";
+    index::add_tag(&conn, "nfc1", nfd).unwrap();
+    assert!(
+        index::tag_counts(&conn)
+            .unwrap()
+            .iter()
+            .any(|(t, _)| t == nfc),
+        "stored tag must be the composed (NFC) form"
+    );
+    // The list filter matches whichever form the user types.
+    for form in [nfd, nfc] {
+        let rows = index::recent(&conn, 10, None, None, Some(form), false).unwrap();
+        assert_eq!(rows.len(), 1, "tag filter must match form {form:?}");
+    }
+    // And removal accepts the decomposed form too.
+    assert_eq!(index::remove_tag(&conn, "nfc1", nfd).unwrap(), 1);
+    assert!(index::tag_counts(&conn).unwrap().is_empty());
+}

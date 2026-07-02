@@ -809,7 +809,7 @@ pub fn recent(
         sql.push_str(
             " AND EXISTS (SELECT 1 FROM tags g WHERE g.session_id = f.session_id AND g.tag = ?)",
         );
-        args.push(t.to_string());
+        args.push(norm_tag(t)); // stored tags are normalized; match their form
     }
     sql.push_str(&format!(" ORDER BY started DESC LIMIT {limit}"));
 
@@ -1152,11 +1152,18 @@ pub fn unsummarized(
 
 // --- curation (the editable wiki layer) ---
 
+/// One canonical form per tag: trimmed, lowercased, NFC-normalized - the same
+/// normalization every other indexed string gets, so a tag typed in decomposed
+/// form (macOS IME, some CJK inputs) matches on add, filter, and remove alike.
+fn norm_tag(tag: &str) -> String {
+    crate::util::nfc(&tag.trim().to_lowercase())
+}
+
 pub fn add_tag(conn: &Connection, session_id: &str, tag: &str) -> Result<()> {
     // Tags are joined with ',' at read time and the JSON/web contract splits on
     // it, so a comma inside a tag would corrupt the array into two elements.
     // Reject it (and the empty tag) at the input boundary.
-    let tag = tag.trim().to_lowercase();
+    let tag = norm_tag(tag);
     if tag.is_empty() || tag.contains(',') {
         anyhow::bail!("a tag must be non-empty and contain no commas");
     }
@@ -1170,7 +1177,7 @@ pub fn add_tag(conn: &Connection, session_id: &str, tag: &str) -> Result<()> {
 pub fn remove_tag(conn: &Connection, session_id: &str, tag: &str) -> Result<usize> {
     Ok(conn.execute(
         "DELETE FROM tags WHERE session_id = ?1 AND tag = ?2",
-        params![session_id, tag.trim().to_lowercase()],
+        params![session_id, norm_tag(tag)],
     )?)
 }
 
