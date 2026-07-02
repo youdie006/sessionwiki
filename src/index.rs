@@ -560,11 +560,11 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
             continue;
         }
 
-        let files = adapter.discover();
-        let mut seen: Vec<String> = Vec::with_capacity(files.len());
+        let discovered = adapter.discover();
+        let mut seen: Vec<String> = Vec::with_capacity(discovered.files.len());
         let mut pending: Vec<(PathBuf, i64, i64)> = Vec::new();
 
-        for f in files {
+        for f in discovered.files {
             let Ok(meta) = f.metadata() else { continue };
             let mtime = meta
                 .modified()
@@ -580,7 +580,17 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
             seen.push(key);
         }
 
-        archived_total += archive_or_prune(conn, tool, &seen, store_present)?;
+        // Same guard the shared-store path has: a partial walk (an unreadable
+        // directory) means `seen` is incomplete - reconciling deletions off it
+        // would archive live sessions, so wait for a clean walk.
+        if discovered.had_error {
+            eprintln!(
+                "[{tool}] some session directories could not be read; \
+                 skipping deletion reconciliation this run"
+            );
+        } else {
+            archived_total += archive_or_prune(conn, tool, &seen, store_present)?;
+        }
 
         if pending.is_empty() {
             continue;

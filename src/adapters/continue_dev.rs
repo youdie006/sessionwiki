@@ -1,4 +1,4 @@
-use super::{dedup_paths, title_from_messages, Adapter};
+use super::{dedup_paths, ok_or_flag, title_from_messages, Adapter, Discovered};
 use crate::model::{Message, Role, Session};
 use crate::util::{short_id, truncate};
 use anyhow::{Context, Result};
@@ -26,20 +26,34 @@ impl Adapter for Continue {
         Some(continue_dir()?.join("sessions"))
     }
 
-    fn discover(&self) -> Vec<PathBuf> {
+    fn discover(&self) -> Discovered {
         let Some(dir) = self.root() else {
-            return vec![];
+            return Vec::new().into();
         };
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            return vec![];
+        if !dir.exists() {
+            return Vec::new().into(); // no store on this machine - normal
+        }
+        let mut had_error = false;
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            // The directory exists but cannot be listed: a PARTIAL (empty)
+            // result. Without the flag, reconciliation would archive every
+            // Continue session over a transient permission error.
+            Err(_) => {
+                return Discovered {
+                    files: vec![],
+                    had_error: true,
+                }
+            }
         };
-        entries
-            .filter_map(|e| e.ok())
+        let files = entries
+            .filter_map(|e| ok_or_flag(e, &mut had_error))
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|x| x == "json"))
             // The index lives beside the sessions; it is not one.
             .filter(|p| p.file_name().is_some_and(|n| n != "sessions.json"))
-            .collect()
+            .collect();
+        Discovered { files, had_error }
     }
 
     fn parse(&self, path: &Path) -> Result<Session> {

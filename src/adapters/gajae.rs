@@ -1,4 +1,4 @@
-use super::{dedup_paths, parse_ts, title_from_messages, Adapter};
+use super::{dedup_paths, ok_or_flag, parse_ts, title_from_messages, Adapter, Discovered};
 use crate::model::{Message, Role, Session};
 use crate::util::{short_id, truncate};
 use anyhow::Result;
@@ -29,15 +29,19 @@ impl Adapter for GajaeCode {
         sessions_dirs().into_iter().next()
     }
 
-    fn discover(&self) -> Vec<PathBuf> {
+    fn discover(&self) -> Discovered {
         let mut out = Vec::new();
+        let mut had_error = false;
         for dir in sessions_dirs() {
+            if !dir.exists() {
+                continue; // this candidate root isn't on this machine - normal
+            }
             // <sessions>/<encoded-cwd>/<file>.jsonl
             for entry in WalkDir::new(&dir)
                 .min_depth(2)
                 .max_depth(2)
                 .into_iter()
-                .filter_map(|e| e.ok())
+                .filter_map(|e| ok_or_flag(e, &mut had_error))
             {
                 if entry.file_type().is_file()
                     && entry.path().extension().is_some_and(|x| x == "jsonl")
@@ -46,7 +50,10 @@ impl Adapter for GajaeCode {
                 }
             }
         }
-        out
+        Discovered {
+            files: out,
+            had_error,
+        }
     }
 
     fn parse(&self, path: &Path) -> Result<Session> {

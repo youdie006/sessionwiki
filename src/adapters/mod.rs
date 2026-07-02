@@ -39,12 +39,45 @@ pub struct Store {
     pub had_error: bool,
 }
 
+/// The result of file discovery. `had_error` means the listing is PARTIAL: a
+/// directory that exists could not be read (permissions, transient IO). The
+/// indexer still indexes what was found but skips deletion reconciliation, so
+/// a partial walk cannot archive live sessions off an incomplete listing - the
+/// same guard [`Store::had_error`] gives shared-store adapters. A root that
+/// simply does not exist on this machine is normal, not an error.
+pub struct Discovered {
+    pub files: Vec<PathBuf>,
+    pub had_error: bool,
+}
+
+impl From<Vec<PathBuf>> for Discovered {
+    fn from(files: Vec<PathBuf>) -> Self {
+        Discovered {
+            files,
+            had_error: false,
+        }
+    }
+}
+
+/// `result.ok()` that records the failure in `had_error` instead of dropping
+/// it silently - for walk loops that must report a partial listing.
+pub(crate) fn ok_or_flag<T, E>(r: std::result::Result<T, E>, had_error: &mut bool) -> Option<T> {
+    match r {
+        Ok(v) => Some(v),
+        Err(_) => {
+            *had_error = true;
+            None
+        }
+    }
+}
+
 pub trait Adapter {
     fn name(&self) -> &'static str;
     /// Store root, e.g. ~/.claude/projects. May not exist on this machine.
     fn root(&self) -> Option<PathBuf>;
-    /// All session files under the root.
-    fn discover(&self) -> Vec<PathBuf>;
+    /// All session files under the root, with a partial-walk flag the indexer
+    /// uses to protect deletion reconciliation (see [`Discovered`]).
+    fn discover(&self) -> Discovered;
     /// Parse one session file. Must never panic on malformed input;
     /// skip bad lines and return what could be read.
     fn parse(&self, path: &Path) -> Result<Session>;
@@ -126,7 +159,7 @@ pub fn report(adapter: &dyn Adapter) -> Option<StoreReport> {
     if !root.exists() {
         return None;
     }
-    let files = adapter.discover();
+    let files = adapter.discover().files;
     let mut bytes: u64 = 0;
     let mut oldest: Option<DateTime<Utc>> = None;
     let mut newest: Option<DateTime<Utc>> = None;

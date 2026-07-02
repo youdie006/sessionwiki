@@ -1,4 +1,4 @@
-use super::{dedup_paths, title_from_messages, Adapter, Store};
+use super::{dedup_paths, ok_or_flag, title_from_messages, Adapter, Discovered, Store};
 use crate::model::{Message, Role, Session};
 use crate::util::{short_id, truncate};
 use anyhow::{Context, Result};
@@ -32,21 +32,27 @@ impl Adapter for OpenCode {
         data_dir()
     }
 
-    fn discover(&self) -> Vec<PathBuf> {
+    fn discover(&self) -> Discovered {
         // Legacy JSON only. When a db exists, `store()` is Some and the indexer
         // never calls this (the JSON files are stale post-migration leftovers).
         let Some(dir) = data_dir() else {
-            return vec![];
+            return Vec::new().into();
         };
-        WalkDir::new(dir.join("storage").join("session"))
+        let sessions = dir.join("storage").join("session");
+        if !sessions.exists() {
+            return Vec::new().into(); // no legacy layout - normal
+        }
+        let mut had_error = false;
+        let files = WalkDir::new(sessions)
             .min_depth(2)
             .max_depth(2)
             .into_iter()
-            .filter_map(|e| e.ok())
+            .filter_map(|e| ok_or_flag(e, &mut had_error))
             .filter(|e| e.file_type().is_file())
             .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
             .map(|e| e.into_path())
-            .collect()
+            .collect();
+        Discovered { files, had_error }
     }
 
     fn store(&self) -> Option<Store> {

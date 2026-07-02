@@ -1,4 +1,4 @@
-use super::{parse_ts, title_from_messages, Adapter};
+use super::{ok_or_flag, parse_ts, title_from_messages, Adapter, Discovered};
 use crate::model::{Message, Role, Session};
 use crate::util::short_id;
 use anyhow::{Context, Result};
@@ -20,14 +20,18 @@ impl Adapter for Gemini {
         Some(dirs::home_dir()?.join(".gemini").join("tmp"))
     }
 
-    fn discover(&self) -> Vec<PathBuf> {
+    fn discover(&self) -> Discovered {
         let Some(root) = self.root() else {
-            return vec![];
+            return Vec::new().into();
         };
-        WalkDir::new(root)
+        if !root.exists() {
+            return Vec::new().into(); // no store on this machine - normal
+        }
+        let mut had_error = false;
+        let files = WalkDir::new(root)
             .max_depth(3)
             .into_iter()
-            .filter_map(|e| e.ok())
+            .filter_map(|e| ok_or_flag(e, &mut had_error))
             .filter(|e| e.file_type().is_file())
             .filter(|e| {
                 e.path().extension().is_some_and(|x| x == "json")
@@ -37,7 +41,8 @@ impl Adapter for Gemini {
                         .is_some_and(|d| d == "chats")
             })
             .map(|e| e.into_path())
-            .collect()
+            .collect();
+        Discovered { files, had_error }
     }
 
     fn parse(&self, path: &Path) -> Result<Session> {

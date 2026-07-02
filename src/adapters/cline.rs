@@ -1,4 +1,4 @@
-use super::{dedup_paths, title_from_messages, Adapter};
+use super::{dedup_paths, ok_or_flag, title_from_messages, Adapter, Discovered};
 use crate::model::{Message, Role, Session};
 use crate::util::{short_id, truncate};
 use anyhow::{Context, Result};
@@ -31,7 +31,7 @@ impl Adapter for Cline {
     fn root(&self) -> Option<PathBuf> {
         primary_root("saoudrizwan.claude-dev")
     }
-    fn discover(&self) -> Vec<PathBuf> {
+    fn discover(&self) -> Discovered {
         discover_tasks("saoudrizwan.claude-dev")
     }
     fn parse(&self, path: &Path) -> Result<Session> {
@@ -46,7 +46,7 @@ impl Adapter for RooCode {
     fn root(&self) -> Option<PathBuf> {
         primary_root("rooveterinaryinc.roo-cline")
     }
-    fn discover(&self) -> Vec<PathBuf> {
+    fn discover(&self) -> Discovered {
         discover_tasks("rooveterinaryinc.roo-cline")
     }
     fn parse(&self, path: &Path) -> Result<Session> {
@@ -61,7 +61,7 @@ impl Adapter for KiloCode {
     fn root(&self) -> Option<PathBuf> {
         primary_root("kilocode.kilo-code")
     }
-    fn discover(&self) -> Vec<PathBuf> {
+    fn discover(&self) -> Discovered {
         discover_tasks("kilocode.kilo-code")
     }
     fn parse(&self, path: &Path) -> Result<Session> {
@@ -109,14 +109,24 @@ fn primary_root(ext_id: &str) -> Option<PathBuf> {
 
 /// The history file for every `tasks/<id>/` across all editor variants. Prefers
 /// `api_conversation_history.json`, falling back to the legacy `claude_messages.json`.
-fn discover_tasks(ext_id: &str) -> Vec<PathBuf> {
+fn discover_tasks(ext_id: &str) -> Discovered {
     let mut out = Vec::new();
+    let mut had_error = false;
     for base in globalstorage_bases() {
         let tasks = base.join(ext_id).join("tasks");
-        let Ok(entries) = std::fs::read_dir(&tasks) else {
-            continue;
+        // A variant that isn't installed has no tasks dir - normal. A tasks dir
+        // that exists but cannot be listed is a partial result - flag it so the
+        // indexer skips deletion reconciliation this run.
+        let entries = match std::fs::read_dir(&tasks) {
+            Ok(entries) => entries,
+            Err(_) => {
+                if tasks.exists() {
+                    had_error = true;
+                }
+                continue;
+            }
         };
-        for entry in entries.filter_map(|e| e.ok()) {
+        for entry in entries.filter_map(|e| ok_or_flag(e, &mut had_error)) {
             if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 continue;
             }
@@ -130,7 +140,10 @@ fn discover_tasks(ext_id: &str) -> Vec<PathBuf> {
             }
         }
     }
-    out
+    Discovered {
+        files: out,
+        had_error,
+    }
 }
 
 /// File-edit tools across the family. Both the native `tool_use` name and the

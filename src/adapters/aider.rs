@@ -289,8 +289,8 @@ impl Adapter for Aider {
         aider_roots().into_iter().next()
     }
 
-    fn discover(&self) -> Vec<PathBuf> {
-        Vec::new() // shared-store adapter; see `store`
+    fn discover(&self) -> crate::adapters::Discovered {
+        Vec::new().into() // shared-store adapter; see `store`
     }
 
     fn parse(&self, _path: &Path) -> Result<Session> {
