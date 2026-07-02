@@ -106,7 +106,7 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
         Box::new(gajae::GajaeCode),
         Box::new(continue_dev::Continue),
         Box::new(gptme::Gptme),
-        Box::new(aider::Aider),
+        Box::new(aider::Aider::default()),
     ]
 }
 

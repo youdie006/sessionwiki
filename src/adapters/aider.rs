@@ -246,14 +246,8 @@ fn title_from(messages: &[Message]) -> String {
         .unwrap_or_default()
 }
 
-/// Read a history file, split it, and assemble the run at `idx` into a Session.
-fn build_session(path: &Path, idx: usize) -> Result<Session> {
-    let content = crate::util::read_to_string_capped(path)
-        .with_context(|| format!("read {}", path.display()))?;
-    let runs = split_runs(&content);
-    let run = runs
-        .get(idx)
-        .with_context(|| format!("no run {idx} in {}", path.display()))?;
+/// Assemble one already-split run into a Session.
+fn session_from_run(path: &Path, idx: usize, run: &Run) -> Result<Session> {
     let (messages, touched) = parse_turns(&run.body);
     let key = make_key(&path.to_string_lossy(), idx);
     let project = path
@@ -274,7 +268,31 @@ fn build_session(path: &Path, idx: usize) -> Result<Session> {
     })
 }
 
-pub struct Aider;
+/// Read a history file, split it, and assemble the run at `idx` into a Session.
+fn build_session(path: &Path, idx: usize) -> Result<Session> {
+    let content = crate::util::read_to_string_capped(path)
+        .with_context(|| format!("read {}", path.display()))?;
+    let runs = split_runs(&content);
+    let run = runs
+        .get(idx)
+        .with_context(|| format!("no run {idx} in {}", path.display()))?;
+    session_from_run(path, idx, run)
+}
+
+/// The last split history file, so indexing N runs of one file costs one read
+/// and one split instead of N (the indexer asks for a file's runs one key at a
+/// time, consecutively - re-reading the whole file per run made a long history
+/// O(runs^2)). Keyed by (path, mtime): any rewrite invalidates it.
+struct RunCache {
+    path: PathBuf,
+    mtime_ms: i64,
+    runs: Vec<Run>,
+}
+
+#[derive(Default)]
+pub struct Aider {
+    cache: std::sync::Mutex<Option<RunCache>>,
+}
 
 impl Adapter for Aider {
     fn name(&self) -> &'static str {
@@ -327,7 +345,32 @@ impl Adapter for Aider {
     fn parse_key(&self, key: &str) -> Result<Session> {
         let (path, idx) = key.split_once(KEY_SEP).context("malformed aider key")?;
         let idx: usize = idx.parse().context("bad run index")?;
-        build_session(Path::new(path), idx)
+        let path = Path::new(path);
+        let mtime_ms = std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let mut guard = self.cache.lock().unwrap();
+        let hit = guard
+            .as_ref()
+            .is_some_and(|c| c.path == path && c.mtime_ms == mtime_ms);
+        if !hit {
+            let content = crate::util::read_to_string_capped(path)
+                .with_context(|| format!("read {}", path.display()))?;
+            *guard = Some(RunCache {
+                path: path.to_path_buf(),
+                mtime_ms,
+                runs: split_runs(&content),
+            });
+        }
+        let cache = guard.as_ref().expect("cache filled above");
+        let run = cache
+            .runs
+            .get(idx)
+            .with_context(|| format!("no run {idx} in {}", path.display()))?;
+        session_from_run(path, idx, run)
     }
 }
 
