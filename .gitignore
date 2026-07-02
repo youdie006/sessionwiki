@@ -1,1 +1,24 @@
 /target
+
+# Runtime index DB. db_path() defaults to ~/.local/share/sessionwiki, but
+# SESSIONWIKI_DATA can redirect it anywhere, including this repo - never commit
+# a local index (it holds parsed session content and file paths).
+*.db
+*.db-wal
+*.db-shm
+index.db
+index.db.bak-*
+/sessionwiki/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Agent runtime/local config (NOT .claude-plugin, which is an intentional
+# product file that must stay tracked)
+.claude/
