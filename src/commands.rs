@@ -726,13 +726,9 @@ pub fn resume_cmd(id: &str, print_only: bool, no_sync: bool) -> Result<()> {
     let row = resolve_lazy(&mut conn, id, no_sync)?;
 
     let path = std::path::Path::new(&row.path);
-    if !path.exists() {
-        bail!(
-            "the session file is gone ({}) - the tool's own cleanup likely deleted it,\n\
-             so a native resume is not possible. Try: sessionwiki brief {id}",
-            row.path
-        );
-    }
+    // Tool support first: for tools without headless resume (aider, OpenCode,
+    // Gemini...), the stored path may be a shared-store key rather than a real
+    // file, so an exists() check first would misreport it as a deleted file.
     let Some(info) = resume::for_session(&row.tool, path, &row.project) else {
         bail!(
             "{} sessions cannot be resumed headlessly. For Gemini CLI, open `gemini` in\n\
@@ -741,6 +737,13 @@ pub fn resume_cmd(id: &str, print_only: bool, no_sync: bool) -> Result<()> {
             row.tool
         );
     };
+    if !path.exists() {
+        bail!(
+            "the session file is gone ({}) - the tool's own cleanup likely deleted it,\n\
+             so a native resume is not possible. Try: sessionwiki brief {id}",
+            row.path
+        );
+    }
 
     println!("{}", bold(&truncate(&row.title, 80)));
     if let Some(note) = &info.note {
