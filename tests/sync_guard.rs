@@ -81,6 +81,53 @@ fn partial_walk_does_not_archive_live_sessions() {
     );
 }
 
+#[test]
+fn parse_failures_are_warned_and_counted_not_swallowed() {
+    if unsafe { libc_geteuid() } == 0 {
+        eprintln!("skipping: running as root");
+        return;
+    }
+
+    let home = std::env::temp_dir().join("sessionwiki-test-sync-warn");
+    let _ = fs::remove_dir_all(&home);
+    let proj = home.join(".claude").join("projects").join("proj-a");
+    fs::create_dir_all(&proj).unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/claude-code/proj-a/0a000000-0000-4000-8000-000000000001.jsonl");
+    fs::copy(
+        &fixture,
+        proj.join("0a000000-0000-4000-8000-000000000001.jsonl"),
+    )
+    .unwrap();
+    // A session file that exists (discover lists it) but cannot be opened:
+    // parse must fail loudly, not vanish from the corpus in silence.
+    let bad = proj.join("0b000000-0000-4000-8000-000000000002.jsonl");
+    fs::write(&bad, "{}").unwrap();
+    chmod(&bad, 0o000);
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_sessionwiki"))
+        .args(["sync", "--tool", "claude-code"])
+        .env("HOME", &home)
+        .env("SESSIONWIKI_DATA", home.join("data"))
+        .output()
+        .unwrap();
+    chmod(&bad, 0o644); // restore for cleanup
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "sync must not die: {stderr}");
+    assert!(
+        stderr.contains("failed to parse"),
+        "the failure must be warned: {stderr}"
+    );
+    assert!(
+        stderr.contains("(1 failed to parse)"),
+        "the count line must be honest: {stderr}"
+    );
+    assert!(
+        stderr.contains("indexed 1/2"),
+        "only the good session counts as indexed: {stderr}"
+    );
+}
+
 extern "C" {
     #[link_name = "geteuid"]
     fn libc_geteuid() -> u32;

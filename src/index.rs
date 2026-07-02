@@ -490,6 +490,19 @@ fn index_one(
     Ok(())
 }
 
+/// The end-of-adapter sync line. Honest about failures: "indexed 12/14
+/// (2 failed to parse)" rather than pretending everything landed.
+fn report_indexed(tool: &str, total: usize, failed: usize) {
+    if failed > 0 {
+        eprintln!(
+            "\r[{tool}] indexed {}/{total} ({failed} failed to parse)    ",
+            total - failed
+        );
+    } else {
+        eprintln!("\r[{tool}] indexed {total}/{total}    ");
+    }
+}
+
 pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
     let adapters: Vec<Box<dyn Adapter>> = match only_tool {
         Some(t) => adapters::by_name(t).into_iter().collect(),
@@ -544,18 +557,26 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
                 let token_of: HashMap<&str, i64> =
                     store.keys.iter().map(|(k, t)| (k.as_str(), *t)).collect();
                 let total = pending.len();
+                let mut failed = 0usize;
                 let tx = conn.transaction()?;
                 for (i, key) in pending.iter().enumerate() {
                     eprint!("\r[{tool}] indexing {}/{total}", i + 1);
                     std::io::stderr().flush().ok();
-                    let Ok(session) = adapter.parse_key(key) else {
-                        continue;
+                    // A failed parse is warned, not silently dropped: the user
+                    // must know a session is missing from the corpus.
+                    let session = match adapter.parse_key(key) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            failed += 1;
+                            eprintln!("\r[{tool}] failed to parse {key}: {e:#}");
+                            continue;
+                        }
                     };
                     let token = token_of.get(key.as_str()).copied().unwrap_or(0);
                     index_one(&tx, &session, key, token, 0)?;
                 }
                 tx.commit()?;
-                eprintln!("\r[{tool}] indexed {total}/{total}    ");
+                report_indexed(tool, total, failed);
             }
             continue;
         }
@@ -597,20 +618,28 @@ pub fn sync(conn: &mut Connection, only_tool: Option<&str>) -> Result<()> {
         }
         let total = pending.len();
         let mut done = 0usize;
+        let mut failed = 0usize;
         let tx = conn.transaction()?;
         for (path, mtime, size) in pending {
             done += 1;
             eprint!("\r[{tool}] indexing {done}/{total}");
             std::io::stderr().flush().ok();
 
-            let Ok(session) = adapter.parse(&path) else {
-                continue;
+            // A failed parse is warned, not silently dropped: the user must
+            // know a session is missing from the corpus.
+            let session = match adapter.parse(&path) {
+                Ok(s) => s,
+                Err(e) => {
+                    failed += 1;
+                    eprintln!("\r[{tool}] failed to parse {}: {e:#}", path.display());
+                    continue;
+                }
             };
             let key = path.to_string_lossy();
             index_one(&tx, &session, &key, mtime, size)?;
         }
         tx.commit()?;
-        eprintln!("\r[{tool}] indexed {done}/{total}    ");
+        report_indexed(tool, total, failed);
     }
 
     // The one passive signal that archive is earning its keep: how many
