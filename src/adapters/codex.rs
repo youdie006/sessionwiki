@@ -13,7 +13,26 @@ use walkdir::WalkDir;
 /// `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`.
 /// Lines carry a `type` plus a `payload`; the schema has shifted across
 /// versions, so both `response_item` and `event_msg` shapes are handled.
-pub struct Codex;
+///
+/// `Codex::default()` reads the stock `~/.codex` install. An embedder that
+/// runs several Codex installs in different homes builds one adapter per
+/// install with [`Codex::in_home`].
+#[derive(Default)]
+pub struct Codex {
+    /// Explicit sessions directory, or `None` for the stock location.
+    root: Option<PathBuf>,
+}
+
+impl Codex {
+    /// An adapter for the Codex install rooted at `home` (e.g. `~/.codex2`).
+    /// The sessions sub-directory layout is the adapter's business, not the
+    /// caller's.
+    pub fn in_home(home: impl Into<PathBuf>) -> Self {
+        Codex {
+            root: Some(home.into().join("sessions")),
+        }
+    }
+}
 
 impl Adapter for Codex {
     fn name(&self) -> &'static str {
@@ -21,7 +40,16 @@ impl Adapter for Codex {
     }
 
     fn root(&self) -> Option<PathBuf> {
-        Some(dirs::home_dir()?.join(".codex").join("sessions"))
+        match &self.root {
+            Some(root) => Some(root.clone()),
+            None => Some(dirs::home_dir()?.join(".codex").join("sessions")),
+        }
+    }
+
+    /// An explicit install speaks only for the rows under its own root; the
+    /// stock adapter speaks for every Codex row, as before.
+    fn reconcile_scope(&self) -> Option<String> {
+        super::root_scope(self.root.as_deref())
     }
 
     fn discover(&self) -> Discovered {
@@ -257,5 +285,50 @@ fn push(
             text: text.to_string(),
             ts,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An embedder points one adapter at each Codex install. The adapter must
+    /// find that install's rollouts and claim only that install's rows for
+    /// deletion reconciliation.
+    #[test]
+    fn in_home_discovers_that_installs_rollouts_and_scopes_reconciliation() {
+        let home = tempfile::tempdir().unwrap();
+        let day = home
+            .path()
+            .join("sessions")
+            .join("2026")
+            .join("01")
+            .join("01");
+        std::fs::create_dir_all(&day).unwrap();
+        let file = day.join("rollout-2026-01-01T10-00-00-abc.jsonl");
+        std::fs::write(
+            &file,
+            "{\"type\":\"session_meta\",\"payload\":{\"cwd\":\"/repo\"}}\n",
+        )
+        .unwrap();
+
+        let adapter = Codex::in_home(home.path());
+        let found = adapter.discover();
+        assert!(!found.had_error);
+        assert_eq!(found.files, vec![file.clone()]);
+
+        let scope = adapter
+            .reconcile_scope()
+            .expect("an explicit install is scoped");
+        assert!(
+            file.to_string_lossy().starts_with(&scope),
+            "{scope} must be a prefix of the discovered {}",
+            file.display()
+        );
+        assert_eq!(
+            Codex::default().reconcile_scope(),
+            None,
+            "the stock adapter still speaks for every codex row"
+        );
     }
 }

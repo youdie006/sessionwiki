@@ -6,6 +6,18 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- **`Codex::in_home` and `ClaudeCode::in_home` for embedders with several
+  installs of one tool.** A program that drives more than one Codex or Claude
+  Code install (`~/.codex2`, `~/.claude4`, and so on) can now build one adapter
+  per install root; the adapter knows its own session sub-directory layout, so
+  the caller passes only the home. Every install keeps the shared tool name, so
+  parsing by tool name still works for rows from any of them. An adapter built
+  this way scopes deletion reconciliation to its own root, so syncing one
+  install never archives another install's rows. `Codex::default()` and
+  `ClaudeCode::default()` keep reading the stock locations as before.
+
 ## [0.29.0] - 2026-09-17
 
 ### Added

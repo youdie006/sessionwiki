@@ -9,6 +9,8 @@ mod gptme;
 pub mod harness;
 mod opencode;
 mod prodex;
+pub use claude_code::ClaudeCode;
+pub use codex::Codex;
 pub use prodex::thread_url_for_task as prodex_thread_url;
 
 use crate::model::{Session, StoreReport};
@@ -107,10 +109,22 @@ pub trait Adapter {
     }
 }
 
+/// The [`Adapter::reconcile_scope`] for an adapter pinned to `root`: every key
+/// under that directory, as a path prefix. `None` (stock location) keeps the
+/// adapter speaking for every row of its tool.
+pub(crate) fn root_scope(root: Option<&Path>) -> Option<String> {
+    let root = root?;
+    let mut prefix = root.to_string_lossy().into_owned();
+    if !prefix.ends_with(std::path::MAIN_SEPARATOR) {
+        prefix.push(std::path::MAIN_SEPARATOR);
+    }
+    Some(prefix)
+}
+
 pub fn all() -> Vec<Box<dyn Adapter>> {
     vec![
-        Box::new(claude_code::ClaudeCode),
-        Box::new(codex::Codex),
+        Box::new(ClaudeCode::default()),
+        Box::new(Codex::default()),
         Box::new(gemini::Gemini),
         Box::new(opencode::OpenCode),
         Box::new(cline::Cline),

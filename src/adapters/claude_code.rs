@@ -13,7 +13,26 @@ use walkdir::WalkDir;
 /// `~/.claude/projects/<sanitized-cwd>/<session-uuid>.jsonl`.
 /// Each line is an event: user/assistant messages, tool results,
 /// summaries, and harness bookkeeping.
-pub struct ClaudeCode;
+///
+/// `ClaudeCode::default()` reads the stock `~/.claude` install. An embedder
+/// that runs several installs in different homes builds one adapter per
+/// install with [`ClaudeCode::in_home`].
+#[derive(Default)]
+pub struct ClaudeCode {
+    /// Explicit projects directory, or `None` for the stock location.
+    root: Option<PathBuf>,
+}
+
+impl ClaudeCode {
+    /// An adapter for the Claude Code install rooted at `home` (e.g.
+    /// `~/.claude4`). The projects sub-directory layout is the adapter's
+    /// business, not the caller's.
+    pub fn in_home(home: impl Into<PathBuf>) -> Self {
+        ClaudeCode {
+            root: Some(home.into().join("projects")),
+        }
+    }
+}
 
 impl Adapter for ClaudeCode {
     fn name(&self) -> &'static str {
@@ -21,7 +40,16 @@ impl Adapter for ClaudeCode {
     }
 
     fn root(&self) -> Option<PathBuf> {
-        Some(dirs::home_dir()?.join(".claude").join("projects"))
+        match &self.root {
+            Some(root) => Some(root.clone()),
+            None => Some(dirs::home_dir()?.join(".claude").join("projects")),
+        }
+    }
+
+    /// An explicit install speaks only for the rows under its own root; the
+    /// stock adapter speaks for every Claude Code row, as before.
+    fn reconcile_scope(&self) -> Option<String> {
+        super::root_scope(self.root.as_deref())
     }
 
     fn discover(&self) -> Discovered {
@@ -386,7 +414,7 @@ mod tests {
         let line = r#"{"type":"assistant","timestamp":"2026-07-01T10:00:00Z","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/repo/src/auth.rs","old_string":"a","new_string":"let fixed = true;"}}]}}"#;
         std::fs::write(&path, format!("{line}\n")).unwrap();
 
-        let session = ClaudeCode.parse(&path).unwrap();
+        let session = ClaudeCode::default().parse(&path).unwrap();
 
         assert_eq!(session.edits.len(), 1, "one edit event extracted");
         assert_eq!(session.edits[0].path, "/repo/src/auth.rs");
@@ -394,5 +422,36 @@ mod tests {
         assert!(session.edits[0].snippet.contains("let fixed = true;"));
         // touched stays consistent with edits (same path).
         assert_eq!(session.touched, vec!["/repo/src/auth.rs".to_string()]);
+    }
+
+    /// An embedder points one adapter at each Claude Code install. The adapter
+    /// must find that install's transcripts and claim only that install's rows
+    /// for deletion reconciliation.
+    #[test]
+    fn in_home_discovers_that_installs_sessions_and_scopes_reconciliation() {
+        let home = tempfile::tempdir().unwrap();
+        let project = home.path().join("projects").join("-repo");
+        std::fs::create_dir_all(&project).unwrap();
+        let file = project.join("11111111-2222-3333-4444-555555555555.jsonl");
+        std::fs::write(&file, "{\"type\":\"user\",\"cwd\":\"/repo\"}\n").unwrap();
+
+        let adapter = ClaudeCode::in_home(home.path());
+        let found = adapter.discover();
+        assert!(!found.had_error);
+        assert_eq!(found.files, vec![file.clone()]);
+
+        let scope = adapter
+            .reconcile_scope()
+            .expect("an explicit install is scoped");
+        assert!(
+            file.to_string_lossy().starts_with(&scope),
+            "{scope} must be a prefix of the discovered {}",
+            file.display()
+        );
+        assert_eq!(
+            ClaudeCode::default().reconcile_scope(),
+            None,
+            "the stock adapter still speaks for every claude-code row"
+        );
     }
 }
