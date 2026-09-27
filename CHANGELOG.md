@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-09-27
+
 ### Added
 
 - **`Codex::in_home` and `ClaudeCode::in_home` for embedders with several
@@ -24,6 +26,10 @@ semantic versioning once it reaches 1.0.
 - Syncing a stock Codex or Claude Code install no longer archives rows from
   another install. A later sync restores archived rows when their source still
   exists, without reparsing an unchanged transcript.
+
+### Maintenance
+
+- `clap` is updated from 4.6.6 to 4.6.7.
 
 ## [0.29.0] - 2026-09-17
 
