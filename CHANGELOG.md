@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-09-30
+
 ### Fixed
 
 - **`list` and the `recent_sessions` MCP tool order sessions by last
