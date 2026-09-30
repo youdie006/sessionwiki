@@ -1060,6 +1060,10 @@ pub struct SessionRow {
     pub project: String,
     pub title: String,
     pub started: Option<String>,
+    /// When the session last had a message. A session resumed for weeks began
+    /// long ago; this is what makes it recent. Absent where it was not read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_active: Option<String>,
     #[serde(rename = "msgs")]
     pub msg_count: i64,
     pub kind: String,
@@ -1173,7 +1177,7 @@ pub fn recent(
     include_subagents: bool,
 ) -> Result<Vec<SessionRow>> {
     let mut sql = format!(
-        "SELECT session_id, tool, path, project, title, started, msg_count, kind, {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}, (archived_at IS NOT NULL)
+        "SELECT session_id, tool, path, project, title, started, msg_count, kind, {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}, (archived_at IS NOT NULL), COALESCE(ended, started)
          FROM files f WHERE 1=1",
     );
     let mut args: Vec<String> = Vec::new();
@@ -1197,11 +1201,17 @@ pub fn recent(
         );
         args.push(norm_tag(t)); // stored tags are normalized; match their form
     }
-    sql.push_str(&format!(" ORDER BY started DESC LIMIT {limit}"));
+    // Recent means recently ACTIVE: a session resumed for weeks began long
+    // ago, and ordering by its start buried it below everything begun since.
+    // Both columns are UTC RFC 3339, so they order as text.
+    sql.push_str(&format!(
+        " ORDER BY COALESCE(ended, started) DESC LIMIT {limit}"
+    ));
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(args), |r| {
         Ok(SessionRow {
+            last_active: r.get(12)?,
             session_id: r.get(0)?,
             tool: r.get(1)?,
             path: r.get(2)?,
@@ -1236,6 +1246,7 @@ pub fn project_brief(conn: &Connection, project: &str, limit: usize) -> Result<V
     ))?;
     let rows = stmt.query_map(params![p, limit as i64], |r| {
         Ok(SessionRow {
+            last_active: None,
             session_id: r.get(0)?,
             tool: r.get(1)?,
             path: r.get(2)?,
@@ -1312,6 +1323,7 @@ pub fn search(
     let rows = stmt.query_map(rusqlite::params_from_iter(args), |r| {
         Ok(Hit {
             row: SessionRow {
+                last_active: None,
                 session_id: r.get(0)?,
                 tool: r.get(1)?,
                 path: r.get(2)?,
@@ -1398,6 +1410,7 @@ pub fn search_like(
             let text: String = r.get(9)?;
             Ok(Hit {
                 row: SessionRow {
+                    last_active: None,
                     session_id: r.get(0)?,
                     tool: r.get(1)?,
                     path: r.get(2)?,
@@ -1482,6 +1495,7 @@ const RESOLVE_COLS: &str = "session_id, tool, path, project, title, started, msg
 /// [`RESOLVE_COLS`] followed by `{SUMMARY_SQL}, {TAGS_SQL}, (archived_at IS NOT NULL)`.
 fn map_resolve_row(r: &rusqlite::Row) -> rusqlite::Result<SessionRow> {
     Ok(SessionRow {
+        last_active: None,
         session_id: r.get(0)?,
         tool: r.get(1)?,
         path: r.get(2)?,
@@ -1607,6 +1621,7 @@ pub fn locate_by_native_id(prefix: &str) -> Option<(String, PathBuf)> {
 pub fn live_row(tool: String, path: PathBuf) -> SessionRow {
     let path = path.to_string_lossy().into_owned();
     SessionRow {
+        last_active: None,
         session_id: crate::util::short_id(&path),
         tool,
         path,
@@ -1656,6 +1671,7 @@ pub fn unsummarized(
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(args), |r| {
         Ok(SessionRow {
+            last_active: None,
             session_id: r.get(0)?,
             tool: r.get(1)?,
             path: r.get(2)?,
@@ -1920,6 +1936,7 @@ pub fn sessions_for_file(
     let rows = stmt.query_map(params![q, suffix, sql_limit(limit)], |r| {
         Ok((
             SessionRow {
+                last_active: None,
                 session_id: r.get(0)?,
                 tool: r.get(1)?,
                 path: r.get(2)?,
@@ -2190,6 +2207,7 @@ pub fn related(conn: &Connection, session_id: &str, limit: usize) -> Result<Vec<
 /// Row mapper for the full session-list column set.
 fn map_row(r: &rusqlite::Row) -> rusqlite::Result<SessionRow> {
     Ok(SessionRow {
+        last_active: None,
         session_id: r.get(0)?,
         tool: r.get(1)?,
         path: r.get(2)?,
@@ -2422,6 +2440,7 @@ mod native_id_tests {
     #[test]
     fn session_row_serializes_native_id_not_path() {
         let row = SessionRow {
+            last_active: None,
             session_id: "abc123def456".into(),
             tool: "codex".into(),
             path: CODEX.into(),
@@ -3081,6 +3100,32 @@ mod embedder_hook_tests {
             1,
             "changed archived files must be reparsed"
         );
+    }
+
+    /// "Recent" is about activity. Ordering by when a session STARTED put one
+    /// resumed every day for three months below everything begun this week -
+    /// on the machine this was found, eleven sessions active in the last day
+    /// were buried that way, including the one asking.
+    #[test]
+    fn recent_orders_by_last_activity_not_by_start() {
+        let c = Connection::open_in_memory().unwrap();
+        create_cache_schema(&c).unwrap();
+        for (id, started, ended) in [
+            ("resumed", "2026-06-01T00:00:00Z", "2026-09-30T01:00:00Z"),
+            ("fresh", "2026-09-20T00:00:00Z", "2026-09-20T01:00:00Z"),
+        ] {
+            c.execute(
+                "INSERT INTO files(path, mtime, size, session_id, tool, started, ended, msg_count, kind)
+                 VALUES(?1, 0, 0, ?1, 'codex', ?2, ?3, 1, 'main')",
+                rusqlite::params![id, started, ended],
+            )
+            .unwrap();
+        }
+        let rows = recent(&c, 10, None, None, None, false).unwrap();
+        let ids: Vec<&str> = rows.iter().map(|r| r.session_id.as_str()).collect();
+        assert_eq!(ids, ["resumed", "fresh"]);
+        assert_eq!(rows[0].last_active.as_deref(), Some("2026-09-30T01:00:00Z"));
+        assert_eq!(rows[0].started.as_deref(), Some("2026-06-01T00:00:00Z"));
     }
 
     /// The point of `sync_with`: an embedding program indexes its own sessions

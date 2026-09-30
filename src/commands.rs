@@ -184,9 +184,11 @@ pub fn list(
         ))
     );
     for r in rows {
+        // When it was last active, which is what the list is ordered by.
         let when = r
-            .started
+            .last_active
             .as_deref()
+            .or(r.started.as_deref())
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|t| t.with_timezone(&chrono::Utc));
         let tags = r

@@ -85,6 +85,8 @@ fn session_row_json_has_pinned_fields() {
             "archived",
             "id",
             "kind",
+            // Added for `recent`: the list is ordered by it (last activity).
+            "last_active",
             "msgs",
             "native_id",
             "preview",

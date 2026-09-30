@@ -6,6 +6,21 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`list` and the `recent_sessions` MCP tool order sessions by last
+  activity.** They sorted by when a session started, so one resumed day after
+  day sank below everything begun since: on the machine this was found, eleven
+  sessions active within the last day ranked as weeks or months old, including
+  the one asking. They now order by the session's last message (its start when
+  it has none), and `list`'s WHEN column shows that time.
+
+### Changed
+
+- Session rows from `recent` carry `last_active` (RFC 3339, the last message's
+  time) alongside `started` in `--json` and MCP output. `started` keeps its
+  meaning.
+
 ## [0.30.0] - 2026-09-27
 
 ### Added
