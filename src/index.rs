@@ -2234,12 +2234,15 @@ pub struct ProjectRow {
     pub newest: Option<String>,
 }
 
-/// One row per project (a wiki "category" page), busiest first.
+/// One row per project (a wiki "category" page), busiest first. `newest` is
+/// the last activity, on the session list's clock: a long session begun months
+/// ago but worked in yesterday makes its project recent.
 pub fn projects(conn: &Connection) -> Result<Vec<ProjectRow>> {
     let mut stmt = conn.prepare(
-        "SELECT project, count(*), coalesce(sum(msg_count), 0), min(started), max(started)
+        "SELECT project, count(*), coalesce(sum(msg_count), 0), min(started),
+                max(COALESCE(ended, started))
          FROM files WHERE kind = 'main' AND project != ''
-         GROUP BY project ORDER BY count(*) DESC, max(started) DESC",
+         GROUP BY project ORDER BY count(*) DESC, max(COALESCE(ended, started)) DESC",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok(ProjectRow {

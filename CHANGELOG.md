@@ -6,6 +6,16 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`projects` LAST and its order follow last activity, as `list` does.**
+  0.30.1 moved `list` to each session's last message, but `projects` still
+  took LAST from when its newest session began, so a project worked in
+  yesterday through a session started in May showed May and ranked below
+  projects untouched since. LAST is now the latest activity of any session in
+  the project (its start when it has none), and equally busy projects are
+  ordered by it. The web UI's project list reads the same value.
+
 ## [0.30.1] - 2026-09-30
 
 ### Fixed
