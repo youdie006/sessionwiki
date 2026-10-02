@@ -15,6 +15,16 @@ semantic versioning once it reaches 1.0.
   projects untouched since. LAST is now the latest activity of any session in
   the project (its start when it has none), and equally busy projects are
   ordered by it. The web UI's project list reads the same value.
+- **One directory is one project, however its case was typed.** On a
+  case-insensitive filesystem (WSL's `/mnt/<drive>`, macOS by default) a
+  shell can enter the same directory as `apo` or `APO`, and each tool records
+  what it was given, so one project split into case-variant rows - on the
+  machine this was found, 14 projects, one of them 23 + 514 sessions. Project
+  paths are now stored as spelled on disk, and the first open after upgrading
+  respells the rows already indexed (a one-off update, not a rebuild). The
+  recall hook's exact project match uses the same spelling. A case-sensitive
+  filesystem is unaffected: two directories that differ only in case stay
+  two projects.
 
 ## [0.30.1] - 2026-09-30
 

@@ -421,7 +421,42 @@ pub fn open() -> Result<Connection> {
     if arch_total > arch_live {
         rehydrate_archive(&conn)?;
     }
+    respell_projects(&conn)?;
     Ok(conn)
+}
+
+/// Once per index, respell stored project paths as on disk, so case variants
+/// recorded before `project_key` existed merge into one project. A one-off
+/// update of the few changed paths rather than a schema bump, which would
+/// re-parse every session on disk to fix a handful of strings.
+fn respell_projects(conn: &Connection) -> Result<()> {
+    const KEY: &str = "project_case_v1";
+    let done: i64 = conn.query_row("SELECT count(*) FROM meta WHERE key = ?1", [KEY], |r| {
+        r.get(0)
+    })?;
+    if done > 0 {
+        return Ok(());
+    }
+    let projects: Vec<String> = conn
+        .prepare("SELECT DISTINCT project FROM files WHERE project != ''")?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let tx = conn.unchecked_transaction()?;
+    for project in projects {
+        let key = crate::util::project_key(&project);
+        if key != project {
+            tx.execute(
+                "UPDATE files SET project = ?1 WHERE project = ?2",
+                params![key, project],
+            )?;
+        }
+    }
+    tx.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES (?1, '1')",
+        [KEY],
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 /// After a schema bump drops the cache tables, replay archived sessions back
@@ -493,7 +528,7 @@ fn rehydrate_archive(conn: &Connection) -> Result<()> {
                 a.path,
                 a.session_id,
                 a.tool,
-                crate::util::nfc(&a.project),
+                crate::util::project_key(&a.project),
                 a.title,
                 a.started,
                 a.ended,
@@ -571,7 +606,7 @@ fn index_one(
             size,
             session.id,
             session.tool,
-            crate::util::nfc(&session.project),
+            crate::util::project_key(&session.project),
             crate::redact::redact(&session.title).as_ref(),
             session.started.map(|t| t.to_rfc3339()),
             session.ended.map(|t| t.to_rfc3339()),
@@ -1236,7 +1271,7 @@ pub fn recent(
 /// SessionStart recall hook). Exact equality - never the substring `--project`
 /// filter, which over-matches sibling/child paths. Newest first, stable.
 pub fn project_brief(conn: &Connection, project: &str, limit: usize) -> Result<Vec<SessionRow>> {
-    let p = crate::util::nfc(project.trim_end_matches('/'));
+    let p = crate::util::project_key(project.trim_end_matches('/'));
     let mut stmt = conn.prepare(&format!(
         "SELECT session_id, tool, path, project, title, started, msg_count, kind, {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}, (archived_at IS NOT NULL)
          FROM files f

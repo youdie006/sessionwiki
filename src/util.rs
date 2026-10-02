@@ -143,6 +143,72 @@ pub fn nfc(s: &str) -> String {
     s.nfc().collect()
 }
 
+/// A project path as the index stores it: NFC, and spelled as on disk.
+///
+/// On a case-insensitive filesystem (WSL's /mnt/<drive>, macOS by default) a
+/// shell can `cd` into the same directory as `apo` or `APO`, and each tool
+/// records what it was given, so one project split into case-variant rows. A
+/// component is respelled only when the path exists, its parent does not list
+/// that exact name, and exactly one entry matches it ignoring case. A
+/// case-sensitive filesystem never reaches that: a variant spelling there does
+/// not exist. Results are cached; listing a drvfs directory is slow.
+pub fn project_key(project: &str) -> String {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    let normalized = nfc(project);
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache.lock().ok().and_then(|c| c.get(&normalized).cloned()) {
+        return hit;
+    }
+    let keyed = on_disk_case(&normalized).unwrap_or_else(|| normalized.clone());
+    if let Ok(mut c) = cache.lock() {
+        c.insert(normalized, keyed.clone());
+    }
+    keyed
+}
+
+fn on_disk_case(path: &str) -> Option<String> {
+    use std::path::{Component, Path, PathBuf};
+    let p = Path::new(path);
+    if !p.is_absolute() || !p.exists() {
+        return None;
+    }
+    let mut components = p.components();
+    if components.next() != Some(Component::RootDir) {
+        return None;
+    }
+    let mut out = PathBuf::from("/");
+    for component in components {
+        let Component::Normal(name) = component else {
+            return None;
+        };
+        let names: Vec<std::ffi::OsString> = std::fs::read_dir(&out)
+            .ok()?
+            .filter_map(|e| e.ok().map(|e| e.file_name()))
+            .collect();
+        if names.iter().any(|n| n == name) {
+            out.push(name);
+            continue;
+        }
+        let wanted = name.to_string_lossy().to_lowercase();
+        let mut matches = names
+            .iter()
+            .filter(|n| n.to_string_lossy().to_lowercase() == wanted);
+        match (matches.next(), matches.next()) {
+            (Some(one), None) => out.push(one),
+            _ => out.push(name),
+        }
+    }
+    let respelled = out.to_string_lossy().into_owned();
+    // Keep a trailing slash if the caller had one.
+    Some(if path.ends_with('/') && !respelled.ends_with('/') {
+        respelled + "/"
+    } else {
+        respelled
+    })
+}
+
 pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut size = bytes as f64;
