@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-10-06
+
 ### Added
 
 - **Configurable FTS5 tokenizer.** `sessionwiki tokenizer` shows the current
