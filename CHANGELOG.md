@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-10-07
+
 ### Added
 
 - **Search can filter by message role.** `--role user,assistant` limits matches
