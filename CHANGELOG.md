@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.30.2] - 2026-10-06
+
 ### Fixed
 
 - **`projects` LAST and its order follow last activity, as `list` does.**
