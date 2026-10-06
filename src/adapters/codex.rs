@@ -79,6 +79,8 @@ impl Adapter for Codex {
         let mut messages: Vec<Message> = Vec::new();
         let mut touched: Vec<String> = Vec::new();
         let mut cwd: Option<String> = None;
+        // Sub-agent threads say so in session_meta; their task arrives encrypted.
+        let mut subagent = false;
         let mut started = None;
         let mut ended = None;
         // Current rollouts carry each user prompt TWICE (event_msg AND
@@ -105,6 +107,7 @@ impl Adapter for Codex {
 
             match v.get("type").and_then(Value::as_str) {
                 Some("session_meta") => {
+                    subagent |= is_subagent_meta(&v);
                     if cwd.is_none() {
                         cwd = v
                             .pointer("/payload/cwd")
@@ -224,7 +227,7 @@ impl Adapter for Codex {
             started,
             ended,
             title,
-            subagent: false,
+            subagent,
             messages,
             touched: dedup_paths(touched),
             edits: Vec::new(),
@@ -287,6 +290,13 @@ fn push(
     }
 }
 
+/// Whether a rollout's `session_meta` line marks a sub-agent thread. Shared
+/// with the index, which reclassifies rows parsed before this was read.
+pub(crate) fn is_subagent_meta(v: &Value) -> bool {
+    v.pointer("/payload/thread_source").and_then(Value::as_str) == Some("subagent")
+        || v.pointer("/payload/source/subagent").is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,5 +339,40 @@ mod tests {
             crate::adapters::root_scope(Codex::default().root().as_deref()),
             "the stock adapter speaks only for its own install"
         );
+    }
+
+    /// Codex marks a rollout a sub-agent's in its session_meta
+    /// (`thread_source: "subagent"`, `source.subagent`). The adapter called
+    /// every rollout a main session, so on one machine 2,925 of 4,725
+    /// rollouts - sub-agent threads whose task arrives encrypted - filled
+    /// `list`, `projects` and the recall hook as "(no user prompt)" rows.
+    #[test]
+    fn a_subagent_rollout_is_parsed_as_a_subagent() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, meta: &str| {
+            let file = dir.path().join(name);
+            std::fs::write(
+                &file,
+                format!(
+                    "{{\"timestamp\":\"2026-10-07T00:00:00Z\",\"type\":\"session_meta\",\"payload\":{meta}}}\n\
+                     {{\"timestamp\":\"2026-10-07T00:00:01Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"working\"}}]}}}}\n"
+                ),
+            )
+            .unwrap();
+            file
+        };
+        let main = write("main.jsonl", r#"{"cwd":"/repo","source":"cli"}"#);
+        let by_thread = write(
+            "sub1.jsonl",
+            r#"{"cwd":"/repo","thread_source":"subagent","agent_path":"/root/worker"}"#,
+        );
+        let by_source = write(
+            "sub2.jsonl",
+            r#"{"cwd":"/repo","source":{"subagent":{"thread_spawn":{"depth":1}}}}"#,
+        );
+        let codex = Codex::default();
+        assert!(!codex.parse(&main).unwrap().subagent);
+        assert!(codex.parse(&by_thread).unwrap().subagent);
+        assert!(codex.parse(&by_source).unwrap().subagent);
     }
 }

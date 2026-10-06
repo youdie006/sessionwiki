@@ -579,7 +579,51 @@ pub fn open() -> Result<Connection> {
         rehydrate_archive(&conn)?;
     }
     respell_projects(&conn)?;
+    reclassify_codex_subagents(&conn)?;
     Ok(conn)
+}
+
+/// Once per index, mark Codex sub-agent rollouts indexed before the adapter
+/// read the marker as `sub`, as a fresh parse now does. Only each file's first
+/// line is read; a schema bump would re-parse every session on disk.
+fn reclassify_codex_subagents(conn: &Connection) -> Result<()> {
+    const KEY: &str = "codex_subagent_v1";
+    let done: i64 = conn.query_row("SELECT count(*) FROM meta WHERE key = ?1", [KEY], |r| {
+        r.get(0)
+    })?;
+    if done > 0 {
+        return Ok(());
+    }
+    let rows: Vec<(String, String)> = conn
+        .prepare("SELECT session_id, path FROM files WHERE tool = 'codex' AND kind = 'main'")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let tx = conn.unchecked_transaction()?;
+    for (session_id, path) in rows {
+        let Ok(file) = std::fs::File::open(&path) else {
+            continue;
+        };
+        let mut first = String::new();
+        if std::io::BufRead::read_line(&mut std::io::BufReader::new(file), &mut first).is_err() {
+            continue;
+        }
+        let is_sub = serde_json::from_str::<serde_json::Value>(&first).is_ok_and(|v| {
+            v.get("type").and_then(serde_json::Value::as_str) == Some("session_meta")
+                && crate::adapters::codex_is_subagent_meta(&v)
+        });
+        if is_sub {
+            tx.execute(
+                "UPDATE files SET kind = 'sub' WHERE session_id = ?1 AND tool = 'codex'",
+                [session_id],
+            )?;
+        }
+    }
+    tx.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES (?1, '1')",
+        [KEY],
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 /// Once per index, respell stored project paths as on disk, so case variants

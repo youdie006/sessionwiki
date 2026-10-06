@@ -10,6 +10,7 @@ pub mod harness;
 mod opencode;
 mod prodex;
 pub use claude_code::ClaudeCode;
+pub(crate) use codex::is_subagent_meta as codex_is_subagent_meta;
 pub use codex::Codex;
 pub use prodex::thread_url_for_task as prodex_thread_url;
 

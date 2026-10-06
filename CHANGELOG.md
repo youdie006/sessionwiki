@@ -6,6 +6,19 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Codex sub-agent threads are sub-agent sessions, not main ones.** Codex
+  marks a sub-agent's rollout in its `session_meta` (`thread_source:
+  "subagent"`), and its task arrives encrypted, so these threads have no
+  readable prompt. The adapter ignored the marker and listed every one as a
+  main session: on the machine this was found, 2,924 of 4,843 Codex "main"
+  sessions were sub-agent threads, crowding `list`, the `projects` counts,
+  `recent_sessions` and the recall hook with "(no user prompt)" rows. They
+  are now sub-agent sessions like Claude Code's, and the first open after
+  upgrading reclassifies rows already indexed by reading each file's first
+  line (a one-off update, not a rebuild).
+
 ## [0.31.0] - 2026-10-06
 
 ### Added
