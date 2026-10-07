@@ -8,8 +8,7 @@
 // signed with one stable identity, so a folder-access grant macOS asked for
 // once still applies after an upgrade.
 
-const { spawnSync } = require("child_process");
-const { describeExit } = require("./exit.js");
+const { run } = require("./run.js");
 
 const PKGS = {
   "darwin arm64": "@youdie006/sessionwiki-darwin-arm64",
@@ -40,14 +39,4 @@ if (!bin) {
   process.exit(1);
 }
 
-const result = spawnSync(bin, process.argv.slice(2), { stdio: "inherit" });
-if (result.error) {
-  console.error(
-    `sessionwiki: failed to run the prebuilt binary (${result.error.message}). ` +
-      "Try `cargo install sessionwiki`."
-  );
-  process.exit(1);
-}
-const { code, note } = describeExit(result);
-if (note) console.error(note);
-process.exit(code);
+run(bin, process.argv.slice(2));

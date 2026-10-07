@@ -6,6 +6,16 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Stopping the npm-installed command stops sessionwiki.** The npm launcher
+  ran the binary with a blocking call that cannot pass a signal on, so a
+  SIGTERM or SIGHUP to the `sessionwiki` command - from a process manager, an
+  MCP host or `kill` - ended only the launcher. The binary kept running with
+  no parent; `sessionwiki web` kept its port, so the next start failed. The
+  launcher now forwards SIGINT, SIGTERM and SIGHUP to the binary and exits
+  with its status once it has stopped.
+
 ## [0.33.0] - 2026-10-07
 
 ### Added
