@@ -6,17 +6,26 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- **npm package.** `npm i -g @youdie006/sessionwiki` installs the prebuilt
+  binary for macOS (arm64, x64), Linux x64 or Windows x64 through a platform
+  package, with no install script. On macOS it upgrades the binary in place,
+  which keeps folder-access grants across releases.
+
 ### Fixed
 
-- **No more macOS permission prompts from the aider walk.** To find aider
-  histories, sessionwiki walks home, and it entered Desktop, Documents,
-  Downloads, Pictures and Music. macOS asks before any process reads those,
-  and asks again for every new binary, so every release: on one Mac, 23
-  Photos prompts and Desktop, Documents and Downloads prompts in three days,
-  for an adapter that found nothing there. On macOS the default walk now
-  skips those folders (and Movies and the Trash) directly under home. To
-  index aider histories kept inside them, list the folders in
-  `SESSIONWIKI_AIDER_ROOTS`.
+- **macOS keeps a folder-access answer across upgrades, and stops asking
+  about media folders.** macOS ties a grant to read Documents or Desktop to
+  the binary's path and code signature. Releases were ad-hoc signed, so every
+  version looked like a new program and asked again - on one Mac, Desktop,
+  Documents and Downloads prompts plus 23 Photos prompts in three days. The
+  macOS binaries are now signed with one stable identity, so at a stable
+  install path (npm, the install script) an answer given once still applies
+  after an upgrade; Homebrew installs each version under a new path and still
+  asks once per upgrade. The aider walk also no longer enters Pictures,
+  Movies, Music or the Trash, which cannot hold a project and raised the
+  Photos and Media Library prompts.
 - **Index fix-ups also catch rows written later by an older binary.** The
   one-off passes that respell project paths (0.30.2) and mark Codex sub-agent
   threads (0.32.0) ran once and recorded that they had. A `sessionwiki mcp`

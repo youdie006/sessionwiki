@@ -157,20 +157,14 @@ const SKIP_DIRS: &[&str] = &[
     ".hg",
 ];
 
-/// Folders directly under home that macOS guards with a per-binary consent
-/// prompt (Desktop, Documents, Downloads; Photos via Pictures, Media Library
-/// via Music; Movies, and the Trash). The default walk skips them: it may not
-/// raise a dialog the user never asked for, and macOS raises it again for each
-/// new binary. Histories there are still found through SESSIONWIKI_AIDER_ROOTS.
-const MACOS_GUARDED_HOME_DIRS: &[&str] = &[
-    "Desktop",
-    "Documents",
-    "Downloads",
-    "Pictures",
-    "Movies",
-    "Music",
-    ".Trash",
-];
+/// Folders directly under home that macOS guards with a consent prompt and
+/// where no code lives: Photos via Pictures, Media Library via Music, Movies,
+/// and the Trash. The default walk skips them, so it never raises a dialog for
+/// a folder that cannot hold an aider history. Desktop, Documents and
+/// Downloads are walked: projects live there, and since macOS binaries are
+/// signed with one stable identity, the grant given once outlives upgrades at
+/// the same install path. SESSIONWIKI_AIDER_ROOTS still walks what it lists.
+const MACOS_GUARDED_HOME_DIRS: &[&str] = &["Pictures", "Movies", "Music", ".Trash"];
 
 /// The guarded folders to skip for these roots: only on macOS, and only for
 /// the default walk of home - roots the user listed are walked as given.
@@ -516,17 +510,15 @@ mod tests {
         assert!(!had_error);
     }
 
-    /// macOS asks the user before any process reads Desktop, Documents,
-    /// Downloads, Pictures (Photos), Music or Movies, and asks again for every
-    /// new binary, so each release. The default walk of home entered all of
-    /// them: on one Mac, 23 Photos prompts and Desktop/Documents/Downloads
-    /// prompts in three days, for an adapter that found nothing there. Those
-    /// folders are skipped directly under the walked home; a repo deeper in a
-    /// normal folder is still found.
+    /// macOS asks before any process reads Pictures (Photos), Music or Movies,
+    /// and the default walk of home entered them: on one Mac, 23 Photos
+    /// prompts in three days for an adapter that found nothing there. Those
+    /// media folders are skipped directly under the walked home; Documents and
+    /// other folders where projects live are still walked.
     #[test]
     fn the_default_walk_skips_folders_macos_guards() {
         let home = tempfile::tempdir().unwrap();
-        for guarded in MACOS_GUARDED_HOME_DIRS {
+        for guarded in MACOS_GUARDED_HOME_DIRS.iter().chain(&["Documents"]) {
             let repo = home.path().join(guarded).join("proj");
             std::fs::create_dir_all(&repo).unwrap();
             std::fs::write(repo.join(HISTORY_FILE), "x\n").unwrap();
@@ -535,7 +527,7 @@ mod tests {
         std::fs::create_dir_all(&code).unwrap();
         std::fs::write(code.join(HISTORY_FILE), "x\n").unwrap();
         // A folder with a guarded name deeper down is just a folder.
-        let nested = home.path().join("code/Documents");
+        let nested = home.path().join("code/Pictures");
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(nested.join(HISTORY_FILE), "x\n").unwrap();
 
@@ -549,7 +541,8 @@ mod tests {
         assert_eq!(
             found,
             [
-                std::path::PathBuf::from("code/Documents").join(HISTORY_FILE),
+                std::path::PathBuf::from("Documents/proj").join(HISTORY_FILE),
+                std::path::PathBuf::from("code/Pictures").join(HISTORY_FILE),
                 std::path::PathBuf::from("code/proj").join(HISTORY_FILE),
             ]
         );

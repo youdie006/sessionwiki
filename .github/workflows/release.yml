@@ -40,6 +40,42 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }} --bin sessionwiki
 
+      # macOS ties a folder-access grant (Documents, Desktop, ...) to the
+      # binary's path plus its code requirement. An ad-hoc signature's
+      # requirement is its cdhash, so every release looked like a new program
+      # and asked again. One stable identity keeps the requirement the same
+      # across releases. rcodesign signs with a PEM key; no keychain or trust
+      # setup. An unsigned release would reset every user's grants, so a
+      # missing key fails the build instead of shipping ad-hoc.
+      - name: Sign (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          SIGNING_KEY_PEM: ${{ secrets.MACOS_SIGNING_KEY_PEM }}
+          SIGNING_CERT_PEM: ${{ secrets.MACOS_SIGNING_CERT_PEM }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SIGNING_KEY_PEM" ] || [ -z "$SIGNING_CERT_PEM" ]; then
+            echo "::error::MACOS_SIGNING_KEY_PEM / MACOS_SIGNING_CERT_PEM are not set"
+            exit 1
+          fi
+          v=0.29.0
+          a=apple-codesign-$v-macos-universal
+          curl -fsSL -o "$a.tar.gz" "https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F$v/$a.tar.gz"
+          echo "d98372d5524226ccf9dc0eda03d4e4f5826182dabb2fc3f2bd303ed9113a748d  $a.tar.gz" | shasum -a 256 -c -
+          tar xzf "$a.tar.gz"
+          umask 077
+          printf '%s\n' "$SIGNING_KEY_PEM" > "$RUNNER_TEMP/key.pem"
+          printf '%s\n' "$SIGNING_CERT_PEM" > "$RUNNER_TEMP/cert.pem"
+          bin=target/${{ matrix.target }}/release/sessionwiki
+          "./$a/rcodesign" sign --pem-source "$RUNNER_TEMP/key.pem" --pem-source "$RUNNER_TEMP/cert.pem" \
+            --binary-identifier com.youdie006.sessionwiki "$bin"
+          rm -f "$RUNNER_TEMP/key.pem" "$RUNNER_TEMP/cert.pem"
+          codesign --verify "$bin"
+          req=$(codesign -d -r- "$bin" 2>&1)
+          echo "$req"
+          echo "$req" | grep -q 'identifier "com.youdie006.sessionwiki" and certificate root'
+
       - name: Package (unix)
         if: runner.os != 'Windows'
         shell: bash

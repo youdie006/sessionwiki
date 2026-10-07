@@ -29,6 +29,8 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test --all
+      - name: Test the npm launcher and the publish checks
+        run: node --test 'npm/**/*.test.mjs'
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"

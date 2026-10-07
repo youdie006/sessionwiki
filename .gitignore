@@ -25,3 +25,5 @@ Thumbs.db
 
 # prodex local artifacts (not part of the project)
 .bridge/
+npm/build/
+npm/README.md
