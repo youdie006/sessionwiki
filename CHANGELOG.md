@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.33.1] - 2026-10-07
+
 ### Fixed
 
 - **Stopping the npm-installed command stops sessionwiki.** The npm launcher
