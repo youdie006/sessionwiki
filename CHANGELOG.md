@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-10-07
+
 ### Added
 
 - **npm package.** `npm i -g @youdie006/sessionwiki` installs the prebuilt
