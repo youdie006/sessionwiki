@@ -8,6 +8,15 @@ semantic versioning once it reaches 1.0.
 
 ### Fixed
 
+- **No more macOS permission prompts from the aider walk.** To find aider
+  histories, sessionwiki walks home, and it entered Desktop, Documents,
+  Downloads, Pictures and Music. macOS asks before any process reads those,
+  and asks again for every new binary, so every release: on one Mac, 23
+  Photos prompts and Desktop, Documents and Downloads prompts in three days,
+  for an adapter that found nothing there. On macOS the default walk now
+  skips those folders (and Movies and the Trash) directly under home. To
+  index aider histories kept inside them, list the folders in
+  `SESSIONWIKI_AIDER_ROOTS`.
 - **Index fix-ups also catch rows written later by an older binary.** The
   one-off passes that respell project paths (0.30.2) and mark Codex sub-agent
   threads (0.32.0) ran once and recorded that they had. A `sessionwiki mcp`

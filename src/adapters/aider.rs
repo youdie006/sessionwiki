@@ -157,6 +157,31 @@ const SKIP_DIRS: &[&str] = &[
     ".hg",
 ];
 
+/// Folders directly under home that macOS guards with a per-binary consent
+/// prompt (Desktop, Documents, Downloads; Photos via Pictures, Media Library
+/// via Music; Movies, and the Trash). The default walk skips them: it may not
+/// raise a dialog the user never asked for, and macOS raises it again for each
+/// new binary. Histories there are still found through SESSIONWIKI_AIDER_ROOTS.
+const MACOS_GUARDED_HOME_DIRS: &[&str] = &[
+    "Desktop",
+    "Documents",
+    "Downloads",
+    "Pictures",
+    "Movies",
+    "Music",
+    ".Trash",
+];
+
+/// The guarded folders to skip for these roots: only on macOS, and only for
+/// the default walk of home - roots the user listed are walked as given.
+fn guarded_dirs() -> &'static [&'static str] {
+    if cfg!(target_os = "macos") && std::env::var_os("SESSIONWIKI_AIDER_ROOTS").is_none() {
+        MACOS_GUARDED_HOME_DIRS
+    } else {
+        &[]
+    }
+}
+
 fn aider_roots() -> Vec<PathBuf> {
     if let Some(v) = std::env::var_os("SESSIONWIKI_AIDER_ROOTS") {
         return std::env::split_paths(&v)
@@ -180,7 +205,7 @@ fn is_skipped(entry: &walkdir::DirEntry) -> bool {
 /// nothing but matching files. Returns (files, had_error). `had_error` is set on
 /// ANY cap-hit or walk error so the indexer skips deletion reconciliation on a
 /// partial result (the only safe guard for this rootless adapter). Logs nothing.
-fn discover_history(roots: &[PathBuf]) -> (Vec<PathBuf>, bool) {
+fn discover_history(roots: &[PathBuf], guarded: &[&str]) -> (Vec<PathBuf>, bool) {
     let mut files = Vec::new();
     let mut had_error = false;
     let mut dirs = 0usize;
@@ -190,7 +215,12 @@ fn discover_history(roots: &[PathBuf]) -> (Vec<PathBuf>, bool) {
             .max_depth(MAX_DEPTH)
             .follow_links(false) // never escape via symlinks (first walk over user space)
             .into_iter()
-            .filter_entry(|e| !is_skipped(e));
+            .filter_entry(|e| {
+                !is_skipped(e)
+                    && !(e.depth() == 1
+                        && e.file_type().is_dir()
+                        && e.file_name().to_str().is_some_and(|n| guarded.contains(&n)))
+            });
         for entry in walker {
             if start.elapsed().as_secs() >= WALK_BUDGET_SECS {
                 had_error = true;
@@ -317,7 +347,7 @@ impl Adapter for Aider {
     }
 
     fn store(&self) -> Option<Store> {
-        let (history_files, mut had_error) = discover_history(&aider_roots());
+        let (history_files, mut had_error) = discover_history(&aider_roots(), guarded_dirs());
         let mut keys: Vec<(String, i64)> = Vec::new();
         for path in &history_files {
             // token = file mtime (ms), shared across all runs of the file, so any
@@ -480,9 +510,49 @@ mod tests {
         )
         .unwrap();
 
-        let (files, had_error) = discover_history(&[dir.path().to_path_buf()]);
+        let (files, had_error) = discover_history(&[dir.path().to_path_buf()], &[]);
         assert_eq!(files.len(), 1, "found the repo file, skipped node_modules");
         assert!(files[0].ends_with(".aider.chat.history.md"));
+        assert!(!had_error);
+    }
+
+    /// macOS asks the user before any process reads Desktop, Documents,
+    /// Downloads, Pictures (Photos), Music or Movies, and asks again for every
+    /// new binary, so each release. The default walk of home entered all of
+    /// them: on one Mac, 23 Photos prompts and Desktop/Documents/Downloads
+    /// prompts in three days, for an adapter that found nothing there. Those
+    /// folders are skipped directly under the walked home; a repo deeper in a
+    /// normal folder is still found.
+    #[test]
+    fn the_default_walk_skips_folders_macos_guards() {
+        let home = tempfile::tempdir().unwrap();
+        for guarded in MACOS_GUARDED_HOME_DIRS {
+            let repo = home.path().join(guarded).join("proj");
+            std::fs::create_dir_all(&repo).unwrap();
+            std::fs::write(repo.join(HISTORY_FILE), "x\n").unwrap();
+        }
+        let code = home.path().join("code/proj");
+        std::fs::create_dir_all(&code).unwrap();
+        std::fs::write(code.join(HISTORY_FILE), "x\n").unwrap();
+        // A folder with a guarded name deeper down is just a folder.
+        let nested = home.path().join("code/Documents");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join(HISTORY_FILE), "x\n").unwrap();
+
+        let (files, had_error) =
+            discover_history(&[home.path().to_path_buf()], MACOS_GUARDED_HOME_DIRS);
+        let mut found: Vec<_> = files
+            .iter()
+            .map(|f| f.strip_prefix(home.path()).unwrap().to_path_buf())
+            .collect();
+        found.sort();
+        assert_eq!(
+            found,
+            [
+                std::path::PathBuf::from("code/Documents").join(HISTORY_FILE),
+                std::path::PathBuf::from("code/proj").join(HISTORY_FILE),
+            ]
+        );
         assert!(!had_error);
     }
 }

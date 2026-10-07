@@ -332,7 +332,7 @@ one feature that touches an LLM is `summarize`, and it does so by running a CLI
 | Continue | `~/.continue/sessions/*.json` | supported |
 | gptme | `~/.local/share/gptme/logs/<session>/conversation.jsonl` | supported |
 | prodex (ChatGPT Pro consults) | per-repo `.bridge/tasks|results` via the `~/.local/share/prodex/bridges.json` registry (prodex >=0.11.0); `resume` opens the ChatGPT thread | supported |
-| aider | per-repo `.aider.chat.history.md` (markdown) | supported |
+| aider | per-repo `.aider.chat.history.md` (markdown), found by a bounded walk of home; on macOS the walk skips Desktop, Documents, Downloads, Pictures, Movies and Music (each would raise a permission prompt) - set `SESSIONWIKI_AIDER_ROOTS` to the folders to search instead | supported |
 | Cursor, Zed, ... | | planned &mdash; PRs welcome |
 
 **Using a wrapper like oh-my-claudecode or oh-my-openagent?** Those run on top of
