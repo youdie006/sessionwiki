@@ -6,6 +6,9 @@
 use sessionwiki::util::project_key;
 use std::path::Path;
 
+/// SESSIONWIKI_DATA is process-wide; tests that set it take turns.
+static DATA_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Whether `dir`'s filesystem resolves a name in another case.
 fn case_insensitive(dir: &Path) -> bool {
     let probe = dir.join("CaseProbe");
@@ -77,6 +80,7 @@ fn two_directories_that_differ_only_in_case_are_not_merged() {
 /// respells them; the first open after upgrading does, once.
 #[test]
 fn opening_an_index_respells_variants_recorded_before_the_fix() {
+    let _data = DATA_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let root = scratch();
     let base = std::fs::canonicalize(root.path()).unwrap();
     std::fs::create_dir_all(base.join("MyProject/APO")).unwrap();
@@ -98,7 +102,7 @@ fn opening_an_index_respells_variants_recorded_before_the_fix() {
         .unwrap();
     }
     // As an index written by an older version: never respelled.
-    conn.execute("DELETE FROM meta WHERE key = 'project_case_v1'", [])
+    conn.execute("DELETE FROM meta WHERE key = 'project_case_upto'", [])
         .unwrap();
     drop(conn);
 
@@ -109,4 +113,53 @@ fn opening_an_index_respells_variants_recorded_before_the_fix() {
         .map(|p| (p.project.as_str(), p.sessions))
         .collect();
     assert_eq!(names, [(real.as_str(), 3)], "{names:?}");
+}
+
+/// The same late-writer gap for project spelling: a row an older binary writes
+/// after the first open must still be respelled on the next one.
+#[test]
+fn a_variant_written_after_the_pass_is_respelled_on_the_next_open() {
+    let _data = DATA_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = scratch();
+    let base = std::fs::canonicalize(root.path()).unwrap();
+    std::fs::create_dir_all(base.join("MyProject/APO")).unwrap();
+    if !case_insensitive(&base) {
+        eprintln!("skipped: {} is case-sensitive", base.display());
+        return;
+    }
+    let data = tempfile::tempdir().unwrap();
+    std::env::set_var("SESSIONWIKI_DATA", data.path());
+    // The first open checks an existing row and records how far it got.
+    let conn = sessionwiki::index::open().unwrap();
+    conn.execute(
+        "INSERT INTO files(path, mtime, size, session_id, tool, project, title, started, msg_count, kind)
+         VALUES ('/store/earlier.jsonl', 0, 0, 'earlier', 'codex', '/other', 'e', '2026-09-01T00:00:00+00:00', 1, 'main')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    drop(sessionwiki::index::open().unwrap());
+    let real = format!("{}/MyProject/APO", base.display());
+    let variant = format!("{}/myproject/apo", base.display());
+    let conn = sessionwiki::index::open().unwrap();
+    conn.execute(
+        "INSERT INTO files(path, mtime, size, session_id, tool, project, title, started, msg_count, kind)
+         VALUES ('/store/late.jsonl', 0, 0, 'late', 'codex', ?1, 'late', '2026-09-01T00:00:00+00:00', 1, 'main')",
+        rusqlite::params![variant],
+    )
+    .unwrap();
+    drop(conn);
+
+    let conn = sessionwiki::index::open().unwrap();
+    let project: String = conn
+        .query_row(
+            "SELECT project FROM files WHERE session_id = 'late'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        project, real,
+        "a late write from an older binary was never respelled"
+    );
 }

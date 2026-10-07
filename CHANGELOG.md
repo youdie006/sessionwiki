@@ -6,6 +6,19 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Index fix-ups also catch rows written later by an older binary.** The
+  one-off passes that respell project paths (0.30.2) and mark Codex sub-agent
+  threads (0.32.0) ran once and recorded that they had. A `sessionwiki mcp`
+  started before an upgrade keeps running the old code, often for weeks, and
+  kept writing case-variant paths and sub-agent threads as main sessions
+  afterwards; nothing looked at those rows again. On the machine this was
+  found, four sub-agent threads reappeared in `list` within an hour of
+  upgrading. Each pass now records how far it has checked and, on every
+  open, looks only at rows written since, so a late write is fixed the next
+  time the current version opens the index.
+
 ## [0.32.0] - 2026-10-07
 
 ### Added

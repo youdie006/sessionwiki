@@ -539,6 +539,10 @@ pub fn open() -> Result<Connection> {
                          DROP TABLE IF EXISTS edits;",
                     )?;
                     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+                    // Rebuilt rows restart at rowid 1; the fix-ups start over.
+                    for key in FIXUP_MARKS {
+                        conn.execute("DELETE FROM meta WHERE key = ?1", [key])?;
+                    }
                 }
                 create_cache_schema_with_tokenizer(&conn, &tokenizer)?;
             }
@@ -584,22 +588,82 @@ pub fn open() -> Result<Connection> {
     Ok(conn)
 }
 
-/// Once per index, mark Codex sub-agent rollouts indexed before the adapter
-/// read the marker as `sub`, as a fresh parse now does. Only each file's first
-/// line is read; a schema bump would re-parse every session on disk.
-fn reclassify_codex_subagents(conn: &Connection) -> Result<()> {
-    const KEY: &str = "codex_subagent_v1";
-    let done: i64 = conn.query_row("SELECT count(*) FROM meta WHERE key = ?1", [KEY], |r| {
+/// Meta keys holding how far each index fix-up has checked `files`, by rowid.
+/// A rebuild of the cache restarts rowids, so `open` clears these with it.
+const FIXUP_MARKS: [&str; 2] = ["codex_subagent_upto", "project_case_upto"];
+
+/// The `files` rowids a fix-up has not yet checked: above its mark, up to the
+/// current top. Not a once-only flag: a `sessionwiki mcp` started before an
+/// upgrade keeps writing rows with the old code for weeks, and each such
+/// write (INSERT OR REPLACE) lands above the mark, so the next open by this
+/// version fixes it.
+fn unchecked_rowids(conn: &Connection, key: &str) -> Result<(i64, i64)> {
+    let mark: i64 = conn
+        .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| {
+            r.get::<_, String>(0)
+        })
+        .optional()?
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let top: i64 = conn.query_row("SELECT coalesce(max(rowid), 0) FROM files", [], |r| {
         r.get(0)
     })?;
-    if done > 0 {
+    Ok((mark, top))
+}
+
+/// Apply a fix-up's writes and advance its mark, but only if the write lock is
+/// free right now. Opening the index must never wait on a writer (a sync can
+/// hold it for minutes); a busy index is fixed by a later open instead.
+fn apply_without_waiting(
+    conn: &Connection,
+    key: &str,
+    top: i64,
+    updates: &[(&str, Vec<String>)],
+) -> Result<()> {
+    conn.busy_timeout(std::time::Duration::ZERO)?;
+    let applied = (|| -> rusqlite::Result<()> {
+        let tx =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+        for (sql, args) in updates {
+            tx.execute(sql, rusqlite::params_from_iter(args.iter()))?;
+        }
+        tx.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?1, ?2)",
+            params![key, top.to_string()],
+        )?;
+        tx.commit()
+    })();
+    conn.busy_timeout(std::time::Duration::from_millis(5000))?;
+    match applied {
+        Err(rusqlite::Error::SqliteFailure(e, _))
+            if matches!(
+                e.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            ) =>
+        {
+            Ok(())
+        }
+        other => Ok(other?),
+    }
+}
+
+/// Mark Codex sub-agent rollouts indexed as main - by a version that did not
+/// read the marker - as `sub`, as a fresh parse now does. Only each file's
+/// first line is read; a schema bump would re-parse every session on disk.
+fn reclassify_codex_subagents(conn: &Connection) -> Result<()> {
+    const KEY: &str = "codex_subagent_upto";
+    let (mark, top) = unchecked_rowids(conn, KEY)?;
+    if top <= mark {
         return Ok(());
     }
     let rows: Vec<(String, String)> = conn
-        .prepare("SELECT session_id, path FROM files WHERE tool = 'codex' AND kind = 'main'")?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .prepare(
+            "SELECT session_id, path FROM files
+             WHERE tool = 'codex' AND kind = 'main' AND rowid > ?1 AND rowid <= ?2",
+        )?
+        .query_map(params![mark, top], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    let tx = conn.unchecked_transaction()?;
+    let mut updates = Vec::new();
     for (session_id, path) in rows {
         let Ok(file) = std::fs::File::open(&path) else {
             continue;
@@ -613,52 +677,43 @@ fn reclassify_codex_subagents(conn: &Connection) -> Result<()> {
                 && crate::adapters::codex_is_subagent_meta(&v)
         });
         if is_sub {
-            tx.execute(
+            updates.push((
                 "UPDATE files SET kind = 'sub' WHERE session_id = ?1 AND tool = 'codex'",
-                [session_id],
-            )?;
+                vec![session_id],
+            ));
         }
     }
-    tx.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES (?1, '1')",
-        [KEY],
-    )?;
-    tx.commit()?;
-    Ok(())
+    apply_without_waiting(conn, KEY, top, &updates)
 }
 
-/// Once per index, respell stored project paths as on disk, so case variants
-/// recorded before `project_key` existed merge into one project. A one-off
-/// update of the few changed paths rather than a schema bump, which would
-/// re-parse every session on disk to fix a handful of strings.
+/// Respell stored project paths as on disk, so case variants written by a
+/// version without `project_key` merge into one project. Only the paths in
+/// rows not yet checked are looked at; a schema bump would re-parse every
+/// session on disk to fix a handful of strings.
 fn respell_projects(conn: &Connection) -> Result<()> {
-    const KEY: &str = "project_case_v1";
-    let done: i64 = conn.query_row("SELECT count(*) FROM meta WHERE key = ?1", [KEY], |r| {
-        r.get(0)
-    })?;
-    if done > 0 {
+    const KEY: &str = "project_case_upto";
+    let (mark, top) = unchecked_rowids(conn, KEY)?;
+    if top <= mark {
         return Ok(());
     }
     let projects: Vec<String> = conn
-        .prepare("SELECT DISTINCT project FROM files WHERE project != ''")?
-        .query_map([], |r| r.get(0))?
+        .prepare(
+            "SELECT DISTINCT project FROM files
+             WHERE project != '' AND rowid > ?1 AND rowid <= ?2",
+        )?
+        .query_map(params![mark, top], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
-    let tx = conn.unchecked_transaction()?;
+    let mut updates = Vec::new();
     for project in projects {
         let key = crate::util::project_key(&project);
         if key != project {
-            tx.execute(
+            updates.push((
                 "UPDATE files SET project = ?1 WHERE project = ?2",
-                params![key, project],
-            )?;
+                vec![key, project],
+            ));
         }
     }
-    tx.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES (?1, '1')",
-        [KEY],
-    )?;
-    tx.commit()?;
-    Ok(())
+    apply_without_waiting(conn, KEY, top, &updates)
 }
 
 /// After a schema bump drops the cache tables, replay archived sessions back
