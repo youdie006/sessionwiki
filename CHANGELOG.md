@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.33.2] - 2026-10-08
+
 ### Fixed
 
 - **A prodex consult is listed once, and `show <id>` opens it.** The bridge
