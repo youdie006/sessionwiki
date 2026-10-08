@@ -11,6 +11,17 @@ use walkdir::WalkDir;
 /// `{ sessionId, startTime, lastUpdated, messages: [{ type, content, timestamp }] }`.
 pub struct Gemini;
 
+/// The store dir is named by a slug (older versions: a hash of the path), not
+/// the path itself; newer versions record the real directory in
+/// `.project_root` beside `chats/`. That path is what other tools' projects,
+/// `--project` and the recall hook compare against.
+pub(crate) fn project_root(chat: &Path) -> Option<String> {
+    let root =
+        crate::util::read_to_string_capped(&chat.ancestors().nth(2)?.join(".project_root")).ok()?;
+    let root = root.trim();
+    Path::new(root).is_absolute().then(|| root.to_string())
+}
+
 impl Adapter for Gemini {
     fn name(&self) -> &'static str {
         "gemini"
@@ -91,12 +102,14 @@ impl Adapter for Gemini {
             }
         }
 
-        // Project label: ~/.gemini/tmp/<project>/chats/file.json
-        let project = path
-            .ancestors()
-            .nth(2)
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().into_owned())
+        // ~/.gemini/tmp/<project>/chats/file.json
+        let project = project_root(path)
+            .or_else(|| {
+                path.ancestors()
+                    .nth(2)
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().into_owned())
+            })
             .unwrap_or_default();
         let title = title_from_messages(&messages);
 

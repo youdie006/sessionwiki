@@ -483,6 +483,49 @@ fn every_adapter_is_addressable_by_name() {
 }
 
 #[test]
+fn gemini_project_is_the_recorded_root_not_the_store_slug() {
+    // Gemini CLI names the store dir with a short slug and records the real
+    // directory in `.project_root` next to `chats/`.
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("myproject");
+    std::fs::create_dir_all(store.join("chats")).unwrap();
+    let chat = store.join("chats/session-2026-06-08T10-00-abcd1234.json");
+    std::fs::copy(
+        fixture("gemini/myproject/chats/session-2026-06-08T10-00-abcd1234.json"),
+        &chat,
+    )
+    .unwrap();
+    std::fs::write(store.join(".project_root"), "/work/myproject\n").unwrap();
+
+    let s = adapters::by_name("gemini").unwrap().parse(&chat).unwrap();
+    assert_eq!(s.project, "/work/myproject");
+
+    // A row an older version indexed with the slug is corrected on open.
+    let data = tempfile::tempdir().unwrap();
+    std::env::set_var("SESSIONWIKI_DATA", data.path());
+    let conn = sessionwiki::index::open().unwrap();
+    conn.execute(
+        "INSERT INTO files(path, mtime, size, session_id, tool, project, title, started, msg_count, kind)
+         VALUES (?1, 0, 0, 'g-1', 'gemini', 'myproject', 't', '2026-06-08T10:00:00+00:00', 2, 'main')",
+        [chat.to_string_lossy()],
+    )
+    .unwrap();
+    conn.execute("DELETE FROM meta WHERE key = 'gemini_project_upto'", [])
+        .unwrap();
+    drop(conn);
+    let conn = sessionwiki::index::open().unwrap();
+    let project: String = conn
+        .query_row(
+            "SELECT project FROM files WHERE session_id = 'g-1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    std::env::remove_var("SESSIONWIKI_DATA");
+    assert_eq!(project, "/work/myproject");
+}
+
+#[test]
 fn prodex_consult_task_becomes_a_two_message_session() {
     let s = parse(
         "prodex",

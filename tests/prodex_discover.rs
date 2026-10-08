@@ -213,3 +213,101 @@ fn disappearing_registry_is_absent_store_not_task_deletion() {
         "a missing registry means the entire store is absent, not that every task was deleted"
     );
 }
+
+#[cfg(unix)]
+fn sessionwiki(data: &std::path::Path, registry: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_sessionwiki"))
+        .args(args)
+        .env("SESSIONWIKI_DATA", data)
+        .env("SESSIONWIKI_PRODEX_REGISTRY", registry)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[cfg(unix)]
+/// Two registry spellings of one repo: a symlink here, a case-variant cwd on a
+/// case-insensitive drive in the wild.
+fn repo_with_alias(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let repo = dir.join("repo");
+    let tasks = repo.join(".bridge/tasks");
+    std::fs::create_dir_all(&tasks).unwrap();
+    std::fs::write(
+        tasks.join("task_20260707_090000_x.json"),
+        r#"{"id":"task_20260707_090000_x","title":"t","prompt":"p"}"#,
+    )
+    .unwrap();
+    let alias = dir.join("alias");
+    std::os::unix::fs::symlink(&repo, &alias).unwrap();
+    (repo, alias)
+}
+
+#[cfg(unix)]
+#[test]
+fn one_repo_registered_under_two_spellings_is_walked_once() {
+    let _g = LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, alias) = repo_with_alias(dir.path());
+    let registry = dir.path().join("bridges.json");
+    std::fs::write(
+        &registry,
+        serde_json::to_vec(&serde_json::json!({"roots": [repo, alias]})).unwrap(),
+    )
+    .unwrap();
+    std::env::set_var("SESSIONWIKI_PRODEX_REGISTRY", &registry);
+    let d = adapters::by_name("prodex").unwrap().discover();
+    std::env::remove_var("SESSIONWIKI_PRODEX_REGISTRY");
+    assert_eq!(d.files.len(), 1, "{:?}", d.files);
+}
+
+#[cfg(unix)]
+#[test]
+fn second_spelling_already_indexed_is_dropped_and_show_resolves() {
+    let _g = LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let (repo, alias) = repo_with_alias(dir.path());
+    let registry = dir.path().join("bridges.json");
+    std::fs::write(
+        &registry,
+        serde_json::to_vec(&serde_json::json!({"roots": [repo, alias]})).unwrap(),
+    )
+    .unwrap();
+    sync_prodex(&data, &registry);
+    // An index written by an earlier version holds the task once per spelling.
+    let conn = Connection::open(data.join("index.db")).unwrap();
+    let alias_task = alias.join(".bridge/tasks/task_20260707_090000_x.json");
+    conn.execute(
+        "INSERT OR IGNORE INTO files(path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind)
+         SELECT ?1, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind
+         FROM files WHERE tool = 'prodex'",
+        [alias_task.to_str().unwrap()],
+    )
+    .unwrap();
+    let rows = |conn: &Connection| -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM files WHERE tool='prodex'", [], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    };
+    assert_eq!(rows(&conn), 2);
+
+    sync_prodex(&data, &registry);
+    assert_eq!(
+        rows(&conn),
+        1,
+        "the second spelling is neither live nor archived"
+    );
+    assert!(!archived(&conn));
+
+    let list = sessionwiki(&data, &registry, &["list", "--no-sync", "--json"]);
+    let list: Vec<serde_json::Value> = serde_json::from_str(&list).unwrap();
+    assert_eq!(list.len(), 1);
+    let id = list[0]["id"].as_str().unwrap();
+    sessionwiki(&data, &registry, &["show", "--no-sync", id]);
+}

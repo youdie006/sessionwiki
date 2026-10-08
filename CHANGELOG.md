@@ -6,6 +6,26 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A prodex consult is listed once, and `show <id>` opens it.** The bridge
+  registry can name one repo under two spellings - a case-variant working
+  directory on a case-insensitive drive, or a symlink. Each spelling was
+  walked, so every consult in that repo was indexed twice under one id: it
+  appeared twice in `list` and `projects`, and `show`, `brief` and `resume`
+  stopped with "ambiguous id" even given the full id. On the machine this was
+  found, 524 consults were doubled. Discovery now walks each repo once, and
+  the next sync drops the second copy instead of archiving it.
+- **Gemini CLI sessions carry their project's path.** Gemini CLI names each
+  project's chat folder with a short slug and records the real directory in
+  a `.project_root` file beside it. The adapter used the slug, so a Gemini
+  session's project read `myrepo` while every other tool's read
+  `/home/me/myrepo`: `list --project /home/me/myrepo` and the session-start
+  recall hook left Gemini sessions out, and `projects` showed the repo twice.
+  On the machine this was found, all 46 Gemini sessions were affected. The
+  project is now the recorded path, and the first open after upgrading
+  corrects rows already indexed.
+
 ## [0.33.1] - 2026-10-07
 
 ### Fixed

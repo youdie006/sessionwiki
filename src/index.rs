@@ -585,12 +585,17 @@ pub fn open() -> Result<Connection> {
     }
     respell_projects(&conn)?;
     reclassify_codex_subagents(&conn)?;
+    resolve_gemini_projects(&conn)?;
     Ok(conn)
 }
 
 /// Meta keys holding how far each index fix-up has checked `files`, by rowid.
 /// A rebuild of the cache restarts rowids, so `open` clears these with it.
-const FIXUP_MARKS: [&str; 2] = ["codex_subagent_upto", "project_case_upto"];
+const FIXUP_MARKS: [&str; 3] = [
+    "codex_subagent_upto",
+    "project_case_upto",
+    "gemini_project_upto",
+];
 
 /// The `files` rowids a fix-up has not yet checked: above its mark, up to the
 /// current top. Not a once-only flag: a `sessionwiki mcp` started before an
@@ -680,6 +685,38 @@ fn reclassify_codex_subagents(conn: &Connection) -> Result<()> {
             updates.push((
                 "UPDATE files SET kind = 'sub' WHERE session_id = ?1 AND tool = 'codex'",
                 vec![session_id],
+            ));
+        }
+    }
+    apply_without_waiting(conn, KEY, top, &updates)
+}
+
+/// Replace the store-dir slug that Gemini rows indexed by an older version
+/// carry as their project with the directory Gemini recorded for it, as a
+/// fresh parse now does.
+fn resolve_gemini_projects(conn: &Connection) -> Result<()> {
+    const KEY: &str = "gemini_project_upto";
+    let (mark, top) = unchecked_rowids(conn, KEY)?;
+    if top <= mark {
+        return Ok(());
+    }
+    let rows: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT path, project FROM files
+             WHERE tool = 'gemini' AND rowid > ?1 AND rowid <= ?2",
+        )?
+        .query_map(params![mark, top], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut updates = Vec::new();
+    for (path, project) in rows {
+        let Some(root) = crate::adapters::gemini_project_root(std::path::Path::new(&path)) else {
+            continue;
+        };
+        let root = crate::util::project_key(&root);
+        if root != project {
+            updates.push((
+                "UPDATE files SET project = ?1 WHERE path = ?2",
+                vec![root, path],
             ));
         }
     }
@@ -1259,6 +1296,13 @@ fn archive_or_prune(
     let all_live: Vec<(String, String)> = stmt
         .query_map(params![tool], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
+    // A session still live at a path discovery did return was not deleted; the
+    // gone row is a second spelling of it, and archiving it would keep both.
+    let still_live: std::collections::HashSet<String> = all_live
+        .iter()
+        .filter(|(p, _)| seen_set.contains(p.as_str()))
+        .map(|(_, sid)| sid.clone())
+        .collect();
     let live: Vec<(String, String)> = all_live.into_iter().filter(|(p, _)| in_scope(p)).collect();
     let gone: Vec<(String, String)> = live
         .into_iter()
@@ -1288,7 +1332,9 @@ fn archive_or_prune(
 
     let mut archived = 0usize;
     for (path, sid) in gone {
-        if no_archive {
+        if still_live.contains(&sid) {
+            conn.execute("DELETE FROM files WHERE path = ?1", params![path])?;
+        } else if no_archive {
             conn.execute("DELETE FROM files WHERE path = ?1", params![path])?;
             delete_session_msgs(conn, &sid)?;
             delete_session_provenance(conn, &sid)?;

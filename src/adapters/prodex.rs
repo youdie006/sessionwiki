@@ -124,7 +124,16 @@ impl Adapter for Prodex {
     fn discover(&self) -> Discovered {
         let mut files = Vec::new();
         let (roots, mut had_error) = bridge_roots();
+        // The registry can name one repo under several spellings (a
+        // case-variant cwd on a case-insensitive drive, a symlink). Walking
+        // each spelling indexed every task once per spelling under one session
+        // id, which listed it twice and made `show <id>` ambiguous.
+        let mut walked = std::collections::HashSet::new();
         for root in roots {
+            let root = PathBuf::from(crate::util::project_key(&root.to_string_lossy()));
+            if !walked.insert(std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone())) {
+                continue;
+            }
             let tasks = root.join(".bridge").join("tasks");
             match std::fs::read_dir(&tasks) {
                 Ok(rd) => {
