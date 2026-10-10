@@ -262,11 +262,35 @@ fn codex_structured_tool_calls_and_results_are_summarized() {
             "→ shell(older-result) ⇒ ok · 1 line",
             "→ shell(echo pending) ⇒ pending",
             "→ exec_command(git status --short && echo \"done\") ⇒ ok · 2 lines",
-            "→ exec_command(pwd; rg -n needle missing.rs) ⇒ error · 4 lines — /home/dev/proj",
+            "→ exec_command(pwd; rg -n needle missing.rs) ⇒ error · 3 lines — /home/dev/proj",
         ]
     );
     assert!(tool_lines.iter().all(|line| !line.contains(" {")));
     assert_eq!(s.touched, ["src/codex_synthetic.rs"]);
+}
+
+#[test]
+fn codex_plain_text_command_results_carry_their_exit_codes() {
+    let s = parse(
+        "codex",
+        "codex/rollout-2026-05-06T12-00-00-text-results.jsonl",
+    );
+
+    let tool_lines: Vec<_> = s
+        .messages
+        .iter()
+        .filter(|message| message.role.label() == "tool")
+        .map(|message| message.text.as_str())
+        .collect();
+    assert_eq!(
+        tool_lines,
+        [
+            "→ exec_command(cargo test) ⇒ error · 2 lines — error[E0425]: unresolved synthetic name",
+            "→ exec_command(cargo check) ⇒ ok · 1 line",
+            "→ exec_command(sleep 30) ⇒ error · 1 line — timed out after 10s",
+            "→ exec_command(pwd) ⇒ ok · 1 line",
+        ]
+    );
 }
 
 #[test]

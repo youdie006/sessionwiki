@@ -369,7 +369,7 @@ fn unwrap_output_value(output: &Value) -> (String, bool) {
 /// used to mark failed calls.
 fn unwrap_output(text: &str) -> (String, bool) {
     let Ok(Value::Object(object)) = serde_json::from_str::<Value>(text) else {
-        return (text.to_owned(), false);
+        return unwrap_text_output(text).unwrap_or_else(|| (text.to_owned(), false));
     };
     let Some(output) = object.get("output").and_then(Value::as_str) else {
         return (text.to_owned(), false);
@@ -381,6 +381,21 @@ fn unwrap_output(text: &str) -> (String, bool) {
             .and_then(Value::as_i64)
     });
     (output.to_owned(), exit_code.is_some_and(|code| code != 0))
+}
+
+/// Codex also writes command results as plain text: a header with
+/// `Exit code: N` or `Process exited with code N`, then `Output:` and the
+/// output itself.
+fn unwrap_text_output(text: &str) -> Option<(String, bool)> {
+    let (header, output) = text
+        .split_once("\nOutput:\n")
+        .or_else(|| text.strip_suffix("\nOutput:").map(|header| (header, "")))?;
+    let exit_code = header.lines().find_map(|line| {
+        line.strip_prefix("Exit code: ")
+            .or_else(|| line.strip_prefix("Process exited with code "))
+            .and_then(|code| code.trim().parse::<i64>().ok())
+    })?;
+    Some((output.to_owned(), exit_code != 0))
 }
 
 fn redact_json_strings(value: &mut Value) {
