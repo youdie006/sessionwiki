@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.1] - 2026-10-10
+
 ### Fixed
 
 - **An older sessionwiki no longer rebuilds an index a newer one wrote.** The
