@@ -6,6 +6,18 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An older sessionwiki no longer rebuilds an index a newer one wrote.** The
+  cache is rebuilt whenever its schema version differs from the binary's, and
+  that included a NEWER version. A `sessionwiki mcp` server started before an
+  upgrade keeps running the old binary, so after 0.34.0 rebuilt the index each
+  such server rebuilt it back in the old format on its next call - keeping
+  only the last 15 minutes of sessions - and the next CLI run rebuilt it again.
+  An older binary now refuses a newer index with an error that says to
+  restart it. Servers already running 0.33.x or earlier do not have this
+  check: restart agent sessions that run `sessionwiki mcp` after upgrading.
+
 ## [0.34.0] - 2026-10-10
 
 ### Changed
