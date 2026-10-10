@@ -215,6 +215,7 @@ impl Adapter for Prodex {
                 role: Role::User,
                 text: prompt,
                 ts: started,
+                tool: None,
             });
         }
         // The answer: the full pro-consult artifact when present, else the
@@ -263,6 +264,7 @@ impl Adapter for Prodex {
                     role: Role::Assistant,
                     text,
                     ts: ended.or(started),
+                    tool: None,
                 });
             }
         }

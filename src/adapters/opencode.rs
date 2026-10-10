@@ -1,7 +1,8 @@
 use super::{
-    dedup_paths, ok_or_flag, redacted_truncate, title_from_messages, Adapter, Discovered, Store,
+    bounded_redacted_output, dedup_paths, ok_or_flag, redacted_truncate, title_from_messages,
+    Adapter, Discovered, Store,
 };
-use crate::model::{Message, Role, Session};
+use crate::model::{Message, Role, Session, ToolCall, ToolResult};
 use crate::util::short_id;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -183,20 +184,7 @@ impl Adapter for OpenCode {
                         }
                     }
                     Some("tool") => {
-                        let tool = p.get("tool").and_then(Value::as_str).unwrap_or("?");
-                        if let Some(fp) = edited_path(tool, p.pointer("/state/input")) {
-                            touched.push(fp);
-                        }
-                        let input = p
-                            .pointer("/state/input")
-                            .map(|i| i.to_string())
-                            .unwrap_or_default();
-                        push(
-                            &mut messages,
-                            Role::Tool,
-                            &format!("{tool} {}", redacted_truncate(&input, 300)),
-                            ts,
-                        );
+                        emit_tool_part(p, ts, &mut messages, &mut touched);
                     }
                     Some("patch") => {
                         if let Some(Value::Array(files)) = p.get("files") {
@@ -377,20 +365,7 @@ fn parse_json(tool: &'static str, path: &Path) -> Result<Session> {
                         }
                     }
                     Some("tool") => {
-                        let tool = p.get("tool").and_then(Value::as_str).unwrap_or("?");
-                        if let Some(fp) = edited_path(tool, p.pointer("/state/input")) {
-                            touched.push(fp);
-                        }
-                        let input = p
-                            .pointer("/state/input")
-                            .map(|i| i.to_string())
-                            .unwrap_or_default();
-                        push(
-                            &mut messages,
-                            Role::Tool,
-                            &format!("{tool} {}", redacted_truncate(&input, 300)),
-                            ts,
-                        );
+                        emit_tool_part(&p, ts, &mut messages, &mut touched);
                     }
                     Some("patch") => {
                         if let Some(Value::Array(files)) = p.get("files") {
@@ -437,6 +412,71 @@ fn edited_path(tool: &str, input: Option<&Value>) -> Option<String> {
         .map(String::from)
 }
 
+fn emit_tool_part(
+    part: &Value,
+    ts: Option<DateTime<Utc>>,
+    messages: &mut Vec<Message>,
+    touched: &mut Vec<String>,
+) {
+    let name = part.get("tool").and_then(Value::as_str).unwrap_or("?");
+    let input = part.pointer("/state/input");
+    if let Some(path) = edited_path(name, input) {
+        touched.push(path);
+    }
+
+    let mut args = input.cloned().unwrap_or_else(|| serde_json::json!({}));
+    redact_json_strings(&mut args);
+    messages.push(Message::tool_call(
+        ts,
+        ToolCall {
+            id: part
+                .get("callID")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned),
+            name: name.to_owned(),
+            args,
+        },
+    ));
+
+    let state = part.get("state");
+    let status = state
+        .and_then(|value| value.get("status"))
+        .and_then(Value::as_str);
+    let output = state
+        .and_then(|value| value.get("output"))
+        .and_then(Value::as_str);
+    let error = state
+        .and_then(|value| value.get("error"))
+        .and_then(Value::as_str);
+    let has_error_field = state.is_some_and(|value| value.get("error").is_some());
+    let is_terminal = matches!(status, Some("completed" | "error"));
+
+    if is_terminal || output.is_some() || error.is_some() || has_error_field {
+        messages.push(Message::tool_result(
+            ts,
+            ToolResult {
+                call_id: part
+                    .get("callID")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_owned),
+                text: bounded_redacted_output(output.or(error).unwrap_or_default()),
+                is_error: status == Some("error") || has_error_field,
+            },
+        ));
+    }
+}
+
+fn redact_json_strings(value: &mut Value) {
+    match value {
+        Value::String(text) => *text = crate::redact::redact(text).into_owned(),
+        Value::Array(values) => values.iter_mut().for_each(redact_json_strings),
+        Value::Object(values) => values.values_mut().for_each(redact_json_strings),
+        _ => {}
+    }
+}
+
 fn sorted_json(dir: &Path) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
         .into_iter()
@@ -467,6 +507,7 @@ fn push(messages: &mut Vec<Message>, role: Role, text: &str, ts: Option<DateTime
             role,
             text: text.to_string(),
             ts,
+            tool: None,
         });
     }
 }

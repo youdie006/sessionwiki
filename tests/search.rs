@@ -206,7 +206,10 @@ fn new_index_defaults_to_trigram_and_creates_external_content_fts() {
     assert!(ddl.contains("content='messages'"), "{ddl}");
     assert!(ddl.contains("content_rowid='id'"), "{ddl}");
     assert!(ddl.contains("tokenize='trigram'"), "{ddl}");
-    assert_eq!(index::SCHEMA_VERSION, 8);
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, index::SCHEMA_VERSION);
 }
 
 #[test]
@@ -380,6 +383,7 @@ impl Adapter for SearchAdapter {
                 role: Role::User,
                 text: std::fs::read_to_string(path)?,
                 ts: None,
+                tool: None,
             }],
             touched: vec![],
             edits: vec![],

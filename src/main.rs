@@ -72,6 +72,11 @@ enum Command {
         /// FTS5 tokenizer spec; quote values with spaces, e.g. 'porter unicode61'
         spec: Option<String>,
     },
+    /// Show or change whether full tool output is retained in the index
+    ToolOutput {
+        /// Retention mode: `summary` (default) or `full`
+        mode: Option<String>,
+    },
     /// Recall past work in one step: search, then brief the top match
     Recall {
         /// AND-search terms within a message; quote words when they must form a phrase
@@ -186,7 +191,7 @@ enum Command {
         /// Budget for the briefing body; the middle of long sessions is omitted
         #[arg(long, default_value_t = 24000)]
         max_chars: usize,
-        /// Include tool calls in the briefing
+        /// Append bounded tool output to the compact tool summaries
         #[arg(long)]
         tools: bool,
         /// Emit a JSON object { id, tool, project, title, started, source,
@@ -361,6 +366,7 @@ fn main() {
             },
         ),
         Command::Tokenizer { spec } => commands::tokenizer(spec.as_deref()),
+        Command::ToolOutput { mode } => commands::tool_output(mode.as_deref()),
         Command::Recall {
             query,
             limit,

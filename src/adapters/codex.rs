@@ -1,10 +1,11 @@
 use super::{
-    dedup_paths, ok_or_flag, parse_ts, redacted_truncate, title_from_messages, Adapter, Discovered,
+    bounded_redacted_output, dedup_paths, ok_or_flag, parse_ts, title_from_messages, Adapter,
+    Discovered,
 };
-use crate::model::{Message, Role, Session};
+use crate::model::{Message, Role, Session, ToolCall, ToolResult};
 use crate::util::short_id;
 use anyhow::Result;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -145,26 +146,87 @@ impl Adapter for Codex {
                                 push(&mut messages, role, text, ts);
                             }
                         }
-                        Some("function_call" | "custom_tool_call") => {
-                            let name = v
-                                .pointer("/payload/name")
-                                .and_then(Value::as_str)
-                                .unwrap_or("?");
-                            let args = v
-                                .pointer("/payload/arguments")
-                                .or_else(|| v.pointer("/payload/input"))
-                                .and_then(Value::as_str)
-                                .unwrap_or("");
-                            // Codex applies edits via an apply_patch envelope,
-                            // whether the call is named apply_patch or a shell
-                            // wrapping it. Scan the full args for the file
-                            // markers before the message text is truncated.
-                            collect_patched_paths(args, &mut touched);
-                            let text = format!("{name} {}", redacted_truncate(args, 300));
-                            push(&mut messages, Role::Tool, &text, ts);
+                        Some("function_call") => {
+                            let payload = v.get("payload").unwrap_or(&Value::Null);
+                            let raw_args = payload.get("arguments").and_then(Value::as_str);
+                            // Inspect the original JSON string so escaped patch
+                            // newlines continue to contribute to provenance.
+                            collect_patched_paths(raw_args.unwrap_or_default(), &mut touched);
+                            let mut args = if let Some(raw_args) = raw_args {
+                                serde_json::from_str(raw_args)
+                                    .unwrap_or_else(|_| json!({"arguments": raw_args}))
+                            } else {
+                                json!({})
+                            };
+                            redact_json_strings(&mut args);
+                            messages.push(Message::tool_call(
+                                ts,
+                                ToolCall {
+                                    id: call_id(payload),
+                                    name: payload
+                                        .get("name")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("?")
+                                        .to_owned(),
+                                    args,
+                                },
+                            ));
                         }
-                        // function_call_output and reasoning are skipped on
-                        // purpose: they dominate file size and pollute search.
+                        Some("custom_tool_call") => {
+                            let payload = v.get("payload").unwrap_or(&Value::Null);
+                            let input = payload.get("input").and_then(Value::as_str).unwrap_or("");
+                            let is_patch = input.contains("*** Begin Patch");
+                            let (name, mut args) = if is_patch {
+                                let patch = input
+                                    .split_once("*** Begin Patch")
+                                    .map(|(_, patch)| format!("*** Begin Patch{patch}"))
+                                    .unwrap_or_else(|| input.to_owned())
+                                    .replace("\\n", "\n");
+                                collect_patched_paths(&patch, &mut touched);
+                                ("apply_patch", json!({"patch": patch}))
+                            } else if let Some(cmd) = exec_command_cmd(input) {
+                                // The `exec` tool runs a JS snippet; the common shape is
+                                // `await tools.exec_command({cmd:"..."})`. Surface the
+                                // command itself, not the wrapper around it.
+                                ("exec_command", json!({"cmd": cmd}))
+                            } else {
+                                ("exec", json!({"input": input}))
+                            };
+                            redact_json_strings(&mut args);
+                            messages.push(Message::tool_call(
+                                ts,
+                                ToolCall {
+                                    id: call_id(payload),
+                                    name: if name != "exec" {
+                                        name.to_owned()
+                                    } else {
+                                        payload
+                                            .get("name")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or(name)
+                                            .to_owned()
+                                    },
+                                    args,
+                                },
+                            ));
+                        }
+                        Some("function_call_output" | "custom_tool_call_output") => {
+                            let payload = v.get("payload").unwrap_or(&Value::Null);
+                            let (output, is_error) = payload
+                                .get("output")
+                                .map(unwrap_output_value)
+                                .unwrap_or_default();
+                            messages.push(Message::tool_result(
+                                ts,
+                                ToolResult {
+                                    call_id: call_id(payload),
+                                    text: bounded_redacted_output(&output),
+                                    is_error,
+                                },
+                            ));
+                        }
+                        // Reasoning and other rollout bookkeeping are not user
+                        // or tool content and remain excluded from the index.
                         _ => {}
                     }
                 }
@@ -262,6 +324,74 @@ fn collect_patched_paths(args: &str, out: &mut Vec<String>) {
     }
 }
 
+fn call_id(payload: &Value) -> Option<String> {
+    payload
+        .get("call_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+}
+
+/// Flatten a result payload's `output` to text and an error flag. A string is
+/// unwrapped as one chunk. The `exec` tool returns an array: a preamble block
+/// (`Script completed\nWall time ...\nOutput:`), then one JSON chunk per
+/// `exec_command` the script ran, each with its own `exit_code`, sometimes
+/// with other text blocks between. The preamble is dropped, every chunk is
+/// unwrapped, and any nonzero exit code or a failed script marks the result.
+fn unwrap_output_value(output: &Value) -> (String, bool) {
+    match output {
+        Value::String(text) => unwrap_output(text),
+        Value::Array(blocks) => {
+            let mut parts = Vec::new();
+            let mut is_error = false;
+            for text in blocks
+                .iter()
+                .filter_map(|block| block.get("text").and_then(Value::as_str))
+            {
+                if text.starts_with("Script completed\n") || text.starts_with("Script failed") {
+                    is_error |= text.starts_with("Script failed");
+                    continue;
+                }
+                let (chunk, chunk_error) = unwrap_output(text);
+                is_error |= chunk_error;
+                if !chunk.is_empty() {
+                    parts.push(chunk);
+                }
+            }
+            (parts.join("\n"), is_error)
+        }
+        _ => (String::new(), false),
+    }
+}
+
+/// Unwrap Codex's JSON-encoded command result while preserving ordinary text.
+/// Both current top-level exit_code and the older metadata.exit_code shape are
+/// used to mark failed calls.
+fn unwrap_output(text: &str) -> (String, bool) {
+    let Ok(Value::Object(object)) = serde_json::from_str::<Value>(text) else {
+        return (text.to_owned(), false);
+    };
+    let Some(output) = object.get("output").and_then(Value::as_str) else {
+        return (text.to_owned(), false);
+    };
+    let exit_code = object.get("exit_code").and_then(Value::as_i64).or_else(|| {
+        object
+            .get("metadata")
+            .and_then(|metadata| metadata.get("exit_code"))
+            .and_then(Value::as_i64)
+    });
+    (output.to_owned(), exit_code.is_some_and(|code| code != 0))
+}
+
+fn redact_json_strings(value: &mut Value) {
+    match value {
+        Value::String(text) => *text = crate::redact::redact(text).into_owned(),
+        Value::Array(values) => values.iter_mut().for_each(redact_json_strings),
+        Value::Object(values) => values.values_mut().for_each(redact_json_strings),
+        _ => {}
+    }
+}
+
 /// Codex wraps instructions and environment dumps in pseudo-XML tags and
 /// repeats them in every session. Indexing them buries real matches.
 fn is_boilerplate(text: &str) -> bool {
@@ -286,6 +416,7 @@ fn push(
             role,
             text: text.to_string(),
             ts,
+            tool: None,
         });
     }
 }
@@ -295,6 +426,44 @@ fn push(
 pub(crate) fn is_subagent_meta(v: &Value) -> bool {
     v.pointer("/payload/thread_source").and_then(Value::as_str) == Some("subagent")
         || v.pointer("/payload/source/subagent").is_some()
+}
+
+/// Pull the command strings out of an `exec` tool snippet of the form
+/// `tools.exec_command({cmd:"..."})`, decoding JS string escapes. A script
+/// that runs several commands yields them joined with `; `. Returns None for
+/// any other snippet so the caller keeps the raw input.
+fn exec_command_cmd(input: &str) -> Option<String> {
+    let cmds: Vec<String> = input
+        .split("tools.exec_command(")
+        .skip(1)
+        .filter_map(js_cmd_literal)
+        .collect();
+    (!cmds.is_empty()).then(|| cmds.join("; "))
+}
+
+/// Decode the `cmd` string literal from one `exec_command` argument object.
+fn js_cmd_literal(call: &str) -> Option<String> {
+    let (_, after_key) = call.split_once("cmd")?;
+    let rest = after_key.trim_start().strip_prefix(':')?.trim_start();
+    let mut chars = rest.chars();
+    let quote = chars.next()?;
+    if !matches!(quote, '"' | '\'' | '`') {
+        return None;
+    }
+    let mut cmd = String::new();
+    while let Some(c) = chars.next() {
+        match c {
+            c if c == quote => return (!cmd.trim().is_empty()).then_some(cmd),
+            '\\' => match chars.next()? {
+                'n' => cmd.push('\n'),
+                't' => cmd.push('\t'),
+                'r' => cmd.push('\r'),
+                other => cmd.push(other),
+            },
+            c => cmd.push(c),
+        }
+    }
+    None
 }
 
 #[cfg(test)]

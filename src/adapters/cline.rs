@@ -1,5 +1,8 @@
-use super::{dedup_paths, redacted_truncate, title_from_messages, Adapter, Discovered};
-use crate::model::{Message, Role, Session};
+use super::{
+    bounded_redacted_output, dedup_paths, redacted_truncate, title_from_messages, Adapter,
+    Discovered,
+};
+use crate::model::{Message, Role, Session, ToolCall, ToolResult};
 use crate::util::short_id;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -231,9 +234,25 @@ fn parse_task(tool: &'static str, path: &Path) -> Result<Session> {
             if cwd.is_empty() {
                 cwd = cwd_from_text(&text);
             }
-            // A tool-feedback turn (the result echo + environment dump) is not a
-            // human message - drop it, but keep any cwd it carried.
-            if native_result || text.contains("] Result:") {
+            if native_result {
+                for result in user_tool_results(content) {
+                    messages.push(Message::tool_result(None, result));
+                }
+                continue;
+            }
+            // Cline's XML protocol echoes results as `[tool] Result:` text.
+            // Keep those outputs for the shared positional pairing pass.
+            if text.contains("] Result:") {
+                for output in xml_result_echoes(&text) {
+                    messages.push(Message::tool_result(
+                        None,
+                        ToolResult {
+                            call_id: None,
+                            text: bounded_redacted_output(&output),
+                            is_error: legacy_result_is_error(&output),
+                        },
+                    ));
+                }
                 continue;
             }
             push(&mut messages, Role::User, &strip_wrappers(&text));
@@ -247,9 +266,25 @@ fn parse_task(tool: &'static str, path: &Path) -> Result<Session> {
                 Some("text") | None if block.get("text").is_some() => {
                     let text = block.get("text").and_then(Value::as_str).unwrap_or("");
                     push(&mut messages, Role::Assistant, prose_before_tools(text));
-                    for (name, p) in xml_edits(text) {
-                        touched.push(p.clone());
-                        push(&mut messages, Role::Tool, &format!("{name} {p}"));
+                    for (name, mut args) in xml_tool_calls(text) {
+                        if EDIT_TOOLS.contains(&name) {
+                            if let Some(path) = args
+                                .get("path")
+                                .and_then(Value::as_str)
+                                .filter(|path| !path.is_empty())
+                            {
+                                touched.push(path.to_owned());
+                            }
+                        }
+                        redact_json_strings(&mut args);
+                        messages.push(Message::tool_call(
+                            None,
+                            ToolCall {
+                                id: None,
+                                name: name.to_owned(),
+                                args,
+                            },
+                        ));
                     }
                 }
                 Some("tool_use") => {
@@ -264,12 +299,20 @@ fn parse_task(tool: &'static str, path: &Path) -> Result<Session> {
                             touched.push(p.to_string());
                         }
                     }
-                    let arg = input.map(|i| i.to_string()).unwrap_or_default();
-                    push(
-                        &mut messages,
-                        Role::Tool,
-                        &format!("{name} {}", redacted_truncate(&arg, 300)),
-                    );
+                    let mut args = input.cloned().unwrap_or_else(|| serde_json::json!({}));
+                    redact_json_strings(&mut args);
+                    messages.push(Message::tool_call(
+                        None,
+                        ToolCall {
+                            id: block
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .filter(|id| !id.is_empty())
+                                .map(str::to_owned),
+                            name: name.to_owned(),
+                            args,
+                        },
+                    ));
                 }
                 _ => {}
             }
@@ -338,6 +381,78 @@ fn collect_user_text(content: Option<&Value>) -> (String, bool) {
     }
 }
 
+fn user_tool_results(content: Option<&Value>) -> Vec<ToolResult> {
+    content
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
+        .map(|block| ToolResult {
+            call_id: block
+                .get("tool_use_id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned),
+            text: bounded_redacted_output(&block_text(block.get("content"))),
+            is_error: block
+                .get("is_error")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        })
+        .collect()
+}
+
+fn block_text(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|block| block.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+fn redact_json_strings(value: &mut Value) {
+    match value {
+        Value::String(text) => *text = crate::redact::redact(text).into_owned(),
+        Value::Array(values) => values.iter_mut().for_each(redact_json_strings),
+        Value::Object(values) => values.values_mut().for_each(redact_json_strings),
+        _ => {}
+    }
+}
+
+fn xml_result_echoes(text: &str) -> Vec<String> {
+    const MARKER: &str = "] Result:";
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(marker) = rest.find(MARKER) {
+        rest = &rest[marker + MARKER.len()..];
+        let end = rest.find(MARKER).unwrap_or(rest.len());
+        let output = remove_blocks(
+            &rest[..end],
+            "<environment_details>",
+            "</environment_details>",
+        );
+        if !output.trim().is_empty() {
+            out.push(output.trim().to_owned());
+        }
+        rest = &rest[end..];
+    }
+    out
+}
+
+fn legacy_result_is_error(output: &str) -> bool {
+    output
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| {
+            let line = line.trim_start().to_ascii_lowercase();
+            line.starts_with("error") || line.starts_with("failed")
+        })
+}
+
 /// Prose the assistant wrote before any embedded XML tool call.
 fn prose_before_tools(text: &str) -> &str {
     let mut cut = text.len();
@@ -349,24 +464,49 @@ fn prose_before_tools(text: &str) -> &str {
     text[..cut].trim()
 }
 
-/// Every `(tool, path)` from XML tool tags - `<write_to_file><path>X</path>`.
-fn xml_edits(text: &str) -> Vec<(&'static str, String)> {
+/// Parsed arguments from XML tool tags such as `<write_to_file><path>X</path>`.
+fn xml_tool_calls(text: &str) -> Vec<(&'static str, Value)> {
+    const ARG_TAGS: &[&str] = &[
+        "path",
+        "file_path",
+        "filepath",
+        "command",
+        "cwd",
+        "pattern",
+        "query",
+        "url",
+        "content",
+        "diff",
+        "patch",
+        "arguments",
+        "result",
+        "text",
+    ];
     let mut out = Vec::new();
-    for &tool in EDIT_TOOLS {
+    let mut rest = text;
+    loop {
+        let next = TOOL_TAGS
+            .iter()
+            .filter_map(|&tool| rest.find(&format!("<{tool}>")).map(|index| (index, tool)))
+            .min_by_key(|(index, _)| *index);
+        let Some((index, tool)) = next else {
+            break;
+        };
         let open = format!("<{tool}>");
         let close = format!("</{tool}>");
-        let mut hay = text;
-        while let Some(i) = hay.find(&open) {
-            let after = &hay[i + open.len()..];
-            let end = after.find(&close).unwrap_or(after.len());
-            if let Some(p) = between(&after[..end], "<path>", "</path>") {
-                let p = p.trim();
-                if !p.is_empty() {
-                    out.push((tool, p.to_string()));
-                }
+        let after = &rest[index + open.len()..];
+        let end = after.find(&close).unwrap_or(after.len());
+        let body = &after[..end];
+        let mut args = serde_json::Map::new();
+        for &key in ARG_TAGS {
+            let field_open = format!("<{key}>");
+            let field_close = format!("</{key}>");
+            if let Some(value) = between(body, &field_open, &field_close) {
+                args.insert(key.to_owned(), Value::String(value.trim().to_owned()));
             }
-            hay = &after[end..];
         }
+        out.push((tool, Value::Object(args)));
+        rest = &after[end.saturating_add(close.len().min(after.len() - end))..];
     }
     out
 }
@@ -460,6 +600,7 @@ fn push(messages: &mut Vec<Message>, role: Role, text: &str) {
             role,
             text: text.to_string(),
             ts: None,
+            tool: None,
         });
     }
 }

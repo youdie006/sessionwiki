@@ -367,6 +367,32 @@ pub fn tokenizer(spec: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Show or change whether full tool results are retained in this index.
+pub fn tool_output(mode: Option<&str>) -> Result<()> {
+    let conn = index::open()?;
+    match mode {
+        Some(mode) => {
+            let mode = mode
+                .parse::<index::ToolOutputMode>()
+                .map_err(anyhow::Error::msg)?;
+            if index::set_tool_output_mode(&conn, mode)? {
+                match mode {
+                    index::ToolOutputMode::Full => println!(
+                        "Tool output storage set to full; live sessions will be re-parsed on the next sync."
+                    ),
+                    index::ToolOutputMode::Summary => println!(
+                        "Tool output storage set to summary; full output was removed for live sessions. Archived sessions keep their existing output. You may run VACUUM to reclaim disk space."
+                    ),
+                }
+            } else {
+                println!("Tool output storage is already {mode}.");
+            }
+        }
+        None => println!("{}", index::tool_output_mode(&conn)?),
+    }
+    Ok(())
+}
+
 /// Recall in one step: search, list the candidates, and brief the top match.
 /// Collapses the usual search -> eyeball id -> brief loop into one command.
 pub fn recall(
@@ -742,6 +768,23 @@ pub fn show(
             Role::User => ln!("{}", bold(&cyan("[user]"))),
             Role::Assistant => ln!("{}", bold(&green("[assistant]"))),
             Role::Tool => {
+                if crate::tool_summary::is_compact_summary_message(m) {
+                    if full {
+                        ln!("{}", dim("[tool]"));
+                        ln!("{}", m.text);
+                        if let Some(crate::model::ToolEvent::Summary(summary)) = &m.tool {
+                            if let Some(output) =
+                                crate::tool_summary::render_output(summary, 8 * 1024, 80)
+                            {
+                                ln!("{output}");
+                            }
+                        }
+                    } else {
+                        ln!("{}", dim(&format!("[tool] {}", m.text)));
+                    }
+                    ln!();
+                    continue;
+                }
                 if !full {
                     ln!("{}", dim(&format!("[tool] {}", truncate(&m.text, 120))));
                     continue;
@@ -824,7 +867,7 @@ pub(crate) fn load_session(
     let path = std::path::Path::new(&row.path);
     if path.exists() {
         if let Some(adapter) = adapters::by_name(&row.tool) {
-            return adapter.parse(path);
+            return adapters::parse_session(adapter.as_ref(), path);
         }
     }
     index::session_from_index(conn, row)
@@ -844,6 +887,15 @@ pub(crate) fn redact_session_for_export(session: &mut crate::model::Session) {
         }
     }
 
+    fn clean_value(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::String(text) => clean(text),
+            serde_json::Value::Array(values) => values.iter_mut().for_each(clean_value),
+            serde_json::Value::Object(values) => values.values_mut().for_each(clean_value),
+            _ => {}
+        }
+    }
+
     clean(&mut session.id);
     clean(&mut session.project);
     clean(&mut session.title);
@@ -859,6 +911,29 @@ pub(crate) fn redact_session_for_export(session: &mut crate::model::Session) {
     }
     for message in &mut session.messages {
         clean(&mut message.text);
+        match &mut message.tool {
+            Some(crate::model::ToolEvent::Part(crate::model::ToolPart::Call(call))) => {
+                clean(&mut call.name);
+                if let Some(id) = &mut call.id {
+                    clean(id);
+                }
+                clean_value(&mut call.args);
+            }
+            Some(crate::model::ToolEvent::Part(crate::model::ToolPart::Result(result))) => {
+                if let Some(id) = &mut result.call_id {
+                    clean(id);
+                }
+                clean(&mut result.text);
+            }
+            Some(crate::model::ToolEvent::Summary(summary)) => {
+                clean(&mut summary.name);
+                clean_value(&mut summary.args);
+                if let Some(output) = &mut summary.output {
+                    clean(output);
+                }
+            }
+            None => {}
+        }
     }
     for path in &mut session.touched {
         clean(path);
@@ -1080,7 +1155,21 @@ pub(crate) fn brief_text(
             Role::User => blocks.push(format!("**User:**\n{text}")),
             Role::Assistant => blocks.push(format!("**Assistant:**\n{text}")),
             Role::Tool => {
-                if include_tools {
+                if crate::tool_summary::is_compact_summary_message(m) {
+                    let mut block = format!("> [tool] {text}");
+                    if include_tools {
+                        if let Some(crate::model::ToolEvent::Summary(summary)) = &m.tool {
+                            if let Some(output) =
+                                crate::tool_summary::render_output(summary, 8 * 1024, 80)
+                            {
+                                let output = crate::redact::redact(&output);
+                                block.push('\n');
+                                block.push_str(&output);
+                            }
+                        }
+                    }
+                    blocks.push(block);
+                } else if include_tools {
                     blocks.push(format!("> [tool] {}", truncate(&text, 200)));
                 }
             }
@@ -1944,11 +2033,13 @@ mod tests {
                     role: Role::User,
                     text: format!("here is the key {secret} use it"),
                     ts: None,
+                    tool: None,
                 },
                 Message {
                     role: Role::Assistant,
                     text: straddling,
                     ts: None,
+                    tool: None,
                 },
             ],
             touched: Vec::new(),
@@ -2013,7 +2104,7 @@ mod tests {
     /// the same markdown the CLI prints, minus the local Source path.
     #[test]
     fn brief_markdown_renders_a_session_without_its_source_path() {
-        use crate::model::{Message, Role, Session};
+        use crate::model::{Message, Role, Session, ToolEvent, ToolSummary};
         let session = Session {
             id: "s1".into(),
             tool: "mjolnir",
@@ -2028,16 +2119,25 @@ mod tests {
                     role: Role::User,
                     text: "fix the parser".into(),
                     ts: None,
+                    tool: None,
                 },
                 Message {
                     role: Role::Assistant,
                     text: "done, the parser is fixed".into(),
                     ts: None,
+                    tool: None,
                 },
                 Message {
                     role: Role::Tool,
-                    text: "edit src/parse.rs".into(),
+                    text: "→ Edit(src/parse.rs) ⇒ ok · 2 lines".into(),
                     ts: None,
+                    tool: Some(ToolEvent::Summary(ToolSummary {
+                        name: "Edit".into(),
+                        args: serde_json::json!({"file_path":"src/parse.rs"}),
+                        output: Some("patch output\ncontinued".into()),
+                        is_error: Some(false),
+                        lines: Some(2),
+                    })),
                 },
             ],
             touched: vec![],
@@ -2047,13 +2147,15 @@ mod tests {
         let md = brief_markdown(&session, 4000, true);
         assert!(md.contains("**User:**\nfix the parser"));
         assert!(md.contains("**Assistant:**\ndone, the parser is fixed"));
-        assert!(md.contains("> [tool] edit src/parse.rs"));
+        assert!(md.contains("> [tool] → Edit(src/parse.rs) ⇒ ok · 2 lines"));
+        assert!(md.contains("```text\npatch output\ncontinued\n```"));
         assert!(
             !md.contains("/home/someone"),
             "the local source path must stay out of an embedder's briefing"
         );
 
         let without_tools = brief_markdown(&session, 4000, false);
-        assert!(!without_tools.contains("[tool]"));
+        assert!(without_tools.contains("> [tool] → Edit(src/parse.rs) ⇒ ok · 2 lines"));
+        assert!(!without_tools.contains("patch output"));
     }
 }

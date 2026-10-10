@@ -21,7 +21,7 @@ fn fixture(rel: &str) -> PathBuf {
 
 fn parse(tool: &str, rel: &str) -> Session {
     let adapter = adapters::by_name(tool).expect("adapter exists");
-    adapter.parse(&fixture(rel)).expect("parse succeeds")
+    adapters::parse_session(adapter.as_ref(), &fixture(rel)).expect("parse succeeds")
 }
 
 fn roles(s: &Session) -> Vec<&'static str> {
@@ -42,8 +42,7 @@ fn claude_main_session() {
     assert!(!s.subagent);
 
     // A malformed line and the isMeta:true boilerplate user turn are dropped;
-    // tool_use (Bash, two Edits, a Write) and tool_result all become Tool
-    // messages.
+    // the shared pass folds each tool call and result into one Tool message.
     assert_eq!(
         roles(&s),
         [
@@ -53,10 +52,27 @@ fn claude_main_session() {
             "tool",
             "tool",
             "tool",
-            "tool",
             "assistant"
         ]
     );
+    assert_eq!(s.messages[2].text, "→ Bash(rg -n cors src/) ⇒ ok · 1 line");
+    assert_eq!(
+        s.messages[3].text,
+        "→ Edit(/home/dev/proj-a/src/middleware/mod.rs) ⇒ error · 2 lines — Edit failed"
+    );
+    assert_eq!(
+        s.messages[4].text,
+        "→ Edit(/home/dev/proj-a/src/middleware/mod.rs) ⇒ pending"
+    );
+    assert_eq!(
+        s.messages[5].text,
+        "→ Write(/home/dev/proj-a/tests/cors_preflight.rs) ⇒ ok · 5 lines"
+    );
+    assert!(matches!(
+        &s.messages[5].tool,
+        Some(sessionwiki::model::ToolEvent::Summary(summary))
+            if summary.output.as_deref().is_some_and(|output| output.lines().count() == 5)
+    ));
 
     // The dropped boilerplate must not leak into any message.
     assert!(s
@@ -117,9 +133,9 @@ fn codex_session_with_schema_variants() {
     assert_eq!(s.project, "/home/dev/api-server");
     assert_eq!(s.title, "Write property-based tests for the rate limiter.");
 
-    // environment_context boilerplate dropped; both function_calls (the shell
-    // test run and the apply_patch) kept as Tool; function_call_output and
-    // reasoning dropped; both response_item and event_msg message shapes parse.
+    // environment_context boilerplate and reasoning are dropped; function
+    // calls and their outputs become one compact Tool message each, while both
+    // response_item and event_msg message shapes parse.
     assert_eq!(
         roles(&s),
         ["user", "tool", "tool", "assistant", "user", "assistant"]
@@ -128,7 +144,23 @@ fn codex_session_with_schema_variants() {
         .messages
         .iter()
         .all(|m| !m.text.contains("environment_context")));
-    assert!(s.messages.iter().all(|m| !m.text.contains("cases passed"))); // function_call_output excluded
+    assert_eq!(s.messages[1].text, "→ shell(cargo test) ⇒ pending");
+    assert!(s.messages[2]
+        .text
+        .starts_with("→ shell(apply_patch *** Begin Patch"));
+    assert!(s.messages[2].text.ends_with(" ⇒ ok · 1 line"));
+    assert!(s
+        .messages
+        .iter()
+        .all(|message| !message.text.contains("10000 cases passed")));
+    let Some(sessionwiki::model::ToolEvent::Summary(summary)) = &s.messages[2].tool else {
+        panic!("the apply_patch call should retain the anonymous structured result");
+    };
+    assert_eq!(summary.output.as_deref(), Some("10000 cases passed"));
+    assert_eq!(
+        sessionwiki::tool_summary::render_output(summary, 8 * 1024, 80).as_deref(),
+        Some("```text\n10000 cases passed\n```")
+    );
     assert!(s.messages.iter().any(|m| m.text.contains("2.1M ops/sec")));
 
     // Provenance: apply_patch file headers (Update File / Add File) are pulled
@@ -199,9 +231,42 @@ fn codex_indexes_custom_tool_calls_and_their_patched_paths() {
     );
 
     assert_eq!(roles(&s), ["user", "tool"]);
-    assert!(s.messages[1].text.starts_with("exec "));
-    assert!(s.messages[1].text.contains("src/synthetic.rs"));
+    assert_eq!(
+        s.messages[1].text,
+        "→ apply_patch(src/synthetic.rs) ⇒ pending"
+    );
     assert_eq!(s.touched, ["src/synthetic.rs"]);
+}
+
+#[test]
+fn codex_structured_tool_calls_and_results_are_summarized() {
+    let s = parse(
+        "codex",
+        "codex/rollout-2026-10-06T12-00-00-structured-tools.jsonl",
+    );
+
+    let tool_lines: Vec<_> = s
+        .messages
+        .iter()
+        .filter(|message| message.role.label() == "tool")
+        .map(|message| message.text.as_str())
+        .collect();
+    assert_eq!(
+        tool_lines,
+        [
+            "→ shell(cargo check) ⇒ ok · 1 line",
+            "→ shell(cargo test) ⇒ error · 2 lines — error[E0425]: unresolved synthetic name",
+            "→ shell(print-many) ⇒ ok · 10 lines",
+            "→ apply_patch(src/codex_synthetic.rs) ⇒ ok · 2 lines",
+            "→ shell(printf block output) ⇒ ok · 2 lines",
+            "→ shell(older-result) ⇒ ok · 1 line",
+            "→ shell(echo pending) ⇒ pending",
+            "→ exec_command(git status --short && echo \"done\") ⇒ ok · 2 lines",
+            "→ exec_command(pwd; rg -n needle missing.rs) ⇒ error · 4 lines — /home/dev/proj",
+        ]
+    );
+    assert!(tool_lines.iter().all(|line| !line.contains(" {")));
+    assert_eq!(s.touched, ["src/codex_synthetic.rs"]);
 }
 
 #[test]
@@ -225,6 +290,42 @@ fn gemini_session() {
 }
 
 #[test]
+fn gemini_tool_calls_and_results_are_summarized() {
+    let s = parse(
+        "gemini",
+        "gemini/myproject/chats/session-2026-06-08T11-00-tools.json",
+    );
+
+    let tool_lines: Vec<_> = s
+        .messages
+        .iter()
+        .filter(|message| message.role.label() == "tool")
+        .map(|message| message.text.as_str())
+        .collect();
+    assert_eq!(
+        tool_lines,
+        [
+            "→ run_shell_command(cargo test) ⇒ ok · 1 line",
+            "→ run_shell_command(cargo test --broken) ⇒ error · 1 line — permission denied",
+            "→ read_file(src/lib.rs) ⇒ ok · 12 lines",
+            "→ list_files(src) ⇒ ok · 1 line",
+        ]
+    );
+    assert_eq!(
+        roles(&s),
+        [
+            "user",
+            "assistant",
+            "tool",
+            "tool",
+            "tool",
+            "tool",
+            "assistant"
+        ]
+    );
+}
+
+#[test]
 fn opencode_multi_file_session() {
     // OpenCode splits a session across session/message/part JSON files; the
     // adapter is handed the session file and joins the rest from the store.
@@ -235,10 +336,13 @@ fn opencode_multi_file_session() {
     assert_eq!(s.project, "/home/dev/myapp"); // session.directory
     assert!(!s.subagent);
 
-    // reasoning parts are dropped; text parts and the edit tool become messages
-    // in id order; the malformed part file is skipped without panicking; the
+    // reasoning parts are dropped; text parts and tool parts are folded into
+    // compact summaries in id order; the malformed part file is skipped; the
     // patch part contributes no message (only provenance).
-    assert_eq!(roles(&s), ["user", "assistant", "tool"]);
+    assert_eq!(
+        roles(&s),
+        ["user", "assistant", "tool", "tool", "tool", "tool"]
+    );
     assert!(s.messages[0]
         .text
         .contains("retry with exponential backoff"));
@@ -250,6 +354,21 @@ fn opencode_multi_file_session() {
         .messages
         .iter()
         .all(|m| !m.text.contains("thinking about"))); // reasoning dropped
+    let tool_lines: Vec<_> = s
+        .messages
+        .iter()
+        .filter(|m| m.text.starts_with("→ "))
+        .map(|m| m.text.as_str())
+        .collect();
+    assert_eq!(
+        tool_lines,
+        [
+            "→ edit(/home/dev/myapp/src/http/client.ts) ⇒ ok · 1 line",
+            "→ bash(false) ⇒ error · 2 lines — Command failed: exit 1",
+            "→ read(README.md) ⇒ ok · 10 lines",
+            "→ read(config.json) ⇒ pending"
+        ]
+    );
 
     // Provenance: edit tool's state.input.filePath + the patch's files list.
     assert_eq!(
@@ -281,9 +400,8 @@ fn cline_xml_and_native_tool_edits() {
     assert_eq!(s.project, "/home/dev/app"); // from <environment_details>
     assert!(!s.subagent);
 
-    // The <task>/<environment_details> wrappers and the tool-result feedback
-    // turn ("[... ] Result:") are stripped; XML and native tool calls both
-    // become Tool messages.
+    // The <task>/<environment_details> wrappers are stripped; legacy XML and
+    // native calls/results become compact Tool messages.
     assert_eq!(
         roles(&s),
         [
@@ -292,8 +410,26 @@ fn cline_xml_and_native_tool_edits() {
             "tool",
             "assistant",
             "tool",
+            "tool",
+            "tool",
             "assistant"
         ]
+    );
+    assert_eq!(
+        s.messages[2].text,
+        "→ write_to_file(src/main.py) ⇒ ok · 1 line"
+    );
+    assert_eq!(
+        s.messages[4].text,
+        "→ write_to_file(tests/test_main.py) ⇒ ok · 1 line"
+    );
+    assert_eq!(
+        s.messages[5].text,
+        "→ execute_command(cargo test) ⇒ error · 2 lines — Error: cargo test failed"
+    );
+    assert_eq!(
+        s.messages[6].text,
+        "→ read_file(src/output.txt) ⇒ ok · 10 lines"
     );
     assert_eq!(s.messages[0].text, "Add a hello function to src/main.py");
     assert!(s
@@ -334,14 +470,15 @@ fn gajae_jsonl_session() {
     assert_eq!(s.project, "/home/dev/proj"); // header cwd
     assert!(!s.subagent);
 
-    // thinking blocks dropped; toolResult -> tool; the malformed line is skipped
-    // without panicking.
+    // thinking blocks dropped; tool calls/results fold into compact summaries;
+    // the malformed line is skipped without panicking.
     assert_eq!(
         roles(&s),
         [
             "user",
             "assistant",
             "tool",
+            "assistant",
             "tool",
             "assistant",
             "tool",
@@ -354,6 +491,21 @@ fn gajae_jsonl_session() {
         .messages
         .iter()
         .all(|m| !m.text.contains("considering the structure")));
+    let tool_lines: Vec<_> = s
+        .messages
+        .iter()
+        .filter(|m| m.text.starts_with("→ "))
+        .map(|m| m.text.as_str())
+        .collect();
+    assert_eq!(
+        tool_lines,
+        [
+            "→ write(src/parse.ts) ⇒ ok · 1 line",
+            "→ read(config.ts) ⇒ pending",
+            "→ ast_edit({\"paths\":[\"src/parse.ts\",\"src/helper.ts\"]}) ⇒ ok · 10 lines",
+            "→ edit(src/parse.ts) ⇒ error · 2 lines — Edit failed"
+        ]
+    );
 
     // Provenance: write (arguments.path) + ast_edit (arguments.paths[]) with the
     // repeat de-duplicated; read is excluded.
@@ -382,7 +534,30 @@ fn continue_session_with_tool_edit() {
     assert_eq!(s.project, "/home/alex/projects/acme-api");
     assert!(!s.subagent);
 
-    assert_eq!(roles(&s), ["user", "assistant", "tool", "tool"]);
+    assert_eq!(
+        roles(&s),
+        [
+            "user",
+            "assistant",
+            "tool",
+            "assistant",
+            "tool",
+            "assistant",
+            "tool"
+        ]
+    );
+    assert_eq!(
+        s.messages[2].text,
+        "→ edit_existing_file(src/http.ts) ⇒ ok · 1 line"
+    );
+    assert_eq!(
+        s.messages[4].text,
+        "→ run_command(cargo test) ⇒ error · 2 lines — Error: cargo test failed"
+    );
+    assert_eq!(
+        s.messages[6].text,
+        "→ read_file(logs/test-output.txt) ⇒ ok · 10 lines"
+    );
 
     // Provenance from toolCallStates[].parsedArgs.filepath.
     assert_eq!(s.touched, ["src/http.ts"]);
@@ -424,6 +599,29 @@ fn gptme_session() {
 }
 
 #[test]
+fn gptme_markdown_tool_calls_are_summarized_without_inferred_error_status() {
+    let s = parse("gptme", "gptme/tool-summary/conversation.jsonl");
+
+    let tool_lines: Vec<_> = s
+        .messages
+        .iter()
+        .filter(|message| message.role.label() == "tool")
+        .map(|message| message.text.as_str())
+        .collect();
+    assert_eq!(
+        tool_lines,
+        [
+            "→ shell(cargo test) ⇒ ok · 1 line",
+            // gptme stores this failure as ordinary system text, without an
+            // explicit result status; keep is_error=false instead of guessing.
+            "→ shell(cargo test --broken) ⇒ ok · 1 line",
+            "→ shell(seq 1 12) ⇒ ok · 12 lines",
+        ]
+    );
+    assert_eq!(roles(&s), ["user", "tool", "tool", "tool", "assistant"]);
+}
+
+#[test]
 fn gptme_malformed_lines_do_not_panic() {
     // A fixture with a bad line must not panic — it is silently skipped.
     let adapter = adapters::by_name("gptme").unwrap();
@@ -446,9 +644,11 @@ fn aider_golden() {
     // aider is a shared store: drive parse_key with `<path>\u{1f}<run-index>`.
     let path = fixture("aider/myrepo/.aider.chat.history.md");
     let adapter = adapters::by_name("aider").unwrap();
-    let s = adapter
-        .parse_key(&format!("{}\u{1f}0", path.to_string_lossy()))
-        .unwrap();
+    let s = adapters::parse_session_key(
+        adapter.as_ref(),
+        &format!("{}\u{1f}0", path.to_string_lossy()),
+    )
+    .unwrap();
     assert_eq!(s.tool, "aider");
     assert_eq!(s.title, "add a retry to the webhook");
     let roles: Vec<&str> = s.messages.iter().map(|m| m.role.label()).collect();
@@ -616,7 +816,7 @@ fn prodex_multibyte_task_id_never_panics() {
     )
     .unwrap();
     let adapter = sessionwiki::adapters::by_name("prodex").unwrap();
-    let s = adapter.parse(&p).expect("parse must not panic");
+    let s = adapters::parse_session(adapter.as_ref(), &p).expect("parse must not panic");
     assert!(
         s.started.is_none(),
         "unparseable stamp -> None, not a crash"

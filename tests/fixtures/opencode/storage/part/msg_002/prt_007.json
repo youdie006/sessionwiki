@@ -1,0 +1,12 @@
+{
+  "id": "prt_007",
+  "sessionID": "ses_aaa",
+  "messageID": "msg_002",
+  "type": "tool",
+  "tool": "read",
+  "callID": "toolu_4",
+  "state": {
+    "status": "running",
+    "input": { "path": "config.json" }
+  }
+}

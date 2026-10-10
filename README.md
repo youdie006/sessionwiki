@@ -153,12 +153,13 @@ GB). After that, updates are incremental and take seconds.
 | `list` | Recent sessions across all tools in one timeline. `--tool codex`, `--project api`, `--tag spike`, `-n 50`, `--all` (include subagent transcripts). |
 | `search <query>` | Search every message across tools. Terms are ANDed within one message; double quotes mark a phrase. Use `--role user,assistant` to search only the conversation, excluding tool output. Matching depends on the configured tokenizer (see `tokenizer`). |
 | `tokenizer [SPEC]` | Show the current FTS5 tokenizer, or set one and rebuild only the search index. |
+| `tool-output [MODE]` | Show or change whether full tool results are retained in this index. `summary` is the default; use `sessionwiki tool-output full` to retain them. |
 | `recall <query>` | Search, list the matches, and brief the top one in a single command &mdash; the fastest way back into a past session. `--tool`, `--project`, `-n`, `--json` (for agents). |
-| `show <id>` | One session as a readable transcript. `--full` expands tool calls, `--json` emits the parsed session, `--outline` prints a digest: every question you asked plus how it ended. |
+| `show <id>` | One session as a readable transcript with compact tool summaries. `--full` appends bounded tool output from the live file or index, `--json` emits the parsed session, `--outline` prints a digest: every question you asked plus how it ended. |
 | `summarize [id]` | 1&ndash;2 sentence synopses via **your own LLM CLI** (`claude -p` default; `--cmd` / `SESSIONWIKI_SUMMARIZER` to change), cached in the index and shown in `show`, `--outline`, and the web sidebar. Without an id, batches the `--recent N` newest. |
 | `resume <id>` | Reopen the session in its original tool: `claude --resume` / `codex resume`, run in the right project directory. Subagent transcripts resume their parent. `--print` to just show the command. |
 | `migrate <id> <dir>` | Make a session resumable from a different project directory: Claude Code copies the transcript into `<dir>`'s store, Codex resumes by id from anywhere, Gemini copies the chat over. The original is never touched. `--config-dir <DIR>` writes into a specific store instead of the default one - for a machine where each account has its own (`CLAUDE_CONFIG_DIR` is honoured when the flag is absent). |
-| `brief <id>` | Emit the session as a markdown briefing (head and tail, middle omitted) to carry context into any tool &mdash; including across tools. `--max-chars`, `--tools`. |
+| `brief <id>` | Emit the session as a markdown briefing (head and tail, middle omitted) with compact tool summaries. `--tools` appends bounded tool output from the live file or index; `--max-chars` sets the briefing budget. |
 | `web` | Local viewer on `127.0.0.1:7575`: day-grouped sessions, live search with highlighted snippets, rendered transcripts with outlines/tags/related, resume commands, light/dark, UI auto-localized (en/ko/ja/zh). Reads the existing index; `web --sync` refreshes first. Never leaves localhost. |
 | `sync [--tool]` | Build or refresh the index on demand. Pair with `--no-sync` (below) so queries skip the store walk. Handy from a cron to keep the index warm. |
 
@@ -175,6 +176,21 @@ shared by CLI, web, and MCP; changing it rebuilds the FTS table from the
 existing indexed messages without reparsing session files. Quote specs that
 contain spaces, for example `sessionwiki tokenizer 'porter unicode61'` or
 `sessionwiki tokenizer 'unicode61 remove_diacritics 2'`.
+
+With the default `summary` mode, newly archived sessions keep each tool call's
+compact summary line; a failed call's line also includes the first line of its
+output. This is less than the previous behavior, which kept up to 500
+characters of tool output.
+Run `sessionwiki tool-output full` to retain capped, redacted output (up to 8
+KB per result) separately from searchable transcript text, so `show --full`
+and `brief --tools` can still read it after a tool deletes the source session.
+The `full` or `summary` choice is stored per index. Switching to `summary`
+clears full results for live sessions, while archived sessions keep the output
+they already contain. SQLite space from removed live data can be reclaimed
+with `VACUUM`. Switching back to `full` marks live sessions for re-parsing on
+the next sync. This per-index setting lets embedders that share the index avoid
+storing full output. Embedders can read or set it with `index::tool_output_mode`
+and `index::set_tool_output_mode`.
 
 ### Session engineering
 
@@ -243,14 +259,20 @@ longer reopen it, but you can still read, `brief`, and `trace` it. This is the
 part a generation-time hook can't do &mdash; it works for the sessions that
 already exist, and the ones the tool deleted while you weren't looking.
 
-**It also reclaims disk.** The index keeps only a distilled copy of each session
-(the conversation and its file links, minus bulky tool output), so it is far
+**It also reclaims disk.** The index keeps a distilled copy of each session
+(the conversation and its file links, with tool calls represented by compact
+summary lines). In the default `summary` mode it keeps no full tool results;
+failed calls include their first output line in the compact summary. Use
+`sessionwiki tool-output full` to retain up to 8 KB of redacted tool output per
+result in a separate, non-searchable column. The index is far
 smaller than the raw stores &mdash; roughly 7&times; on the machine above (47 GB
 &rarr; ~7 GB). Delete the old raw sessions to free the space and `search`,
 `trace`, `brief`, and reading still work from the index. The tradeoff: an
 archived session is the distilled transcript, not the byte-exact original &mdash;
 which is exactly the part you want when you are hunting for the conversation that
-solved something.
+solved something. In the default `summary` mode that transcript keeps less tool
+output than earlier versions, which kept up to 500 characters per result; choose
+`full` when the archive needs capped full output.
 
 ## Pick up where you left off
 
@@ -310,7 +332,7 @@ flowchart LR
   cache. Cached summaries survive schema upgrades on purpose: rebuilding an
   index is cheap, re-running an LLM over your history is not.
 - Noise is filtered deliberately: repeated harness boilerplate and bulky tool
-  outputs stay out of the index so search results stay signal.
+  outputs stay out of the index; compact tool summaries remain searchable.
 
 <details>
 <summary><b>FAQ: why not just grep the session folders?</b></summary>

@@ -1,10 +1,10 @@
 //! A bounded, agent-consumable render of a session: the actual conversation
-//! (not a lossy summary), but with tool-output bulk folded to head+tail and an
-//! optional total budget that keeps the recent tail. This is what a caller (an
-//! agent via MCP, or `show --window`) reads to know what another session is
-//! doing without flooding its own context. The four things that make it
-//! parseable: an orientation header, role labels, tool CALLS kept but tool
-//! RESULTS folded, and a drill-down hint to `show <id> --full`.
+//! (not a lossy summary), with structured tools as compact lines and legacy
+//! tool-output bulk folded to head+tail. An optional total budget keeps the
+//! recent tail. This is what a caller (an agent via MCP, or `show --window`)
+//! reads to know what another session is doing without flooding its own
+//! context. The four things that make it parseable: an orientation header, role
+//! labels, compact tool summaries, and a drill-down hint to `show <id> --full`.
 
 use crate::model::{Message, Role, Session};
 use serde_json::{json, Value};
@@ -20,16 +20,16 @@ pub const TURN_SCHEMA: &str = "sessionwiki.turn/1";
 pub const TURN_TEXT_CAP: usize = 23_000;
 
 pub struct WindowOpts {
-    /// Lines kept at the head of a folded tool result.
+    /// Lines kept at the head of legacy folded tool text.
     pub tool_head: usize,
-    /// Lines kept at the tail of a folded tool result.
+    /// Lines kept at the tail of legacy folded tool text.
     pub tool_tail: usize,
     /// Char cap for a single user/assistant message (head+tail beyond it).
     pub per_msg_chars: usize,
     /// Total char budget across the rendered turns; `None` folds the whole
     /// session. When set, the most RECENT turns are kept (walk from the end).
     pub budget_chars: Option<usize>,
-    /// Byte cap for a single folded tool result. Line folding alone can't bound a
+    /// Byte cap for a single folded legacy tool message. Line folding alone can't bound a
     /// result that is one enormous line, so the folded text is additionally
     /// clipped to this many bytes (on a char boundary).
     pub tool_byte_cap: usize,
@@ -109,10 +109,14 @@ fn render_msg(m: &crate::model::Message, opts: &WindowOpts) -> String {
     match m.role {
         Role::User => format!("[user]\n{}", cap_msg(&m.text, opts.per_msg_chars)),
         Role::Assistant => format!("[assistant]\n{}", cap_msg(&m.text, opts.per_msg_chars)),
-        Role::Tool => format!(
-            "[tool]\n{}",
-            fold_tool(&m.text, opts.tool_head, opts.tool_tail, opts.tool_byte_cap).0
-        ),
+        Role::Tool => {
+            let text = if crate::tool_summary::is_compact_summary_message(m) {
+                m.text.clone()
+            } else {
+                fold_tool(&m.text, opts.tool_head, opts.tool_tail, opts.tool_byte_cap).0
+            };
+            format!("[tool]\n{text}")
+        }
     }
 }
 
@@ -192,8 +196,8 @@ fn role_str(r: Role) -> &'static str {
 }
 
 /// One turn as JSON, plus the char length used for budget accounting. User and
-/// assistant turns are head+tail capped (`truncated`); tool turns are folded
-/// head+tail and byte-bounded (`folded`), carrying the original `bytes`. `i` is
+/// assistant turns are head+tail capped (`truncated`); compact tool summaries
+/// stay whole, while legacy tool turns are folded and byte-bounded (`folded`). `i` is
 /// the turn's index in the full session - the stable per-turn drill-down anchor.
 fn turn_json(i: usize, m: &Message, opts: &WindowOpts) -> (Value, usize) {
     match m.role {
@@ -207,8 +211,11 @@ fn turn_json(i: usize, m: &Message, opts: &WindowOpts) -> (Value, usize) {
             )
         }
         Role::Tool => {
-            let (text, folded) =
-                fold_tool(&m.text, opts.tool_head, opts.tool_tail, opts.tool_byte_cap);
+            let (text, folded) = if crate::tool_summary::is_compact_summary_message(m) {
+                (m.text.clone(), false)
+            } else {
+                fold_tool(&m.text, opts.tool_head, opts.tool_tail, opts.tool_byte_cap)
+            };
             let len = text.len();
             (
                 json!({"i": i, "role": "tool", "text": text, "folded": folded, "bytes": m.text.len()}),
@@ -219,8 +226,8 @@ fn turn_json(i: usize, m: &Message, opts: &WindowOpts) -> (Value, usize) {
 }
 
 /// Render `session` as the versioned, agent-parseable JSON window (schema
-/// [`WINDOW_SCHEMA`]): orientation header, role-labelled turns with tool output
-/// folded, the recent tail kept within `budget_chars`. Pure and deterministic
+/// [`WINDOW_SCHEMA`]): orientation header, role-labelled turns with compact
+/// tool summaries, and the recent tail kept within `budget_chars`. Pure and deterministic
 /// for a fixed (session, opts) - the MCP layer handles neutralization and the
 /// final size guard.
 pub fn render_window_json(session: &Session, opts: &WindowOpts) -> Value {
@@ -274,8 +281,8 @@ pub fn render_window_json(session: &Session, opts: &WindowOpts) -> Value {
 
 /// Render ONE turn's full RETAINED text as JSON (schema [`TURN_SCHEMA`]) - the
 /// drill-down for `session_window(id, turn=i)`. "Full" means untruncated by the
-/// window's folding/cap; tool outputs are already capped at parse time, so this
-/// recovers folded-out lines, not adapter-dropped bulk. Bounded to [`TURN_TEXT_CAP`]
+/// window's folding/cap; compact tool summaries remain a single line and do not
+/// carry the full output. Bounded to [`TURN_TEXT_CAP`]
 /// chars for MCP transport; `clipped` and `bytes` report the true size. `None`
 /// if `i` is out of range.
 pub fn render_turn_json(session: &Session, i: usize) -> Option<Value> {
@@ -308,6 +315,7 @@ mod tests {
             role,
             text: text.to_string(),
             ts: None,
+            tool: None,
         }
     }
 
@@ -361,6 +369,20 @@ mod tests {
         assert!(folded, "byte-clip counts as folded");
         assert!(out.len() < 2_200, "clipped near the byte cap");
         assert!(out.contains("bytes …]"), "byte elision marked");
+    }
+
+    #[test]
+    fn compact_tool_summary_is_not_folded_or_truncated() {
+        let compact = "→ Bash(cargo test) ⇒ ok · 2 lines";
+        let s = session(vec![msg(Role::Tool, compact)]);
+        let window = render_window(&s, &WindowOpts::default());
+        assert!(window.contains(&format!("[tool]\n{compact}")));
+        assert!(!window.contains("lines …]"));
+
+        let json = render_window_json(&s, &WindowOpts::default());
+        assert_eq!(json["turns"][0]["text"], compact);
+        assert_eq!(json["turns"][0]["folded"], false);
+        assert_eq!(json["turns"][0]["bytes"], compact.len());
     }
 
     #[test]

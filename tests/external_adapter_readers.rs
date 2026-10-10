@@ -3,7 +3,7 @@
 
 use sessionwiki::adapters::{self, Adapter, Discovered};
 use sessionwiki::index;
-use sessionwiki::model::{Message, Role, Session};
+use sessionwiki::model::{Message, Role, Session, ToolEvent, ToolSummary};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -47,6 +47,7 @@ impl Adapter for OneFileAdapter {
                 role: Role::User,
                 text: fs::read_to_string(path)?,
                 ts: None,
+                tool: None,
             }],
             touched: vec![],
             edits: vec![],
@@ -140,6 +141,129 @@ fn cli_reads_external_with_existing_source() {
 #[test]
 fn cli_reads_external_with_missing_source() {
     cli_reads_external(false);
+}
+
+struct ToolOutputAdapter {
+    source: PathBuf,
+}
+
+impl Adapter for ToolOutputAdapter {
+    fn name(&self) -> &'static str {
+        "external-tool-output"
+    }
+
+    fn root(&self) -> Option<PathBuf> {
+        self.source.parent().map(Path::to_path_buf)
+    }
+
+    fn discover(&self) -> Discovered {
+        if self.source.exists() {
+            vec![self.source.clone()].into()
+        } else {
+            Vec::new().into()
+        }
+    }
+
+    fn parse(&self, path: &Path) -> anyhow::Result<Session> {
+        Ok(Session {
+            id: "archived-tool-output".into(),
+            tool: self.name(),
+            path: path.into(),
+            project: "/fixture".into(),
+            started: None,
+            ended: None,
+            title: "archived tool output".into(),
+            subagent: false,
+            messages: vec![Message {
+                role: Role::Tool,
+                text: "→ shell(cargo test) ⇒ ok · 2 lines".into(),
+                ts: None,
+                tool: Some(ToolEvent::Summary(ToolSummary {
+                    name: "shell".into(),
+                    args: serde_json::json!({"command": "cargo test"}),
+                    output: Some("output-from-deleted-source\nsecond diagnostic".into()),
+                    is_error: Some(false),
+                    lines: Some(2),
+                })),
+            }],
+            touched: Vec::new(),
+            edits: Vec::new(),
+        })
+    }
+}
+
+#[test]
+fn archived_tool_output_is_available_to_show_full_and_brief_tools() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let source = dir.path().join("sessions/session.jsonl");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::write(&source, "fixture").unwrap();
+
+    let mut conn = {
+        let _guard = INDEX_ENV.lock().unwrap();
+        let previous = std::env::var_os("SESSIONWIKI_DATA");
+        std::env::set_var("SESSIONWIKI_DATA", &data);
+        let result = index::open();
+        match previous {
+            Some(value) => std::env::set_var("SESSIONWIKI_DATA", value),
+            None => std::env::remove_var("SESSIONWIKI_DATA"),
+        }
+        result.unwrap()
+    };
+    index::set_tool_output_mode(&conn, index::ToolOutputMode::Full).unwrap();
+    index::sync_with(
+        &mut conn,
+        &[Box::new(ToolOutputAdapter {
+            source: source.clone(),
+        })],
+        None,
+    )
+    .unwrap();
+    fs::remove_file(&source).unwrap();
+    index::sync_with(&mut conn, &[Box::new(ToolOutputAdapter { source })], None).unwrap();
+    drop(conn);
+
+    let command = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sessionwiki"));
+        command.env("SESSIONWIKI_DATA", &data);
+        command
+    };
+    let shown = command()
+        .args(["show", "archived-tool-output", "--full", "--no-sync"])
+        .output()
+        .unwrap();
+    assert!(
+        shown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shown.stderr)
+    );
+    assert!(String::from_utf8(shown.stdout)
+        .unwrap()
+        .contains("output-from-deleted-source"));
+
+    let brief = command()
+        .args(["brief", "archived-tool-output", "--tools", "--no-sync"])
+        .output()
+        .unwrap();
+    assert!(
+        brief.status.success(),
+        "{}",
+        String::from_utf8_lossy(&brief.stderr)
+    );
+    assert!(String::from_utf8(brief.stdout)
+        .unwrap()
+        .contains("output-from-deleted-source"));
+
+    let mode = command().arg("tool-output").output().unwrap();
+    assert!(mode.status.success());
+    assert_eq!(String::from_utf8(mode.stdout).unwrap().trim(), "full");
+
+    let changed = command().args(["tool-output", "summary"]).output().unwrap();
+    assert!(changed.status.success());
+    assert!(String::from_utf8(changed.stdout)
+        .unwrap()
+        .contains("removed for live sessions. Archived sessions keep their existing output"));
 }
 
 fn mcp_reads_external(source_exists: bool) {

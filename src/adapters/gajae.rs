@@ -1,7 +1,8 @@
 use super::{
-    dedup_paths, ok_or_flag, parse_ts, redacted_truncate, title_from_messages, Adapter, Discovered,
+    bounded_redacted_output, dedup_paths, ok_or_flag, parse_ts, redacted_truncate,
+    title_from_messages, Adapter, Discovered,
 };
-use crate::model::{Message, Role, Session};
+use crate::model::{Message, Role, Session, ToolCall, ToolResult};
 use crate::util::short_id;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -144,7 +145,8 @@ fn parse_jsonl(tool: &'static str, path: &Path) -> Result<Session> {
                 let Some(msg) = entry.get("message") else {
                     continue;
                 };
-                let role = match msg.get("role").and_then(Value::as_str) {
+                let raw_role = msg.get("role").and_then(Value::as_str);
+                let role = match raw_role {
                     Some("user") => Role::User,
                     Some("assistant") => Role::Assistant,
                     Some("toolResult") => Role::Tool,
@@ -157,6 +159,22 @@ fn parse_jsonl(tool: &'static str, path: &Path) -> Result<Session> {
                     .and_then(Value::as_i64)
                     .and_then(DateTime::from_timestamp_millis)
                     .or(outer_ts);
+
+                if raw_role == Some("toolResult") {
+                    messages.push(Message::tool_result(
+                        ts,
+                        ToolResult {
+                            call_id: msg
+                                .get("toolCallId")
+                                .and_then(Value::as_str)
+                                .filter(|id| !id.is_empty())
+                                .map(str::to_owned),
+                            text: bounded_redacted_output(&block_text(msg.get("content"))),
+                            is_error: msg.get("isError").and_then(Value::as_bool).unwrap_or(false),
+                        },
+                    ));
+                    continue;
+                }
 
                 match msg.get("content") {
                     Some(Value::String(s)) => push(&mut messages, role, s, ts),
@@ -177,13 +195,21 @@ fn parse_jsonl(tool: &'static str, path: &Path) -> Result<Session> {
                                             touched.push(p);
                                         }
                                     }
-                                    let a = args.map(|v| v.to_string()).unwrap_or_default();
-                                    push(
-                                        &mut messages,
-                                        Role::Tool,
-                                        &format!("{name} {}", redacted_truncate(&a, 300)),
+                                    let mut args =
+                                        args.cloned().unwrap_or_else(|| serde_json::json!({}));
+                                    redact_json_strings(&mut args);
+                                    messages.push(Message::tool_call(
                                         ts,
-                                    );
+                                        ToolCall {
+                                            id: block
+                                                .get("id")
+                                                .and_then(Value::as_str)
+                                                .filter(|id| !id.is_empty())
+                                                .map(str::to_owned),
+                                            name: name.to_owned(),
+                                            args,
+                                        },
+                                    ));
                                 }
                                 // thinking / redactedThinking / image - skip.
                                 _ => {}
@@ -238,6 +264,27 @@ fn arg_paths(args: Option<&Value>) -> Vec<String> {
     vec![]
 }
 
+fn block_text(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|block| block.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+fn redact_json_strings(value: &mut Value) {
+    match value {
+        Value::String(text) => *text = crate::redact::redact(text).into_owned(),
+        Value::Array(values) => values.iter_mut().for_each(redact_json_strings),
+        Value::Object(values) => values.values_mut().for_each(redact_json_strings),
+        _ => {}
+    }
+}
+
 fn push(messages: &mut Vec<Message>, role: Role, text: &str, ts: Option<DateTime<Utc>>) {
     let text = text.trim();
     if !text.is_empty() {
@@ -245,6 +292,7 @@ fn push(messages: &mut Vec<Message>, role: Role, text: &str, ts: Option<DateTime
             role,
             text: text.to_string(),
             ts,
+            tool: None,
         });
     }
 }

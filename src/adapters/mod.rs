@@ -111,6 +111,23 @@ pub trait Adapter {
     }
 }
 
+/// Parse a session through an adapter and normalize any structured tool parts.
+/// Callers that consume adapter output should use this rather than `parse`
+/// directly so indexing and live readers share identical tool summaries.
+pub fn parse_session(adapter: &dyn Adapter, path: &Path) -> Result<Session> {
+    let mut session = adapter.parse(path)?;
+    crate::tool_summary::fold_tool_parts(&mut session);
+    Ok(session)
+}
+
+/// Parse one key from a shared-store adapter and apply the same normalization
+/// as the ordinary file-backed path.
+pub fn parse_session_key(adapter: &dyn Adapter, key: &str) -> Result<Session> {
+    let mut session = adapter.parse_key(key)?;
+    crate::tool_summary::fold_tool_parts(&mut session);
+    Ok(session)
+}
+
 /// The [`Adapter::reconcile_scope`] for an adapter pinned to `root`: every key
 /// under that directory, as a path prefix.
 pub(crate) fn root_scope(root: Option<&Path>) -> Option<String> {
@@ -239,6 +256,19 @@ pub(crate) fn title_from_messages(messages: &[crate::model::Message]) -> String 
 /// the redactor to recognize.
 pub(crate) fn redacted_truncate(text: &str, max: usize) -> String {
     crate::util::truncate(&crate::redact::redact(text), max)
+}
+
+const MAX_TOOL_OUTPUT_BYTES: usize = 8 * 1024;
+
+/// Redact a complete tool result, then cap it without splitting a UTF-8 code
+/// point. Redacting before truncation keeps credential detection intact.
+pub(crate) fn bounded_redacted_output(text: &str) -> String {
+    let redacted = crate::redact::redact(text);
+    let mut end = redacted.len().min(MAX_TOOL_OUTPUT_BYTES);
+    while !redacted.is_char_boundary(end) {
+        end -= 1;
+    }
+    redacted[..end].to_owned()
 }
 
 /// First-line title variant for adapters whose existing format uses a hard

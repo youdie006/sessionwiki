@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use serde_json::Value;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -39,6 +40,67 @@ pub struct Message {
     pub role: Role,
     pub text: String,
     pub ts: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<ToolEvent>,
+}
+
+/// Structured tool data before or after the shared summary pass.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum ToolEvent {
+    Part(ToolPart),
+    Summary(ToolSummary),
+}
+
+/// A tool call or result emitted by an adapter before pairing.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolPart {
+    Call(ToolCall),
+    Result(ToolResult),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolCall {
+    pub id: Option<String>,
+    pub name: String,
+    pub args: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolResult {
+    pub call_id: Option<String>,
+    pub text: String,
+    pub is_error: bool,
+}
+
+/// Paired tool data retained in memory after its compact line is rendered.
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolSummary {
+    pub name: String,
+    pub args: Value,
+    pub output: Option<String>,
+    pub is_error: Option<bool>,
+    pub lines: Option<usize>,
+}
+impl Message {
+    pub fn tool_call(ts: Option<DateTime<Utc>>, call: ToolCall) -> Self {
+        Self {
+            role: Role::Tool,
+            text: String::new(),
+            ts,
+            tool: Some(ToolEvent::Part(ToolPart::Call(call))),
+        }
+    }
+
+    pub fn tool_result(ts: Option<DateTime<Utc>>, result: ToolResult) -> Self {
+        Self {
+            role: Role::Tool,
+            text: String::new(),
+            ts,
+            tool: Some(ToolEvent::Part(ToolPart::Result(result))),
+        }
+    }
 }
 
 /// The write tool behind one file edit, normalized across the variants a tool

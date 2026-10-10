@@ -1,11 +1,11 @@
 use super::{
-    clean_path, dedup_paths, ok_or_flag, parse_ts, redacted_truncate, title_from_messages, Adapter,
-    Discovered,
+    bounded_redacted_output, clean_path, dedup_paths, ok_or_flag, parse_ts, redacted_truncate,
+    title_from_messages, Adapter, Discovered,
 };
-use crate::model::{Message, Role, Session};
+use crate::model::{Message, Role, Session, ToolCall, ToolResult};
 use crate::util::short_id;
 use anyhow::Result;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -142,15 +142,23 @@ impl Adapter for ClaudeCode {
                                         }
                                     }
                                     Some("tool_result") => {
-                                        let t = block_text(b.get("content"));
-                                        if !t.is_empty() {
-                                            push(
-                                                &mut messages,
-                                                Role::Tool,
-                                                &redacted_truncate(&t, 500),
-                                                ts,
-                                            );
-                                        }
+                                        let output =
+                                            bounded_redacted_output(&block_text(b.get("content")));
+                                        messages.push(Message::tool_result(
+                                            ts,
+                                            ToolResult {
+                                                call_id: b
+                                                    .get("tool_use_id")
+                                                    .and_then(Value::as_str)
+                                                    .filter(|id| !id.is_empty())
+                                                    .map(str::to_owned),
+                                                text: output,
+                                                is_error: b
+                                                    .get("is_error")
+                                                    .and_then(Value::as_bool)
+                                                    .unwrap_or(false),
+                                            },
+                                        ));
                                     }
                                     _ => {}
                                 }
@@ -180,10 +188,20 @@ impl Adapter for ClaudeCode {
                                     touched.push(ev.path.clone());
                                     edits.push(ev);
                                 }
-                                let input =
-                                    b.get("input").map(|i| i.to_string()).unwrap_or_default();
-                                let text = format!("{name} {}", redacted_truncate(&input, 300));
-                                push(&mut messages, Role::Tool, &text, ts);
+                                let mut args = b.get("input").cloned().unwrap_or_else(|| json!({}));
+                                redact_json_strings(&mut args);
+                                messages.push(Message::tool_call(
+                                    ts,
+                                    ToolCall {
+                                        id: b
+                                            .get("id")
+                                            .and_then(Value::as_str)
+                                            .filter(|id| !id.is_empty())
+                                            .map(str::to_owned),
+                                        name: name.to_owned(),
+                                        args,
+                                    },
+                                ));
                             }
                             _ => {}
                         }
@@ -315,6 +333,7 @@ fn push(
             role,
             text: text.to_string(),
             ts,
+            tool: None,
         });
     }
 }
@@ -327,8 +346,17 @@ fn block_text(content: Option<&Value>) -> String {
             .iter()
             .filter_map(|b| b.get("text").and_then(Value::as_str))
             .collect::<Vec<_>>()
-            .join(" "),
+            .join("\n"),
         _ => String::new(),
+    }
+}
+
+fn redact_json_strings(value: &mut Value) {
+    match value {
+        Value::String(text) => *text = crate::redact::redact(text).into_owned(),
+        Value::Array(values) => values.iter_mut().for_each(redact_json_strings),
+        Value::Object(values) => values.values_mut().for_each(redact_json_strings),
+        _ => {}
     }
 }
 
@@ -413,7 +441,7 @@ mod tests {
         let line = r#"{"type":"assistant","timestamp":"2026-07-01T10:00:00Z","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/repo/src/auth.rs","old_string":"a","new_string":"let fixed = true;"}}]}}"#;
         std::fs::write(&path, format!("{line}\n")).unwrap();
 
-        let session = ClaudeCode::default().parse(&path).unwrap();
+        let session = super::super::parse_session(&ClaudeCode::default(), &path).unwrap();
 
         assert_eq!(session.edits.len(), 1, "one edit event extracted");
         assert_eq!(session.edits[0].path, "/repo/src/auth.rs");

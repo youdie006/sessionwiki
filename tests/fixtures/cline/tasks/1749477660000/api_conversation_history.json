@@ -43,6 +43,52 @@
   {
     "role": "assistant",
     "content": [
+      {
+        "type": "tool_use",
+        "id": "toolu_3",
+        "name": "execute_command",
+        "input": { "command": "cargo test" }
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "tool_result",
+        "tool_use_id": "toolu_3",
+        "content": [
+          { "type": "text", "text": "Error: cargo test failed" },
+          { "type": "text", "text": "2 tests failed" }
+        ],
+        "is_error": true
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": [
+      {
+        "type": "tool_use",
+        "id": "toolu_4",
+        "name": "read_file",
+        "input": { "path": "src/output.txt" }
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "tool_result",
+        "tool_use_id": "toolu_4",
+        "content": "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10"
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": [
       { "type": "text", "text": "Done - added hello() and a test." }
     ]
   }

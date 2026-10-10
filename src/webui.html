@@ -447,6 +447,13 @@
     font-size: 11.5px;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  .toolrow .toolline {
+    padding: 7px 12px;
+    color: var(--ink-2);
+    font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    overflow-wrap: anywhere;
+  }
   .toolrow summary::before {
     content: "";
     flex: none;
@@ -948,11 +955,18 @@ async function openSession(id) {
   for (const [mi, m] of s.messages.entries()) {
     if (m.role === "tool") {
       const row = el("div", "toolrow");
-      const det = el("details");
       const sum = el("summary", "", m.text.split("\n")[0].slice(0, 140));
-      const body = el("div", "body", m.text);
-      det.append(sum, body);
-      row.appendChild(det);
+      const summary = m.tool?.kind === "summary" ? m.tool.value : null;
+      const compact = m.text.startsWith("→ ") && m.text.includes(" ⇒ ") && !m.text.includes("\n");
+      const output = typeof summary?.output === "string" ? summary.output : (compact ? "" : m.text);
+      if (output) {
+        const det = el("details");
+        const body = el("div", "body", output);
+        det.append(sum, body);
+        row.appendChild(det);
+      } else {
+        row.appendChild(el("div", "toolline", m.text));
+      }
       doc.appendChild(row);
       anchors[mi] = row;
       continue;

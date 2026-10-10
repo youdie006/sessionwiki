@@ -1,0 +1,79 @@
+{
+  "sessionId": "abcd1234-0000-0000-0000-000000000025",
+  "projectHash": "demo",
+  "startTime": "2026-06-08T11:00:00.000Z",
+  "lastUpdated": "2026-06-08T11:00:20.000Z",
+  "messages": [
+    {
+      "id": "m1",
+      "timestamp": "2026-06-08T11:00:01.000Z",
+      "type": "user",
+      "content": "Run the checks and inspect the file."
+    },
+    {
+      "id": "m2",
+      "timestamp": "2026-06-08T11:00:05.000Z",
+      "type": "gemini",
+      "content": [
+        { "text": "I will run the checks and inspect the file." },
+        { "functionCall": { "id": "call_ok", "name": "run_shell_command", "args": { "command": "cargo test" } } },
+        { "functionCall": { "id": "call_error", "name": "run_shell_command", "args": { "command": "cargo test --broken" } } },
+        { "functionCall": { "id": "call_long", "name": "read_file", "args": { "file_path": "src/lib.rs" } } }
+      ],
+      "toolCalls": [
+        {
+          "id": "call_ok",
+          "name": "run_shell_command",
+          "args": { "command": "cargo test" },
+          "result": [ { "functionResponse": { "id": "call_ok", "name": "run_shell_command", "response": { "output": "Tests passed" } } } ],
+          "status": "success",
+          "timestamp": "2026-06-08T11:00:06.000Z"
+        },
+        {
+          "id": "call_error",
+          "name": "run_shell_command",
+          "args": { "command": "cargo test --broken" },
+          "result": [ { "functionResponse": { "id": "call_error", "name": "run_shell_command", "response": { "error": "permission denied" } } } ],
+          "status": "error",
+          "timestamp": "2026-06-08T11:00:08.000Z"
+        },
+        {
+          "id": "call_long",
+          "name": "read_file",
+          "args": { "file_path": "src/lib.rs" },
+          "result": [ { "functionResponse": { "id": "call_long", "name": "read_file", "response": { "output": "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12" } } } ],
+          "status": "success",
+          "timestamp": "2026-06-08T11:00:10.000Z"
+        }
+      ]
+    },
+    {
+      "id": "m3",
+      "timestamp": "2026-06-08T11:00:12.000Z",
+      "type": "user",
+      "content": [
+        { "functionResponse": { "id": "call_ok", "name": "run_shell_command", "response": { "output": "Tests passed" } } },
+        { "functionResponse": { "id": "call_error", "name": "run_shell_command", "response": { "error": "permission denied" } } },
+        { "functionResponse": { "id": "call_long", "name": "read_file", "response": { "output": "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12" } } }
+      ]
+    },
+    {
+      "id": "m4",
+      "timestamp": "2026-06-08T11:00:15.000Z",
+      "type": "gemini",
+      "content": [ { "functionCall": { "id": "call_content_only", "name": "list_files", "args": { "path": "src" } } } ]
+    },
+    {
+      "id": "m5",
+      "timestamp": "2026-06-08T11:00:18.000Z",
+      "type": "user",
+      "content": [ { "functionResponse": { "id": "call_content_only", "name": "list_files", "response": { "output": "lib.rs" } } } ]
+    },
+    {
+      "id": "m6",
+      "timestamp": "2026-06-08T11:00:20.000Z",
+      "type": "gemini",
+      "content": "All done."
+    }
+  ]
+}

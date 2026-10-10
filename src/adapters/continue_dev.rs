@@ -1,9 +1,13 @@
-use super::{dedup_paths, ok_or_flag, redacted_truncate, title_from_messages, Adapter, Discovered};
-use crate::model::{Message, Role, Session};
+use super::{
+    bounded_redacted_output, dedup_paths, ok_or_flag, redacted_truncate, title_from_messages,
+    Adapter, Discovered,
+};
+use crate::model::{Message, Role, Session, ToolCall, ToolResult};
 use crate::util::short_id;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Continue (github continuedev/continue) stores one session per file at
@@ -98,6 +102,12 @@ fn parse_session(tool: &'static str, path: &Path) -> Result<Session> {
     let mut touched: Vec<String> = Vec::new();
 
     if let Some(history) = s.get("history").and_then(Value::as_array) {
+        let explicit_result_ids: HashSet<&str> = history
+            .iter()
+            .filter(|item| item.pointer("/message/role").and_then(Value::as_str) == Some("tool"))
+            .filter_map(|item| item.pointer("/message/toolCallId").and_then(Value::as_str))
+            .collect();
+
         for item in history {
             let msg = item.get("message");
             let role = match msg.and_then(|m| m.get("role")).and_then(Value::as_str) {
@@ -107,23 +117,74 @@ fn parse_session(tool: &'static str, path: &Path) -> Result<Session> {
                 // system / unknown - skip.
                 _ => continue,
             };
+
+            if role == Role::Tool {
+                if let Some(content) = msg.and_then(|m| m.get("content")) {
+                    let call_id = msg
+                        .and_then(|m| m.get("toolCallId"))
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                        .map(str::to_owned);
+                    let is_error = call_id
+                        .as_deref()
+                        .is_some_and(|id| tool_status_is_error(history, id));
+                    messages.push(Message::tool_result(
+                        None,
+                        ToolResult {
+                            call_id,
+                            text: bounded_redacted_output(&content_text(content)),
+                            is_error,
+                        },
+                    ));
+                }
+                continue;
+            }
+
             if let Some(text) = msg.and_then(|m| m.get("content")).map(content_text) {
                 push(&mut messages, role, &text);
             }
 
-            // File edits: prefer the already-parsed toolCallStates, fall back to
-            // the raw toolCalls on the message.
-            let calls = tool_calls(item);
-            for (name, filepath, arg) in calls {
-                if EDIT_TOOLS.contains(&name.as_str()) && !filepath.is_empty() {
-                    touched.push(filepath.clone());
+            if role != Role::Assistant {
+                continue;
+            }
+
+            for mut call in tool_calls(item) {
+                redact_json_strings(&mut call.args);
+                let filepath = call
+                    .args
+                    .get("filepath")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if EDIT_TOOLS.contains(&call.name.as_str()) && !filepath.is_empty() {
+                    touched.push(filepath.to_owned());
                 }
-                let detail = if filepath.is_empty() { arg } else { filepath };
-                push(
-                    &mut messages,
-                    Role::Tool,
-                    &format!("{name} {}", redacted_truncate(&detail, 300)),
-                );
+                messages.push(Message::tool_call(None, call));
+            }
+
+            if let Some(states) = item.get("toolCallStates").and_then(Value::as_array) {
+                for state in states {
+                    let Some(id) = state
+                        .get("toolCallId")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                    else {
+                        continue;
+                    };
+                    if explicit_result_ids.contains(id) {
+                        continue;
+                    }
+                    let Some(output) = state_output(state) else {
+                        continue;
+                    };
+                    messages.push(Message::tool_result(
+                        None,
+                        ToolResult {
+                            call_id: Some(id.to_owned()),
+                            text: bounded_redacted_output(&output),
+                            is_error: status_is_error(state.get("status").and_then(Value::as_str)),
+                        },
+                    ));
+                }
             }
         }
     }
@@ -159,61 +220,143 @@ fn content_text(content: &Value) -> String {
     }
 }
 
-/// `(tool name, filepath, raw-args)` for each tool call on a history item.
-/// `toolCallStates[].parsedArgs` is preferred (already an object); otherwise
-/// parse the JSON string in `message.toolCalls[].function.arguments`.
-fn tool_calls(item: &Value) -> Vec<(String, String, String)> {
-    if let Some(states) = item.get("toolCallStates").and_then(Value::as_array) {
-        if !states.is_empty() {
-            return states
-                .iter()
-                .map(|st| {
-                    let name = st
-                        .pointer("/toolCall/function/name")
-                        .and_then(Value::as_str)
-                        .unwrap_or("?")
-                        .to_string();
-                    let filepath = st
-                        .pointer("/parsedArgs/filepath")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                    let arg = st
-                        .get("parsedArgs")
-                        .map(|v| v.to_string())
-                        .unwrap_or_default();
-                    (name, filepath, arg)
-                })
-                .collect();
-        }
-    }
-    item.get("message")
-        .and_then(|m| m.get("toolCalls"))
+/// Calls from `message.toolCalls`, enriched with parsed state args when
+/// available. Older history entries containing only toolCallStates still work.
+fn tool_calls(item: &Value) -> Vec<ToolCall> {
+    if let Some(calls) = item
+        .pointer("/message/toolCalls")
         .and_then(Value::as_array)
-        .map(|calls| {
-            calls
-                .iter()
-                .map(|c| {
-                    let name = c
-                        .pointer("/function/name")
+        .filter(|calls| !calls.is_empty())
+    {
+        return calls
+            .iter()
+            .enumerate()
+            .map(|(index, call)| {
+                let state =
+                    matching_tool_state(item, call.get("id").and_then(Value::as_str), index);
+                let id = call
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .or_else(|| state.and_then(|st| st.get("toolCallId").and_then(Value::as_str)))
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_owned);
+                let name = call
+                    .pointer("/function/name")
+                    .and_then(Value::as_str)
+                    .or_else(|| {
+                        state
+                            .and_then(|st| st.pointer("/toolCall/function/name"))
+                            .and_then(Value::as_str)
+                    })
+                    .unwrap_or("?")
+                    .to_owned();
+                let args = state
+                    .and_then(|st| st.get("parsedArgs"))
+                    .filter(|args| !args.is_null())
+                    .cloned()
+                    .unwrap_or_else(|| call_arguments(call));
+                ToolCall { id, name, args }
+            })
+            .collect();
+    }
+
+    item.get("toolCallStates")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|state| {
+            let tool_call = state.get("toolCall");
+            let id = state
+                .get("toolCallId")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    tool_call
+                        .and_then(|call| call.get("id"))
                         .and_then(Value::as_str)
-                        .unwrap_or("?")
-                        .to_string();
-                    let arg = c
-                        .pointer("/function/arguments")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                    // arguments is a JSON-encoded string.
-                    let filepath = serde_json::from_str::<Value>(&arg)
-                        .ok()
-                        .and_then(|v| v.get("filepath").and_then(Value::as_str).map(String::from))
-                        .unwrap_or_default();
-                    (name, filepath, arg)
                 })
-                .collect()
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned);
+            let name = tool_call
+                .and_then(|call| call.pointer("/function/name"))
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_owned();
+            let args = state
+                .get("parsedArgs")
+                .filter(|args| !args.is_null())
+                .cloned()
+                .unwrap_or_else(|| {
+                    tool_call
+                        .map(call_arguments)
+                        .unwrap_or_else(|| serde_json::json!({}))
+                });
+            ToolCall { id, name, args }
         })
-        .unwrap_or_default()
+        .collect()
+}
+
+fn matching_tool_state<'a>(item: &'a Value, id: Option<&str>, index: usize) -> Option<&'a Value> {
+    let states = item.get("toolCallStates")?.as_array()?;
+    id.filter(|id| !id.is_empty())
+        .and_then(|id| {
+            states
+                .iter()
+                .find(|state| state.get("toolCallId").and_then(Value::as_str) == Some(id))
+        })
+        .or_else(|| states.get(index))
+}
+
+fn call_arguments(call: &Value) -> Value {
+    match call.pointer("/function/arguments") {
+        Some(Value::String(arguments)) => {
+            serde_json::from_str(arguments).unwrap_or_else(|_| Value::String(arguments.clone()))
+        }
+        Some(arguments) => arguments.clone(),
+        None => serde_json::json!({}),
+    }
+}
+
+fn tool_status_is_error(history: &[Value], id: &str) -> bool {
+    history
+        .iter()
+        .flat_map(|item| {
+            item.get("toolCallStates")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .find(|state| state.get("toolCallId").and_then(Value::as_str) == Some(id))
+        .is_some_and(|state| status_is_error(state.get("status").and_then(Value::as_str)))
+}
+
+fn status_is_error(status: Option<&str>) -> bool {
+    status.is_some_and(|status| {
+        matches!(
+            status.to_ascii_lowercase().as_str(),
+            "errored" | "error" | "failed" | "canceled" | "cancelled"
+        )
+    })
+}
+
+fn state_output(state: &Value) -> Option<String> {
+    let output = state.get("output")?.as_array()?;
+    let text = output
+        .iter()
+        .filter_map(|item| item.get("content"))
+        .map(content_text)
+        .filter(|content| !content.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.is_empty()).then_some(text)
+}
+
+fn redact_json_strings(value: &mut Value) {
+    match value {
+        Value::String(text) => *text = crate::redact::redact(text).into_owned(),
+        Value::Array(values) => values.iter_mut().for_each(redact_json_strings),
+        Value::Object(values) => values.values_mut().for_each(redact_json_strings),
+        _ => {}
+    }
 }
 
 /// The session file carries no time; `sessions.json` records `dateCreated`
@@ -241,6 +384,7 @@ fn push(messages: &mut Vec<Message>, role: Role, text: &str) {
             role,
             text: text.to_string(),
             ts: None,
+            tool: None,
         });
     }
 }

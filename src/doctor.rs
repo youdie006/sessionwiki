@@ -63,6 +63,10 @@ pub fn index_checks(conn: &Connection, expected_schema: i64) -> Vec<Check> {
         Ok(spec) => Check::ok("search tokenizer", spec),
         Err(e) => Check::warn("search tokenizer", format!("unavailable: {e}")),
     });
+    checks.push(match crate::index::tool_output_mode(conn) {
+        Ok(mode) => Check::ok("tool output storage", mode.to_string()),
+        Err(e) => Check::warn("tool output storage", format!("unavailable: {e}")),
+    });
 
     // Real reads of each core table: a query error is a genuine problem (missing
     // table, lock, read-corruption), never a healthy empty index - so it must not
@@ -257,15 +261,21 @@ mod tests {
         )
         .unwrap();
 
-        let checks = index_checks(&c, 8);
+        let checks = index_checks(&c, 9);
         let schema = checks.iter().find(|c| c.name == "index schema").unwrap();
-        assert_eq!(schema.status, Status::Warn, "v7 vs expected v8 is a warn");
+        assert_eq!(schema.status, Status::Warn, "v7 vs expected v9 is a warn");
         let tokenizer = checks
             .iter()
             .find(|c| c.name == "search tokenizer")
             .unwrap();
         assert_eq!(tokenizer.status, Status::Ok);
         assert_eq!(tokenizer.detail, "trigram");
+        let tool_output = checks
+            .iter()
+            .find(|c| c.name == "tool output storage")
+            .unwrap();
+        assert_eq!(tool_output.status, Status::Ok);
+        assert_eq!(tool_output.detail, "summary");
         let tables = checks.iter().find(|c| c.name == "index tables").unwrap();
         assert_eq!(tables.status, Status::Ok, "all core tables readable");
         let sessions = checks
@@ -288,7 +298,7 @@ mod tests {
     fn a_missing_core_table_is_a_fail_not_a_healthy_zero() {
         let c = conn();
         c.execute("DROP TABLE edits", []).unwrap();
-        let tables = index_checks(&c, 8)
+        let tables = index_checks(&c, 9)
             .into_iter()
             .find(|c| c.name == "index tables")
             .unwrap();
@@ -302,8 +312,8 @@ mod tests {
     #[test]
     fn index_checks_pass_a_current_schema() {
         let c = conn();
-        c.pragma_update(None, "user_version", 8i64).unwrap();
-        let checks = index_checks(&c, 8);
+        c.pragma_update(None, "user_version", 9i64).unwrap();
+        let checks = index_checks(&c, 9);
         let schema = checks
             .into_iter()
             .find(|c| c.name == "index schema")

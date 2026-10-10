@@ -18,6 +18,7 @@ pub mod migrate;
 pub mod model;
 pub mod redact;
 pub mod resume;
+pub mod tool_summary;
 pub mod util;
 pub mod web;
 pub mod window;

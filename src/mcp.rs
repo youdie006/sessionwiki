@@ -126,7 +126,7 @@ fn tools_list() -> Value {
         {
             "name": "get_session_brief",
             "title": "Get a bounded briefing of one session",
-            "description": "Return a markdown briefing (head and tail) of one session by its short id from search or trace results. Read-only, local.",
+            "description": "Return a markdown briefing (head and tail) of one session by its short id from search or trace results. Tool calls appear as compact one-line summaries; bulk tool output is omitted. Read-only, local.",
             "annotations": {"readOnlyHint": true},
             "inputSchema": {
                 "type": "object",
@@ -140,7 +140,7 @@ fn tools_list() -> Value {
         {
             "name": "session_window",
             "title": "Read another session's recent conversation (bounded)",
-            "description": "Return the ACTUAL recent turns of one session (not a summary) as versioned JSON (schema \"sessionwiki.window/1\"), so you can see what a sibling agent/session is doing. Fields: id, tool, project, title, started/ended, messages (total turns), large (indexed head+tail), budget_tokens, omitted_leading, turns[] (each with i=index, role=user|assistant|tool, text, and truncated/folded+bytes), drilldown. Tool outputs are folded head+tail and byte-bounded; the recent tail is kept within budget_tokens. Reads the session file directly (0-delay), so a still-running session's latest turns show without a sync. Pass `turn` (a turn's i) to fetch that one turn's full retained text, untruncated by the window's folding/cap (schema \"sessionwiki.turn/1\"; tool outputs are already capped at parse time). Use `search_sessions`/`trace_file`/`recent_sessions` to find the id. Read-only, local.",
+            "description": "Return the ACTUAL recent turns of one session (not a summary) as versioned JSON (schema \"sessionwiki.window/1\"), so you can see what a sibling agent/session is doing. Fields: id, tool, project, title, started/ended, messages (total turns), large (indexed head+tail), budget_tokens, omitted_leading, turns[] (each with i=index, role=user|assistant|tool, text, and truncated/folded+bytes), drilldown. Structured tool calls appear as compact one-line summaries with status and output line count; legacy tool text is folded head+tail and byte-bounded. The recent tail is kept within budget_tokens. Reads the session file directly (0-delay), so a still-running session's latest turns show without a sync. Pass `turn` (a turn's i) to fetch that one turn's full retained text, untruncated by the window's folding/cap (schema \"sessionwiki.turn/1\"). Use `search_sessions`/`trace_file`/`recent_sessions` to find the id. Read-only, local.",
             "annotations": {"readOnlyHint": true},
             "inputSchema": {
                 "type": "object",
@@ -504,11 +504,11 @@ fn tool_recent(conn: &mut Option<Connection>, args: &Value) -> Value {
 
 /// A bounded, agent-consumable window of ONE session as versioned JSON (schema
 /// `sessionwiki.window/1`): the real turns (not a lossy summary) with role
-/// labels, tool outputs folded to head+tail, capped to the recent tail by a
-/// token budget. Reads the session file directly (0-delay), so a still-running
-/// sibling session's latest turns show without waiting for a sync. With `turn`
-/// set, returns that one turn's full untruncated text (schema
-/// `sessionwiki.turn/1`) - the per-turn drill-down.
+/// labels and compact tool summaries, capped to the recent tail by a token
+/// budget. Legacy tool text is folded to head+tail. Reads the session file
+/// directly (0-delay), so a still-running sibling session's latest turns show
+/// without waiting for a sync. With `turn` set, returns that one turn's full
+/// untruncated text (schema `sessionwiki.turn/1`) - the per-turn drill-down.
 fn tool_window(conn: &mut Option<Connection>, args: &Value) -> Value {
     let id = args.get("id").and_then(Value::as_str).unwrap_or("").trim();
     if id.is_empty() {
@@ -536,7 +536,9 @@ fn tool_window(conn: &mut Option<Connection>, args: &Value) -> Value {
             // no sync - so it opens in one call before the index catches up.
             match crate::index::locate_by_native_id(id) {
                 Some((tool, path)) => {
-                    match crate::adapters::by_name(&tool).map(|a| a.parse(&path)) {
+                    match crate::adapters::by_name(&tool)
+                        .map(|adapter| crate::adapters::parse_session(adapter.as_ref(), &path))
+                    {
                         Some(Ok(s)) => s,
                         _ => {
                             return text_result(
@@ -1045,10 +1047,32 @@ mod tests {
     #[test]
     fn brief_bounds_strips_source_and_prefixes_untrusted() {
         let _lock = LOCK.lock().unwrap();
-        let _c = seed("sessionwiki-test-mcp-brief");
+        let c = seed("sessionwiki-test-mcp-brief");
+        let compact = "→ Bash(cargo test) ⇒ ok · 2 lines";
+        c.execute(
+            "INSERT INTO messages(session_id,role,text) VALUES('s1','tool',?1)",
+            params![compact],
+        )
+        .unwrap();
+        let rowid: i64 = c
+            .query_row(
+                "SELECT id FROM messages WHERE session_id='s1' AND role='tool'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        c.execute(
+            "INSERT INTO msgs(rowid,text) VALUES(?1,?2)",
+            params![rowid, compact],
+        )
+        .unwrap();
         let (v, text) = tool("get_session_brief", json!({"id": "s1", "max_chars": 500}));
         assert!(v["result"]["isError"] != true, "not an error: {v}");
         assert!(text.starts_with("Untrusted session content"));
+        assert!(
+            text.contains(compact),
+            "compact tool lines are included by default: {text}"
+        );
         assert!(
             !text.contains("/home/me") && !text.contains("Source:"),
             "no path leak: {text}"

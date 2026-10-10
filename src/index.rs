@@ -82,10 +82,49 @@ pub fn existing_db_path() -> Option<PathBuf> {
 /// deleted - and are versioned separately by `meta.durable_version` via forward,
 /// additive-only migrations that never drop, so they survive every upgrade. The
 /// two counters are independent and must never gate each other.
-pub const SCHEMA_VERSION: i64 = 8; // 8: redact secrets at index time (rebuild scrubs old rows)
+pub const SCHEMA_VERSION: i64 = 9; // 9: compact tool lines + optional full outputs
 
 const DEFAULT_FTS_TOKENIZER: &str = "trigram";
 const FTS_TOKENIZER_META_KEY: &str = "fts_tokenizer";
+const DEFAULT_TOOL_OUTPUT_MODE: ToolOutputMode = ToolOutputMode::Summary;
+const TOOL_OUTPUT_MODE_META_KEY: &str = "tool_output_mode";
+
+/// Whether full tool results are retained in the index and archive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolOutputMode {
+    /// Retain bounded, redacted tool output separately from searchable text.
+    Full,
+    /// Keep compact tool summary lines in the index and archive. Failed calls
+    /// include the first output line in their summary.
+    Summary,
+}
+
+impl ToolOutputMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Summary => "summary",
+        }
+    }
+}
+
+impl std::fmt::Display for ToolOutputMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for ToolOutputMode {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value {
+            "full" => Ok(Self::Full),
+            "summary" => Ok(Self::Summary),
+            _ => Err("tool output mode must be full or summary"),
+        }
+    }
+}
 
 /// Version of the durable schema this binary ships. The durable CREATE
 /// statements are frozen at this shape; every later durable change is a
@@ -304,6 +343,118 @@ pub fn set_tokenizer_spec(conn: &Connection, spec: &str) -> Result<bool> {
     }
 }
 
+/// Read whether full tool results are retained. Indexes without an explicit
+/// choice use `summary`, keeping compact tool lines in the archive.
+pub fn tool_output_mode(conn: &Connection) -> Result<ToolOutputMode> {
+    let value = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            [TOOL_OUTPUT_MODE_META_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    match value {
+        None => Ok(DEFAULT_TOOL_OUTPUT_MODE),
+        Some(value) => value.parse().map_err(anyhow::Error::msg),
+    }
+}
+
+/// Change tool-output retention for this index. Switching to `summary` clears
+/// full output from live sessions only; archived sessions keep the contents
+/// already stored in both `messages` and `archive`. Switching back to `full`
+/// marks live sessions stale so the next sync re-parses their source files.
+pub fn set_tool_output_mode(conn: &Connection, mode: ToolOutputMode) -> Result<bool> {
+    if tool_output_mode(conn)? == mode {
+        return Ok(false);
+    }
+
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let outcome = (|| -> Result<bool> {
+        if tool_output_mode(conn)? == mode {
+            return Ok(false);
+        }
+        match mode {
+            ToolOutputMode::Full => {
+                // Negative change tokens cannot match filesystem metadata or
+                // shared-store tokens, and sync treats them as forced work
+                // even for a bounded recent-session refresh.
+                conn.execute(
+                    "UPDATE files SET mtime = -1, size = -1 WHERE archived_at IS NULL",
+                    [],
+                )?;
+            }
+            ToolOutputMode::Summary => {
+                // Archived sessions have no source file to recover output from,
+                // so preserve their durable copy in both messages and archive.
+                conn.execute(
+                    "UPDATE messages SET full_text = NULL
+                     WHERE session_id IN (
+                         SELECT session_id FROM files WHERE archived_at IS NULL
+                     )",
+                    [],
+                )?;
+            }
+        }
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![TOOL_OUTPUT_MODE_META_KEY, mode.as_str()],
+        )?;
+        Ok(true)
+    })();
+    match outcome {
+        Ok(changed) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(changed)
+        }
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
+}
+
+struct ArchiveMessage {
+    role: String,
+    text: String,
+    full_text: Option<String>,
+}
+
+/// Read both the historical `[role, text]` archive rows and the newer
+/// `[role, text, full_text]` rows. Legacy sessions naturally have no output.
+fn decode_archive_transcript(transcript: &str) -> Result<Vec<ArchiveMessage>> {
+    let rows: Vec<serde_json::Value> = serde_json::from_str(transcript)?;
+    rows.into_iter()
+        .map(|row| {
+            let fields = row
+                .as_array()
+                .context("archive transcript message must be an array")?;
+            anyhow::ensure!(
+                fields.len() == 2 || fields.len() == 3,
+                "archive transcript message must have two or three fields"
+            );
+            let role = fields[0]
+                .as_str()
+                .context("archive transcript role must be a string")?
+                .to_owned();
+            let text = fields[1]
+                .as_str()
+                .context("archive transcript text must be a string")?
+                .to_owned();
+            let full_text = match fields.get(2) {
+                None | Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::String(text)) => Some(text.clone()),
+                Some(_) => anyhow::bail!("archive full tool output must be a string or null"),
+            };
+            Ok(ArchiveMessage {
+                role,
+                text,
+                full_text,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 fn create_cache_schema(conn: &Connection) -> Result<()> {
     create_meta_schema(conn)?;
@@ -343,7 +494,8 @@ fn create_cache_schema_with_tokenizer(conn: &Connection, tokenizer: &str) -> Res
             id         INTEGER PRIMARY KEY,
             session_id TEXT NOT NULL,
             role       TEXT NOT NULL,
-            text       TEXT NOT NULL
+            text       TEXT NOT NULL,
+            full_text  TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
         CREATE TABLE IF NOT EXISTS summaries(
@@ -383,7 +535,7 @@ fn create_cache_schema_with_tokenizer(conn: &Connection, tokenizer: &str) -> Res
             ended       TEXT,
             msg_count   INTEGER NOT NULL DEFAULT 0,
             kind        TEXT NOT NULL DEFAULT 'main',
-            transcript  TEXT NOT NULL,  -- JSON [[role,text],...] in order
+            transcript  TEXT NOT NULL,  -- JSON [[role,text,(full_text)],...] in order
             touched     TEXT NOT NULL,  -- JSON [path,...]
             archived_at TEXT NOT NULL
         );
@@ -785,7 +937,7 @@ fn rehydrate_archive(conn: &Connection) -> Result<()> {
         // The transcript is the durable backup; if it will not deserialize,
         // skip the session rather than rehydrate an empty shell that claims to
         // have content - that would be silent data loss disguised as success.
-        let msgs: Vec<(String, String)> = match serde_json::from_str(&a.transcript) {
+        let msgs = match decode_archive_transcript(&a.transcript) {
             Ok(m) => m,
             Err(e) => {
                 eprintln!(
@@ -832,17 +984,23 @@ fn rehydrate_archive(conn: &Connection) -> Result<()> {
             ],
         )?;
         {
-            let mut ins_row = conn
-                .prepare_cached("INSERT INTO messages(session_id, role, text) VALUES (?1,?2,?3)")?;
+            let mut ins_row = conn.prepare_cached(
+                "INSERT INTO messages(session_id, role, text, full_text)
+                     VALUES (?1,?2,?3,?4)",
+            )?;
             let mut ins_fts =
                 conn.prepare_cached("INSERT INTO msgs(rowid, text) VALUES (?1,?2)")?;
-            for (role, text) in &msgs {
+            for message in &msgs {
                 // Re-normalize on rehydrate: pre-fix archives hold raw/NFD JSON,
                 // so this is where archived Korean sessions become NFC again.
                 // Also redact - a pre-redaction archive holds raw secrets.
-                let text = crate::redact::redact(&crate::util::nfc(text)).into_owned();
+                let text = crate::redact::redact(&crate::util::nfc(&message.text)).into_owned();
+                let full_text = message
+                    .full_text
+                    .as_deref()
+                    .map(|text| crate::redact::redact(&crate::util::nfc(text)).into_owned());
                 // External-content FTS requires byte-identical message text.
-                ins_row.execute(params![a.session_id, role, text])?;
+                ins_row.execute(params![a.session_id, message.role, text, full_text])?;
                 ins_fts.execute(params![conn.last_insert_rowid(), text])?;
             }
         }
@@ -882,6 +1040,7 @@ fn index_one(
     key: &str,
     mtime: i64,
     size: i64,
+    output_mode: ToolOutputMode,
 ) -> Result<()> {
     delete_session_msgs(tx, &session.id)?;
     delete_session_provenance(tx, &session.id)?;
@@ -913,8 +1072,10 @@ fn index_one(
     // transaction, so the autoincrement messages.id is a monotonic proxy for
     // order (preview + the web transcript rely on it). Keep this sequential.
     {
-        let mut ins_row =
-            tx.prepare_cached("INSERT INTO messages(session_id, role, text) VALUES (?1,?2,?3)")?;
+        let mut ins_row = tx.prepare_cached(
+            "INSERT INTO messages(session_id, role, text, full_text)
+             VALUES (?1,?2,?3,?4)",
+        )?;
         let mut ins_fts = tx.prepare_cached("INSERT INTO msgs(rowid, text) VALUES (?1,?2)")?;
         for m in &session.messages {
             // Normalize once and reuse for the plain row and external-content
@@ -922,7 +1083,19 @@ fn index_one(
             // Strip secrets before they enter the index, which outlives the
             // original session in archive mode.
             let text = crate::redact::redact(&crate::util::nfc(&m.text)).into_owned();
-            ins_row.execute(params![session.id, m.role.label(), text])?;
+            let full_text = if output_mode == ToolOutputMode::Full {
+                match &m.tool {
+                    Some(crate::model::ToolEvent::Summary(summary)) => {
+                        summary.output.as_deref().map(|output| {
+                            crate::redact::redact(&crate::util::nfc(output)).into_owned()
+                        })
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            ins_row.execute(params![session.id, m.role.label(), text, full_text])?;
             ins_fts.execute(params![tx.last_insert_rowid(), text])?;
         }
         let mut ins_touched =
@@ -1027,6 +1200,7 @@ pub fn sync_with(
     // megabytes long, so decide once per sync and skip those writes when stderr
     // is not a terminal. Warnings and the per-tool summary still print.
     let progress = std::io::stderr().is_terminal();
+    let output_mode = tool_output_mode(conn)?;
     let mut known: HashMap<String, (i64, i64, bool)> = HashMap::new();
     {
         let mut stmt =
@@ -1067,7 +1241,9 @@ pub fn sync_with(
                 match known.get(key) {
                     Some(&(mtime, 0, true)) if mtime == *token => restore.push(key.clone()),
                     Some(&(mtime, 0, false)) if mtime == *token => {}
-                    old if old.is_some_and(|row| row.2) || since.is_none_or(|s| *token >= s) => {
+                    old if old.is_some_and(|row| row.2 || row.0 < 0 || row.1 < 0)
+                        || since.is_none_or(|s| *token >= s) =>
+                    {
                         pending.push(key.clone());
                     }
                     _ => {}
@@ -1112,7 +1288,7 @@ pub fn sync_with(
                     }
                     // A failed parse is warned, not silently dropped: the user
                     // must know a session is missing from the corpus.
-                    let session = match adapter.parse_key(key) {
+                    let session = match adapters::parse_session_key(adapter.as_ref(), key) {
                         Ok(s) => s,
                         Err(e) => {
                             failed += 1;
@@ -1121,7 +1297,7 @@ pub fn sync_with(
                         }
                     };
                     let token = token_of.get(key.as_str()).copied().unwrap_or(0);
-                    index_one(&tx, &session, key, token, 0)?;
+                    index_one(&tx, &session, key, token, 0, output_mode)?;
                 }
                 tx.commit()?;
                 report_indexed(tool, total, failed);
@@ -1160,7 +1336,9 @@ pub fn sync_with(
                     restore.push(key.clone());
                 }
                 Some(&(old_mtime, old_size, false)) if old_mtime == mtime && old_size == size => {}
-                old if old.is_some_and(|row| row.2) || since.is_none_or(|s| mtime >= s) => {
+                old if old.is_some_and(|row| row.2 || row.0 < 0 || row.1 < 0)
+                    || since.is_none_or(|s| mtime >= s) =>
+                {
                     pending.push((f, mtime, size));
                 }
                 _ => {}
@@ -1203,7 +1381,7 @@ pub fn sync_with(
 
             // A failed parse is warned, not silently dropped: the user must
             // know a session is missing from the corpus.
-            let session = match adapter.parse(&path) {
+            let session = match adapters::parse_session(adapter.as_ref(), &path) {
                 Ok(s) => s,
                 Err(e) => {
                     failed += 1;
@@ -1212,7 +1390,7 @@ pub fn sync_with(
                 }
             };
             let key = path.to_string_lossy();
-            index_one(&tx, &session, &key, mtime, size)?;
+            index_one(&tx, &session, &key, mtime, size, output_mode)?;
         }
         tx.commit()?;
         report_indexed(tool, total, failed);
@@ -1351,12 +1529,19 @@ fn archive_or_prune(
 /// so search and `trace` keep working; the archive copy is the rebuild-survival
 /// backup (replayed by `rehydrate_archive` after a schema bump).
 fn archive_session(conn: &Connection, path: &str, sid: &str) -> Result<()> {
-    let mut s =
-        conn.prepare("SELECT role, text FROM messages WHERE session_id = ?1 ORDER BY id")?;
-    let transcript: Vec<(String, String)> = s
-        .query_map(params![sid], |r| Ok((r.get(0)?, r.get(1)?)))?
+    let mut s = conn
+        .prepare("SELECT role, text, full_text FROM messages WHERE session_id = ?1 ORDER BY id")?;
+    let rows: Vec<(String, String, Option<String>)> = s
+        .query_map(params![sid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
     drop(s);
+    let transcript: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|(role, text, full_text)| match full_text {
+            Some(full_text) => serde_json::json!([role, text, full_text]),
+            None => serde_json::json!([role, text]),
+        })
+        .collect();
     let mut s = conn.prepare("SELECT path FROM touched WHERE session_id = ?1 ORDER BY rowid")?;
     let touched: Vec<String> = s
         .query_map(params![sid], |r| r.get(0))?
@@ -2589,24 +2774,37 @@ fn interned_tool(name: &str) -> &'static str {
 }
 
 /// Reconstruct an archived or external-adapter session from its indexed copy.
-/// This retained transcript omits per-message timestamps and full tool I/O,
-/// which were never indexed.
+/// Per-message timestamps are omitted; full tool output is present only when
+/// the index's retention mode was `full` when that session was indexed.
 pub fn session_from_index(conn: &Connection, row: &SessionRow) -> Result<crate::model::Session> {
-    use crate::model::{Message, Role};
-    let mut stmt =
-        conn.prepare("SELECT role, text FROM messages WHERE session_id = ?1 ORDER BY id")?;
+    use crate::model::{Message, Role, ToolEvent, ToolSummary};
+    let mut stmt = conn
+        .prepare("SELECT role, text, full_text FROM messages WHERE session_id = ?1 ORDER BY id")?;
     let messages: Vec<Message> = stmt
         .query_map(params![row.session_id], |r| {
             let role: String = r.get(0)?;
             let text: String = r.get(1)?;
+            let full_text: Option<String> = r.get(2)?;
+            let role = match role.as_str() {
+                "user" => Role::User,
+                "assistant" => Role::Assistant,
+                _ => Role::Tool,
+            };
+            let tool = full_text.and_then(|output| {
+                (role == Role::Tool && crate::tool_summary::is_compact_summary_line(&text))
+                    .then_some(ToolEvent::Summary(ToolSummary {
+                        name: "tool".into(),
+                        args: serde_json::Value::Null,
+                        output: Some(output),
+                        is_error: None,
+                        lines: None,
+                    }))
+            });
             Ok(Message {
-                role: match role.as_str() {
-                    "user" => Role::User,
-                    "assistant" => Role::Assistant,
-                    _ => Role::Tool,
-                },
+                role,
                 text,
                 ts: None,
+                tool,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -3122,7 +3320,7 @@ mod edits_tests {
         };
 
         let tx = c.transaction().unwrap();
-        index_one(&tx, &session, "/store/sx.jsonl", 0, 0).unwrap();
+        index_one(&tx, &session, "/store/sx.jsonl", 0, 0, ToolOutputMode::Full).unwrap();
         tx.commit().unwrap();
 
         let hits = edits_for(&c, "src/auth.rs", 50).unwrap();
@@ -3252,6 +3450,7 @@ mod edits_tests {
                 role: Role::User,
                 text: "my key is sk-abcdef012345678901234567890123 ok".into(),
                 ts: None,
+                tool: None,
             }],
             touched: vec!["/p/a.rs".into()],
             edits: vec![EditEvent {
@@ -3262,7 +3461,7 @@ mod edits_tests {
             }],
         };
         let tx = c.transaction().unwrap();
-        index_one(&tx, &session, "/s.jsonl", 0, 0).unwrap();
+        index_one(&tx, &session, "/s.jsonl", 0, 0, ToolOutputMode::Full).unwrap();
         tx.commit().unwrap();
 
         let msg: String = c
@@ -3346,7 +3545,7 @@ mod edits_tests {
                 }],
             };
             let tx = c.transaction().unwrap();
-            index_one(&tx, &session, store, 0, 0).unwrap();
+            index_one(&tx, &session, store, 0, 0, ToolOutputMode::Full).unwrap();
             tx.commit().unwrap();
         }
 
@@ -3484,6 +3683,7 @@ mod embedder_hook_tests {
                     role: Role::User,
                     text: "make the tests green".into(),
                     ts: None,
+                    tool: None,
                 }],
                 touched: vec![],
                 edits: vec![],
@@ -3745,5 +3945,296 @@ mod embedder_hook_tests {
         let second = interned_tool(&String::from("a-tool-no-adapter-knows"));
         assert_eq!(first, "a-tool-no-adapter-knows");
         assert!(std::ptr::eq(first, second));
+    }
+}
+
+#[cfg(test)]
+mod tool_output_tests {
+    use super::*;
+    use crate::model::{Message, Role, Session, ToolEvent, ToolSummary};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    const OUTPUT: &str = "fulloutputneedle: private tool result\nsecond diagnostic";
+
+    fn tool_session(id: &str, path: &str) -> Session {
+        Session {
+            id: id.into(),
+            tool: "codex",
+            path: path.into(),
+            project: "/project".into(),
+            started: None,
+            ended: None,
+            title: "tool output test".into(),
+            subagent: false,
+            messages: vec![Message {
+                role: Role::Tool,
+                text: "→ Bash(cargo test) ⇒ ok · 2 lines".into(),
+                ts: None,
+                tool: Some(ToolEvent::Summary(ToolSummary {
+                    name: "Bash".into(),
+                    args: serde_json::json!({"command": "cargo test"}),
+                    output: Some(OUTPUT.into()),
+                    is_error: Some(false),
+                    lines: Some(2),
+                })),
+            }],
+            touched: Vec::new(),
+            edits: Vec::new(),
+        }
+    }
+
+    fn insert_tool_session(conn: &mut Connection, id: &str, path: &str) {
+        let session = tool_session(id, path);
+        let tx = conn.transaction().unwrap();
+        index_one(
+            &tx,
+            &session,
+            path,
+            123,
+            456,
+            tool_output_mode(&tx).unwrap(),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn full_mode_archives_and_rehydrates_output_without_adding_it_to_fts() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        create_cache_schema(&conn).unwrap();
+        assert!(set_tool_output_mode(&conn, ToolOutputMode::Full).unwrap());
+        assert_eq!(tool_output_mode(&conn).unwrap(), ToolOutputMode::Full);
+        insert_tool_session(&mut conn, "full-session", "/gone/full-session.jsonl");
+
+        let stored: String = conn
+            .query_row(
+                "SELECT full_text FROM messages WHERE session_id = 'full-session'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, OUTPUT);
+        let fts_hits: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM msgs WHERE msgs MATCH 'fulloutputneedle'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(fts_hits, 0, "full output must not be indexed by FTS");
+
+        archive_session(&conn, "/gone/full-session.jsonl", "full-session").unwrap();
+        let transcript: String = conn
+            .query_row(
+                "SELECT transcript FROM archive WHERE session_id = 'full-session'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let archived = decode_archive_transcript(&transcript).unwrap();
+        assert_eq!(archived[0].full_text.as_deref(), Some(OUTPUT));
+
+        // Rehydrate is the archive path used after a schema rebuild.
+        rehydrate_archive(&conn).unwrap();
+        let row = resolve(&conn, "full-session").unwrap().remove(0);
+        let session = session_from_index(&conn, &row).unwrap();
+        let stored_output = match session.messages[0].tool.as_ref().unwrap() {
+            ToolEvent::Summary(summary) => summary.output.as_deref(),
+            ToolEvent::Part(_) => panic!("indexed output must be a summary"),
+        };
+        assert_eq!(stored_output, Some(OUTPUT));
+    }
+
+    #[test]
+    fn fresh_index_defaults_to_summary_mode() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_cache_schema(&conn).unwrap();
+        assert_eq!(tool_output_mode(&conn).unwrap(), ToolOutputMode::Summary);
+    }
+
+    #[test]
+    fn summary_mode_preserves_archived_output_and_full_mode_marks_live_rows_stale() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        create_cache_schema(&conn).unwrap();
+        assert!(set_tool_output_mode(&conn, ToolOutputMode::Full).unwrap());
+        insert_tool_session(&mut conn, "archived", "/gone/archived.jsonl");
+        insert_tool_session(&mut conn, "live", "/live/live.jsonl");
+        archive_session(&conn, "/gone/archived.jsonl", "archived").unwrap();
+
+        assert!(set_tool_output_mode(&conn, ToolOutputMode::Summary).unwrap());
+        assert_eq!(tool_output_mode(&conn).unwrap(), ToolOutputMode::Summary);
+        let live_output: Option<String> = conn
+            .query_row(
+                "SELECT full_text FROM messages WHERE session_id = 'live'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(live_output, None, "live output is cleared");
+        let archived_output: Option<String> = conn
+            .query_row(
+                "SELECT full_text FROM messages WHERE session_id = 'archived'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(archived_output.as_deref(), Some(OUTPUT));
+        let transcript: String = conn
+            .query_row(
+                "SELECT transcript FROM archive WHERE session_id = 'archived'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(transcript.contains("fulloutputneedle"));
+        let archived_messages = decode_archive_transcript(&transcript).unwrap();
+        assert_eq!(archived_messages[0].full_text.as_deref(), Some(OUTPUT));
+        let archived_token_before_rehydrate: (i64, i64) = conn
+            .query_row(
+                "SELECT mtime, size FROM files WHERE session_id = 'archived'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(archived_token_before_rehydrate, (123, 456));
+
+        // Rehydrating after a schema rebuild preserves the archived copy in
+        // messages as well, so indexed readers can still return --full output.
+        rehydrate_archive(&conn).unwrap();
+        let rehydrated_output: Option<String> = conn
+            .query_row(
+                "SELECT full_text FROM messages WHERE session_id = 'archived'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rehydrated_output.as_deref(), Some(OUTPUT));
+        let archived_row = resolve(&conn, "archived").unwrap().remove(0);
+        let archived_session = session_from_index(&conn, &archived_row).unwrap();
+        let shown_output = match archived_session.messages[0].tool.as_ref().unwrap() {
+            ToolEvent::Summary(summary) => summary.output.as_deref(),
+            ToolEvent::Part(_) => panic!("indexed output must be a summary"),
+        };
+        assert_eq!(shown_output, Some(OUTPUT));
+
+        // Newly indexed sessions follow the changed mode.
+        insert_tool_session(&mut conn, "summary-new", "/live/summary-new.jsonl");
+        let new_output: Option<String> = conn
+            .query_row(
+                "SELECT full_text FROM messages WHERE session_id = 'summary-new'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(new_output, None);
+        archive_session(&conn, "/live/summary-new.jsonl", "summary-new").unwrap();
+        let new_archive: String = conn
+            .query_row(
+                "SELECT transcript FROM archive WHERE session_id = 'summary-new'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let archived_messages = decode_archive_transcript(&new_archive).unwrap();
+        assert_eq!(archived_messages.len(), 1);
+        assert_eq!(
+            archived_messages[0].text,
+            "→ Bash(cargo test) ⇒ ok · 2 lines"
+        );
+        assert_eq!(archived_messages[0].full_text, None);
+        assert!(!new_archive.contains("fulloutputneedle"));
+
+        assert!(set_tool_output_mode(&conn, ToolOutputMode::Full).unwrap());
+        let token: (i64, i64) = conn
+            .query_row(
+                "SELECT mtime, size FROM files WHERE session_id = 'live'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(token, (-1, -1), "live row must be reparsed on next sync");
+        let archived_token: (i64, i64, Option<String>) = conn
+            .query_row(
+                "SELECT mtime, size, archived_at FROM files WHERE session_id = 'archived'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((archived_token.0, archived_token.1), (0, 0));
+        assert!(archived_token.2.is_some(), "archived row stays archived");
+        let archived_output_after_full: Option<String> = conn
+            .query_row(
+                "SELECT full_text FROM messages WHERE session_id = 'archived'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            archived_output_after_full.as_deref(),
+            Some(OUTPUT),
+            "archived rows keep their prior contents"
+        );
+    }
+
+    struct CountedStore {
+        parses: Rc<Cell<usize>>,
+    }
+
+    impl Adapter for CountedStore {
+        fn name(&self) -> &'static str {
+            "tool-output-sync-test"
+        }
+
+        fn root(&self) -> Option<PathBuf> {
+            std::env::current_dir().ok()
+        }
+
+        fn discover(&self) -> crate::adapters::Discovered {
+            Vec::new().into()
+        }
+
+        fn parse(&self, _path: &std::path::Path) -> Result<Session> {
+            anyhow::bail!("shared-store adapter")
+        }
+
+        fn store(&self) -> Option<crate::adapters::Store> {
+            Some(crate::adapters::Store {
+                keys: vec![("/store/forced-session".into(), 42)],
+                files: Vec::new(),
+                had_error: false,
+            })
+        }
+
+        fn parse_key(&self, key: &str) -> Result<Session> {
+            self.parses.set(self.parses.get() + 1);
+            Ok(tool_session("forced-session", key))
+        }
+    }
+
+    #[test]
+    fn enabling_full_reparses_stale_sessions_during_a_bounded_sync() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        create_cache_schema(&conn).unwrap();
+        let parses = Rc::new(Cell::new(0));
+        let adapters: Vec<Box<dyn Adapter>> = vec![Box::new(CountedStore {
+            parses: Rc::clone(&parses),
+        })];
+        sync_with(&mut conn, &adapters, None).unwrap();
+        assert_eq!(parses.get(), 1);
+
+        set_tool_output_mode(&conn, ToolOutputMode::Summary).unwrap();
+        set_tool_output_mode(&conn, ToolOutputMode::Full).unwrap();
+        sync_with(&mut conn, &adapters, Some(i64::MAX)).unwrap();
+
+        assert_eq!(parses.get(), 2, "forced sync re-parses despite its cutoff");
+        let full_text: Option<String> = conn
+            .query_row(
+                "SELECT full_text FROM messages WHERE session_id = 'forced-session'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(full_text.as_deref(), Some(OUTPUT));
     }
 }

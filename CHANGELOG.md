@@ -6,6 +6,28 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Changed
+
+- **Tool calls are stored as one compact line each**, for example
+  `→ Bash(cargo test) ⇒ error · 12 lines — error[E0425]: ...`: tool name,
+  primary argument, status, output line count, and the first output line on
+  error. Every adapter (Claude Code, Codex, Gemini, gptme, Cline/Roo/Kilo,
+  Continue, Gajae, OpenCode) emits structured calls and results, and one shared
+  renderer formats them. The line is what `show`, `brief`, the web UI, MCP and
+  search see; `brief` now includes tool lines by default, and `--tools`
+  (`brief`) or `--full` (`show`) append bounded output. The default `summary`
+  mode keeps only the compact line in new archives, plus the first output line
+  for failed calls. This is less than the previous behavior, which kept up to
+  500 characters of tool output. Run `sessionwiki tool-output full` to retain up
+  to 8 KB of redacted output per result in archive mode. The per-index setting
+  lets embedders choose; switching to `summary` clears full output from live
+  sessions, while already archived sessions keep what they have. Switching
+  back to `full` marks live sessions for re-parsing.
+  Tool output is no longer indexed, so a string that appeared only mid-output
+  no longer matches a search. Schema v9 rebuilds each existing index once on
+  first use; the first run after upgrading re-parses every session, which can
+  take a while on a large store.
+
 ## [0.33.2] - 2026-10-08
 
 ### Fixed
@@ -27,7 +49,6 @@ semantic versioning once it reaches 1.0.
   On the machine this was found, all 46 Gemini sessions were affected. The
   project is now the recorded path, and the first open after upgrading
   corrects rows already indexed.
-
 ## [0.33.1] - 2026-10-07
 
 ### Fixed
@@ -94,7 +115,6 @@ semantic versioning once it reaches 1.0.
   are now sub-agent sessions like Claude Code's, and the first open after
   upgrading reclassifies rows already indexed by reading each file's first
   line (a one-off update, not a rebuild).
-
 ## [0.31.0] - 2026-10-06
 
 ### Added
