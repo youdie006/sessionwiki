@@ -1,6 +1,6 @@
 {
   "name": "@youdie006/sessionwiki",
-  "version": "0.33.2",
+  "version": "0.34.0",
   "description": "Search, trace and resume your AI coding sessions (Claude Code, Codex, Gemini and more), locally.",
   "bin": {
     "sessionwiki": "bin/sessionwiki.js"
@@ -12,10 +12,10 @@
     "bin/exit.js"
   ],
   "optionalDependencies": {
-    "@youdie006/sessionwiki-darwin-arm64": "0.33.2",
-    "@youdie006/sessionwiki-darwin-x64": "0.33.2",
-    "@youdie006/sessionwiki-linux-x64": "0.33.2",
-    "@youdie006/sessionwiki-win32-x64": "0.33.2"
+    "@youdie006/sessionwiki-darwin-arm64": "0.34.0",
+    "@youdie006/sessionwiki-darwin-x64": "0.34.0",
+    "@youdie006/sessionwiki-linux-x64": "0.34.0",
+    "@youdie006/sessionwiki-win32-x64": "0.34.0"
   },
   "keywords": [
     "cli",

@@ -639,7 +639,7 @@ dependencies = [
 
 [[package]]
 name = "sessionwiki"
-version = "0.33.2"
+version = "0.34.0"
 dependencies = [
  "anyhow",
  "chrono",

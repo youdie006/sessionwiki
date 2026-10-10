@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-10-10
+
 ### Changed
 
 - **Tool calls are stored as one compact line each**, for example
