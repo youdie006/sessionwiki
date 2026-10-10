@@ -34,6 +34,17 @@ impl ClaudeCode {
     }
 }
 
+/// Under `subagents/` only `agent-*.jsonl` is a transcript. A workflow keeps
+/// its bookkeeping there too (`workflows/wf_*/journal.jsonl`: which agent
+/// started and what it returned), which is not a conversation.
+fn is_transcript(path: &Path) -> bool {
+    !path.components().any(|c| c.as_os_str() == "subagents")
+        || path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("agent-"))
+}
+
 impl Adapter for ClaudeCode {
     fn name(&self) -> &'static str {
         "claude-code"
@@ -67,6 +78,7 @@ impl Adapter for ClaudeCode {
             .filter_map(|e| ok_or_flag(e, &mut had_error))
             .filter(|e| e.file_type().is_file())
             .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+            .filter(|e| is_transcript(e.path()))
             .map(|e| e.into_path())
             .collect();
         Discovered { files, had_error }

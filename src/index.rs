@@ -1523,7 +1523,7 @@ fn archive_or_prune(
     for (path, sid) in gone {
         if still_live.contains(&sid) {
             conn.execute("DELETE FROM files WHERE path = ?1", params![path])?;
-        } else if no_archive {
+        } else if no_archive || !has_messages(conn, &sid)? {
             conn.execute("DELETE FROM files WHERE path = ?1", params![path])?;
             delete_session_msgs(conn, &sid)?;
             delete_session_provenance(conn, &sid)?;
@@ -1533,6 +1533,16 @@ fn archive_or_prune(
         }
     }
     Ok(archived)
+}
+
+/// Nothing indexed means nothing to keep: an archived copy would hold a title
+/// and no transcript.
+fn has_messages(conn: &Connection, sid: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = ?1)",
+        params![sid],
+        |r| r.get(0),
+    )?)
 }
 
 /// Copy a session whose original file is gone into the durable `archive` table
