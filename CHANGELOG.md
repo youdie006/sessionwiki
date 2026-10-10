@@ -12,7 +12,10 @@ semantic versioning once it reaches 1.0.
   call's failure only in its `mcp_tool_call_end` event (`isError`, or an
   `Err` result); the tool output beside it is plain text, so every failed
   MCP call read `⇒ ok`. On one machine that was 1782 of 7583 MCP calls. The
-  event is now read and the call is marked as an error.
+  event is now read and the call is marked as an error. The first open after
+  upgrading marks Codex sessions already indexed for one re-parse, so the
+  next sync corrects them too; sessions whose rollout is gone keep what they
+  had.
 
 ## [0.34.2] - 2026-10-10
 
