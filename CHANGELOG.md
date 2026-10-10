@@ -8,6 +8,15 @@ semantic versioning once it reaches 1.0.
 
 ### Fixed
 
+- **Workflow journals are no longer indexed as sessions.** Claude Code keeps
+  a workflow's bookkeeping beside its agents' transcripts
+  (`subagents/workflows/wf_*/journal.jsonl`). Every `.jsonl` was indexed, so
+  each journal became an empty subagent session whose project was the
+  `wf_*` folder name - 257 on one machine. Only `agent-*.jsonl` under
+  `subagents/` is read now, and the next sync removes the journal rows.
+- **A session with nothing indexed is removed, not archived, when its file
+  goes.** Archiving was documented to skip such sessions, but kept every one
+  as an archived row with no transcript.
 - **"Kept after the tool deleted them" counts sessions.** `stats`, `doctor`
   and the sync summary counted every archived transcript, subagent
   transcripts included, beside a session total that counts only main
