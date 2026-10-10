@@ -139,11 +139,7 @@ fn summary_for_orphan(result: ToolResult) -> ToolSummary {
 }
 
 fn line_count(text: &str) -> usize {
-    if text.is_empty() {
-        0
-    } else {
-        text.split('\n').count()
-    }
+    text.lines().count()
 }
 
 /// Render one structured summary in the shared compact format.
@@ -407,6 +403,16 @@ fn longest_backtick_run(text: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
+    /// Output that ends in a newline - most command output - was counted one
+    /// line too many: "a\nb\n" read as 3 lines.
+    #[test]
+    fn a_trailing_newline_is_not_a_line() {
+        assert_eq!(super::line_count("a\nb\n"), 2);
+        assert_eq!(super::line_count("a\nb"), 2);
+        assert_eq!(super::line_count("a\r\nb\r\n"), 2);
+        assert_eq!(super::line_count(""), 0);
+    }
+
     use super::*;
 
     fn summary(
@@ -474,7 +480,7 @@ mod tests {
         );
         assert_eq!(
             render_summary(&summary("tool", json!({}), Some("\n"), Some(true))),
-            "→ tool({}) ⇒ error · 2 lines"
+            "→ tool({}) ⇒ error · 1 line"
         );
     }
 
