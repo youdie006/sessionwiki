@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.2] - 2026-10-10
+
 ### Fixed
 
 - **Workflow journals are no longer indexed as sessions.** Claude Code keeps
