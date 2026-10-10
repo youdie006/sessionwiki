@@ -1411,7 +1411,7 @@ pub fn sync_with(
     // sessions we kept this run that the tool deleted, and the running total.
     if archived_total > 0 {
         let kept: i64 = conn.query_row(
-            "SELECT count(*) FROM files WHERE archived_at IS NOT NULL",
+            "SELECT count(*) FROM files WHERE kind='main' AND archived_at IS NOT NULL",
             [],
             |r| r.get(0),
         )?;
@@ -3072,7 +3072,7 @@ pub fn stats(conn: &Connection) -> Result<Stats> {
         tags: one("SELECT count(DISTINCT tag) FROM tags")?,
         summarized: one("SELECT count(*) FROM summaries")?,
         files: one("SELECT count(DISTINCT path) FROM touched")?,
-        archived: one("SELECT count(*) FROM files WHERE archived_at IS NOT NULL")?,
+        archived: one("SELECT count(*) FROM files WHERE kind='main' AND archived_at IS NOT NULL")?,
     })
 }
 

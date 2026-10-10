@@ -103,7 +103,7 @@ pub fn index_checks(conn: &Connection, expected_schema: i64) -> Vec<Check> {
             // `archived_at`, a locked database - into "0 kept", which reads as
             // the good news that nothing was lost.
             let archived: rusqlite::Result<i64> = conn.query_row(
-                "SELECT count(*) FROM files WHERE archived_at IS NOT NULL",
+                "SELECT count(*) FROM files WHERE kind='main' AND archived_at IS NOT NULL",
                 [],
                 |r| r.get(0),
             );
