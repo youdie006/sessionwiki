@@ -82,6 +82,10 @@ impl Adapter for Codex {
         let mut cwd: Option<String> = None;
         // Sub-agent threads say so in session_meta; their task arrives encrypted.
         let mut subagent = false;
+        // An MCP call's failure is stated only in its `mcp_tool_call_end` event;
+        // the `function_call_output` carries the text alone.
+        let mut failed_mcp_calls: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         let mut started = None;
         let mut ended = None;
         // Current rollouts carry each user prompt TWICE (event_msg AND
@@ -249,6 +253,19 @@ impl Adapter for Codex {
                             push(&mut messages, Role::Assistant, t, ts);
                         }
                     }
+                    Some("mcp_tool_call_end") => {
+                        let result = v.pointer("/payload/result");
+                        let failed = result.is_some_and(|r| {
+                            r.get("Err").is_some()
+                                || r.pointer("/Ok/isError").and_then(Value::as_bool) == Some(true)
+                        });
+                        if let (true, Some(id)) = (
+                            failed,
+                            v.pointer("/payload/call_id").and_then(Value::as_str),
+                        ) {
+                            failed_mcp_calls.insert(id.to_owned());
+                        }
+                    }
                     _ => {}
                 },
                 Some("message") => {
@@ -275,6 +292,19 @@ impl Adapter for Codex {
         }
 
         let project = cwd.unwrap_or_default();
+        for message in &mut messages {
+            if let Some(crate::model::ToolEvent::Part(crate::model::ToolPart::Result(result))) =
+                &mut message.tool
+            {
+                if result
+                    .call_id
+                    .as_ref()
+                    .is_some_and(|id| failed_mcp_calls.contains(id))
+                {
+                    result.is_error = true;
+                }
+            }
+        }
         let title = if windowed {
             format!("[large] {}", title_from_messages(&messages))
         } else {
