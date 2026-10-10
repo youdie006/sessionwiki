@@ -678,6 +678,17 @@ pub fn open() -> Result<Connection> {
             if cache_schema_needs_work(&conn)? {
                 let tokenizer = tokenizer_spec(&conn)?;
                 let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+                // A newer binary built this cache. Rebuilding it in this
+                // binary's format only makes that one rebuild it back - a
+                // `sessionwiki mcp` left running across an upgrade did exactly
+                // that on every call.
+                if version > SCHEMA_VERSION {
+                    anyhow::bail!(
+                        "the index was written by a newer sessionwiki (schema {version}, this \
+                         binary reads {SCHEMA_VERSION}); restart this process with the \
+                         installed version"
+                    );
+                }
                 if version != SCHEMA_VERSION {
                     // Drop only the derived cache. The durable tables (summaries, tags,
                     // notes, archive) are never dropped: rebuilding the index is cheap,
