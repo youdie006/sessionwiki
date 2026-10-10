@@ -6,6 +6,14 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **"Kept after the tool deleted them" counts sessions.** `stats`, `doctor`
+  and the sync summary counted every archived transcript, subagent
+  transcripts included, beside a session total that counts only main
+  sessions - one store read "3959 sessions, 2050 kept" where 611 sessions
+  were kept. The kept count now covers main sessions, like the total.
+
 ## [0.34.1] - 2026-10-10
 
 ### Fixed
