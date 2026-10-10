@@ -6,6 +6,14 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failed Codex MCP tool call shows as an error.** Codex states an MCP
+  call's failure only in its `mcp_tool_call_end` event (`isError`, or an
+  `Err` result); the tool output beside it is plain text, so every failed
+  MCP call read `⇒ ok`. On one machine that was 1782 of 7583 MCP calls. The
+  event is now read and the call is marked as an error.
+
 ## [0.34.2] - 2026-10-10
 
 ### Fixed

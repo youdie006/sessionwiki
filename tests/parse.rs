@@ -293,6 +293,27 @@ fn codex_plain_text_command_results_carry_their_exit_codes() {
     );
 }
 
+/// An MCP tool's failure is stated only in the `mcp_tool_call_end` event
+/// (`isError`, or an `Err` result); the `function_call_output` beside it is
+/// plain text, so the call read as ok.
+#[test]
+fn codex_mcp_tool_failures_are_marked_as_errors() {
+    let s = parse(
+        "codex",
+        "codex/rollout-2026-05-07T12-00-00-mcp-errors.jsonl",
+    );
+    let tool_lines: Vec<_> = s
+        .messages
+        .iter()
+        .filter(|message| message.role.label() == "tool")
+        .map(|message| message.text.as_str())
+        .collect();
+    assert_eq!(tool_lines.len(), 3, "{tool_lines:?}");
+    assert!(tool_lines[0].contains("⇒ error"), "{}", tool_lines[0]);
+    assert!(tool_lines[1].contains("⇒ ok"), "{}", tool_lines[1]);
+    assert!(tool_lines[2].contains("⇒ error"), "{}", tool_lines[2]);
+}
+
 #[test]
 fn gemini_session() {
     let s = parse(
