@@ -887,24 +887,29 @@ fn resolve_gemini_projects(conn: &Connection) -> Result<()> {
     apply_without_waiting(conn, KEY, top, &updates)
 }
 
-/// Codex rows indexed before MCP failures were read show every failed MCP call
-/// as ok, and a rollout that never changes is never parsed again. Mark the
-/// live ones for one re-parse; the key is not a fix-up mark, so a cache
-/// rebuild - which re-parses everything anyway - does not repeat it.
+/// Codex rows parsed by an older Codex reader stay as it left them, since a
+/// rollout that never changes is never parsed again. Mark the live ones for
+/// one re-parse whenever the reader has changed since; the key is not a
+/// fix-up mark, so a cache rebuild - which re-parses everything anyway - does
+/// not repeat it. 1: failed MCP calls (0.34.3). 2: MCP calls recorded only as
+/// events.
 fn reparse_codex_for_mcp_errors(conn: &Connection) -> Result<()> {
     const KEY: &str = "codex_mcp_reparsed";
-    let done: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM meta WHERE key = ?1)",
-        [KEY],
-        |r| r.get(0),
-    )?;
-    if done {
+    const READER: i64 = 2;
+    let done: i64 = conn
+        .query_row("SELECT value FROM meta WHERE key = ?1", [KEY], |r| {
+            r.get::<_, String>(0)
+        })
+        .optional()?
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    if done >= READER {
         return Ok(());
     }
     apply_without_waiting(
         conn,
         KEY,
-        1,
+        READER,
         &[(
             "UPDATE files SET mtime = -1, size = -1 WHERE tool = 'codex' AND archived_at IS NULL",
             vec![],

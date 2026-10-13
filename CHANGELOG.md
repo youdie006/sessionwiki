@@ -6,6 +6,16 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Codex MCP calls recorded only as events are indexed.** Some Codex
+  rollouts record an MCP call only as its `mcp_tool_call_end` event, with no
+  tool call or output beside it, and those calls were not indexed at all -
+  5698 on one machine, 1608 of them failures. Each is now indexed from its
+  event, marked as an error when it failed; a call that also has a tool call
+  record is not repeated. Codex sessions already indexed are re-parsed once
+  on the next sync.
+
 ## [0.34.3] - 2026-10-13
 
 ### Fixed
@@ -13,8 +23,9 @@ semantic versioning once it reaches 1.0.
 - **A failed Codex MCP tool call shows as an error.** Codex states an MCP
   call's failure only in its `mcp_tool_call_end` event (`isError`, or an
   `Err` result); the tool output beside it is plain text, so every failed
-  MCP call read `⇒ ok`. On one machine that was 1782 of 7583 MCP calls. The
-  event is now read and the call is marked as an error. The first open after
+  MCP call read `⇒ ok` - 257 calls on one machine (an earlier version of this
+  entry said 1782, counting calls that were not indexed at all; see 0.34.4).
+  The event is now read and the call is marked as an error. The first open after
   upgrading marks Codex sessions already indexed for one re-parse, so the
   next sync corrects them too; sessions whose rollout is gone keep what they
   had.

@@ -94,6 +94,11 @@ impl Adapter for Codex {
         let mut response_user_texts: HashMap<String, u32> = HashMap::new();
         let mut event_user_texts: HashMap<String, u32> = HashMap::new();
 
+        // Some rollouts record an MCP call only as its end event. Those are
+        // indexed from the event, unless a `function_call` already stands for
+        // the same call - by id, or by identical arguments under another id.
+        let (function_call_ids, function_call_args) = function_calls(&lines);
+
         for line in &lines {
             let Ok(v) = serde_json::from_str::<Value>(line) else {
                 continue;
@@ -259,11 +264,39 @@ impl Adapter for Codex {
                             r.get("Err").is_some()
                                 || r.pointer("/Ok/isError").and_then(Value::as_bool) == Some(true)
                         });
-                        if let (true, Some(id)) = (
-                            failed,
-                            v.pointer("/payload/call_id").and_then(Value::as_str),
-                        ) {
+                        let id = v.pointer("/payload/call_id").and_then(Value::as_str);
+                        if let (true, Some(id)) = (failed, id) {
                             failed_mcp_calls.insert(id.to_owned());
+                        }
+                        let mut args = v
+                            .pointer("/payload/invocation/arguments")
+                            .cloned()
+                            .unwrap_or_else(|| json!({}));
+                        let paired = id.is_some_and(|id| function_call_ids.contains(id))
+                            || function_call_args.contains(&args);
+                        if !paired {
+                            redact_json_strings(&mut args);
+                            let name = v
+                                .pointer("/payload/invocation/tool")
+                                .and_then(Value::as_str)
+                                .unwrap_or("?")
+                                .to_owned();
+                            messages.push(Message::tool_call(
+                                ts,
+                                ToolCall {
+                                    id: id.map(str::to_owned),
+                                    name,
+                                    args,
+                                },
+                            ));
+                            messages.push(Message::tool_result(
+                                ts,
+                                ToolResult {
+                                    call_id: id.map(str::to_owned),
+                                    text: bounded_redacted_output(&mcp_result_text(result)),
+                                    is_error: failed,
+                                },
+                            ));
                         }
                     }
                     _ => {}
@@ -360,6 +393,59 @@ fn call_id(payload: &Value) -> Option<String> {
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
         .map(str::to_owned)
+}
+
+/// The ids and parsed arguments of every `function_call` in a rollout.
+fn function_calls(lines: &[String]) -> (std::collections::HashSet<String>, Vec<Value>) {
+    let mut ids = std::collections::HashSet::new();
+    let mut args = Vec::new();
+    for line in lines {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(Value::as_str) != Some("response_item") {
+            continue;
+        }
+        let payload = v.get("payload").unwrap_or(&Value::Null);
+        if !matches!(
+            payload.get("type").and_then(Value::as_str),
+            Some("function_call" | "custom_tool_call")
+        ) {
+            continue;
+        }
+        if let Some(id) = payload.get("call_id").and_then(Value::as_str) {
+            ids.insert(id.to_owned());
+        }
+        if let Some(parsed) = payload
+            .get("arguments")
+            .and_then(Value::as_str)
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        {
+            args.push(parsed);
+        }
+    }
+    (ids, args)
+}
+
+/// The text an MCP end event's result carries: its text blocks, or the error.
+fn mcp_result_text(result: Option<&Value>) -> String {
+    let Some(result) = result else {
+        return String::new();
+    };
+    if let Some(err) = result.get("Err") {
+        return err.as_str().map_or_else(|| err.to_string(), str::to_owned);
+    }
+    result
+        .pointer("/Ok/content")
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
 }
 
 /// Flatten a result payload's `output` to text and an error flag. A string is

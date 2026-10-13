@@ -314,6 +314,31 @@ fn codex_mcp_tool_failures_are_marked_as_errors() {
     assert!(tool_lines[2].contains("⇒ error"), "{}", tool_lines[2]);
 }
 
+/// Some Codex rollouts record an MCP call only as its `mcp_tool_call_end`
+/// event, with no `function_call` or output beside it. Those calls were not
+/// indexed at all. A call that also has a `function_call` is not repeated.
+#[test]
+fn codex_mcp_calls_recorded_only_as_events_are_indexed() {
+    let s = parse(
+        "codex",
+        "codex/rollout-2026-07-08T12-00-00-mcp-events-only.jsonl",
+    );
+    let tool_lines: Vec<_> = s
+        .messages
+        .iter()
+        .filter(|message| message.role.label() == "tool")
+        .map(|message| message.text.as_str())
+        .collect();
+    assert_eq!(
+        tool_lines,
+        [
+            "→ navigate(https://example.invalid/a) ⇒ ok · 2 lines",
+            "→ navigate(https://example.invalid/b) ⇒ error · 1 line — tool call failed: timeout",
+            "→ navigate(https://example.invalid/c) ⇒ ok · 1 line",
+        ]
+    );
+}
+
 #[test]
 fn gemini_session() {
     let s = parse(

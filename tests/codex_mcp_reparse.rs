@@ -67,4 +67,19 @@ fn live_codex_rows_are_reparsed_once_after_upgrading() {
         7,
         "the re-parse was requested again"
     );
+
+    // An index re-parsed for an earlier Codex parser change (0.34.3 stored 1)
+    // is re-parsed once more for the next one.
+    conn.execute(
+        "UPDATE meta SET value = '1' WHERE key = 'codex_mcp_reparsed'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let conn = index::open().unwrap();
+    assert_eq!(
+        mtime(&conn, "/s/codex-live.jsonl"),
+        -1,
+        "an older re-parse did not trigger the new one"
+    );
 }
