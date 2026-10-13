@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.3] - 2026-10-13
+
 ### Fixed
 
 - **A failed Codex MCP tool call shows as an error.** Codex states an MCP
