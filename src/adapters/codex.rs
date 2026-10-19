@@ -14,7 +14,8 @@ mod history;
 pub use history::CodexHistory;
 
 /// Codex CLI stores one JSONL rollout per session under
-/// `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`.
+/// `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`, and compresses
+/// older ones in place to `.jsonl.zst`.
 /// Lines carry a `type` plus a `payload`; the schema has shifted across
 /// versions, so both `response_item` and `event_msg` shapes are handled.
 ///
@@ -98,7 +99,8 @@ impl Adapter for Codex {
             .filter(|e| e.file_type().is_file())
             .filter(|e| {
                 let name = e.file_name().to_string_lossy();
-                name.starts_with("rollout-") && name.ends_with(".jsonl")
+                name.starts_with("rollout-")
+                    && (name.ends_with(".jsonl") || name.ends_with(".jsonl.zst"))
             })
             .map(|e| e.into_path())
             .collect();

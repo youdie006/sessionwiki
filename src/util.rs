@@ -34,6 +34,12 @@ fn session_lines_windowed(
 ) -> Result<(Vec<String>, bool)> {
     use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    if path.extension().is_some_and(|x| x == "zst") {
+        let decoder = ruzstd::decoding::StreamingDecoder::new(BufReader::new(f))
+            .map_err(|e| anyhow::anyhow!("decompress {}: {e}", path.display()))?;
+        return decoded_lines_windowed(decoder, cap, head_bytes, tail_bytes)
+            .with_context(|| format!("decompress {}", path.display()));
+    }
     let len = f.metadata().map(|m| m.len()).unwrap_or(0);
     if len <= cap {
         let lines = BufReader::new(f)
@@ -49,9 +55,64 @@ fn session_lines_windowed(
     let mut tail_buf = vec![0u8; tail_n];
     f.seek(SeekFrom::End(-(tail_n as i64)))?;
     f.read_exact(&mut tail_buf)?;
+    Ok((window_lines(&head_buf, &tail_buf), true))
+}
 
-    let head_s = String::from_utf8_lossy(&head_buf);
-    let tail_s = String::from_utf8_lossy(&tail_buf);
+/// The same window over a stream that can only be read front to back: the
+/// whole stream while it stays within `cap`, then its first `head_bytes` and
+/// a rolling last `tail_bytes`.
+fn decoded_lines_windowed(
+    mut stream: impl std::io::Read,
+    cap: u64,
+    head_bytes: u64,
+    tail_bytes: u64,
+) -> Result<(Vec<String>, bool)> {
+    let mut all = Vec::new();
+    let mut chunk = vec![0u8; 64 * 1024];
+    let mut tail: Option<(Vec<u8>, std::collections::VecDeque<u8>)> = None;
+    loop {
+        let n = stream.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        match &mut tail {
+            Some((_, rolling)) => {
+                rolling.extend(&chunk[..n]);
+                let excess = rolling.len().saturating_sub(tail_bytes as usize);
+                rolling.drain(..excess);
+            }
+            None => {
+                all.extend_from_slice(&chunk[..n]);
+                if all.len() as u64 > cap {
+                    let head = all[..(head_bytes as usize).min(all.len())].to_vec();
+                    let keep = all.len().saturating_sub(tail_bytes as usize);
+                    let rolling = all.drain(keep..).collect();
+                    all = Vec::new();
+                    tail = Some((head, rolling));
+                }
+            }
+        }
+    }
+    match tail {
+        Some((head, rolling)) => {
+            let rolling: Vec<u8> = rolling.into();
+            Ok((window_lines(&head, &rolling), true))
+        }
+        None => Ok((
+            String::from_utf8_lossy(&all)
+                .lines()
+                .map(str::to_owned)
+                .collect(),
+            false,
+        )),
+    }
+}
+
+/// Lines of a head and a tail cut at byte boundaries, dropping the partial
+/// line at each cut.
+fn window_lines(head: &[u8], tail: &[u8]) -> Vec<String> {
+    let head_s = String::from_utf8_lossy(head);
+    let tail_s = String::from_utf8_lossy(tail);
     let mut lines: Vec<String> = Vec::new();
     // Head: drop the last line (cut mid-line at the byte boundary).
     let mut hl: Vec<&str> = head_s.lines().collect();
@@ -65,7 +126,7 @@ fn session_lines_windowed(
         tl.remove(0);
     }
     lines.extend(tl.iter().map(|s| s.to_string()));
-    Ok((lines, true))
+    lines
 }
 
 /// The last `max_bytes` of a file as whole lines, newest last.
@@ -299,7 +360,7 @@ pub fn green(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{session_lines_windowed, truncate};
+    use super::{decoded_lines_windowed, session_lines_windowed, truncate};
 
     #[test]
     fn truncate_strips_control_characters() {
@@ -340,6 +401,47 @@ mod tests {
         assert_eq!(all.len(), 10);
         assert!(!w);
         // Over the cap with small budgets: head + tail only, middle dropped.
+        let (win, w2) = session_lines_windowed(&p, 30, 22, 22).unwrap();
+        assert!(w2, "flagged windowed");
+        assert!(win.iter().any(|l| l == "line00"), "head kept: {win:?}");
+        assert!(win.iter().any(|l| l == "line09"), "tail kept: {win:?}");
+        assert!(
+            !win.iter().any(|l| l == "line05"),
+            "middle dropped: {win:?}"
+        );
+    }
+
+    /// A stream far past the cap keeps only its head and a bounded tail, not
+    /// everything read after the cap was crossed.
+    #[test]
+    fn a_long_stream_keeps_only_a_bounded_tail() {
+        let content: String = (0..20_000).map(|i| format!("line{i:05}\n")).collect();
+        let (win, windowed) =
+            decoded_lines_windowed(std::io::Cursor::new(content), 30, 22, 22).unwrap();
+        assert!(windowed);
+        assert_eq!(win.first().map(String::as_str), Some("line00000"));
+        assert_eq!(win.last().map(String::as_str), Some("line19999"));
+        assert!(win.len() <= 6, "{} lines kept", win.len());
+    }
+
+    /// Codex compresses older rollouts in place (`rollout-*.jsonl.zst`).
+    #[test]
+    fn a_zstd_session_reads_as_its_lines_and_windows_on_its_decoded_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("s.jsonl.zst");
+        let content: String = (0..10).map(|i| format!("line{i:02}\n")).collect();
+        std::fs::write(
+            &p,
+            ruzstd::encoding::compress_to_vec(
+                content.as_bytes(),
+                ruzstd::encoding::CompressionLevel::Fastest,
+            ),
+        )
+        .unwrap();
+        let (all, w) = session_lines_windowed(&p, 10_000, 22, 22).unwrap();
+        assert_eq!(all.len(), 10, "{all:?}");
+        assert_eq!(all[9], "line09");
+        assert!(!w);
         let (win, w2) = session_lines_windowed(&p, 30, 22, 22).unwrap();
         assert!(w2, "flagged windowed");
         assert!(win.iter().any(|l| l == "line00"), "head kept: {win:?}");

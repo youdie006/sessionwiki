@@ -367,3 +367,65 @@ fn every_codex_store_syncs_under_the_codex_tool_name() {
         .collect();
     assert_eq!(names, ["codex", "codex", "codex"]);
 }
+
+fn compress(path: &Path) -> PathBuf {
+    let zst = path.with_extension("jsonl.zst");
+    let raw = std::fs::read(path).unwrap();
+    std::fs::write(
+        &zst,
+        ruzstd::encoding::compress_to_vec(
+            raw.as_slice(),
+            ruzstd::encoding::CompressionLevel::Fastest,
+        ),
+    )
+    .unwrap();
+    std::fs::remove_file(path).unwrap();
+    zst
+}
+
+/// Codex compresses older rollouts in place. On one machine 678 of 684
+/// rollouts were `.jsonl.zst`; none were indexed, and the 667 already indexed
+/// were kept as deleted sessions once their `.jsonl` disappeared.
+#[test]
+fn a_rollout_compressed_in_place_is_read_and_listed_once() {
+    let home = tempfile::tempdir().unwrap();
+    let plain = rollout(home.path(), "sessions", GONE, "compressed later");
+    let mut c = index();
+    sync_with(&mut c, &adapters(home.path()), None).unwrap();
+    let old_sid: String = c
+        .query_row(
+            "SELECT session_id FROM files WHERE tool = 'codex'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    add_tag(&c, &old_sid, "keep").unwrap();
+
+    let zst = compress(&plain);
+    sync_with(&mut c, &adapters(home.path()), None).unwrap();
+    assert_eq!(
+        codex_rows(&c),
+        vec![(zst.to_string_lossy().into_owned(), false)]
+    );
+    assert_eq!(messages_matching(&c, "compressed later"), 1);
+    let tagged: i64 = c
+        .query_row(
+            "SELECT count(*) FROM tags t JOIN files f ON f.session_id = t.session_id
+             WHERE t.tag = 'keep' AND f.path = ?1",
+            [zst.to_string_lossy()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(tagged, 1);
+}
+
+#[test]
+fn a_thread_with_a_compressed_rollout_is_not_read_from_history() {
+    let home = tempfile::tempdir().unwrap();
+    compress(&rollout(home.path(), "sessions", GONE, "only once"));
+    history(home.path(), &[(GONE, "user", &[user("only once")])]);
+    let mut c = index();
+    sync_with(&mut c, &adapters(home.path()), None).unwrap();
+    assert_eq!(codex_rows(&c).len(), 1, "{:?}", codex_rows(&c));
+    assert_eq!(messages_matching(&c, "only once"), 1);
+}

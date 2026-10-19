@@ -6,6 +6,16 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Compressed Codex rollouts are indexed.** Codex compresses older rollouts
+  in place, `rollout-*.jsonl` becoming `rollout-*.jsonl.zst`, and only
+  `.jsonl` files were read. On one Mac, 678 of 684 rollouts were compressed:
+  none were indexed, and the 667 indexed earlier were listed as deleted
+  sessions once their `.jsonl` disappeared. Compressed rollouts are now read
+  (with the pure-Rust `ruzstd` decoder), and each one absorbs its row from
+  before compression, tags and note included.
+
 ## [0.34.4] - 2026-10-19
 
 ### Fixed
