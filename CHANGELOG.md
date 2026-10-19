@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.5] - 2026-10-19
+
 ### Fixed
 
 - **Compressed Codex rollouts are indexed.** Codex compresses older rollouts
