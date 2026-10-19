@@ -8,6 +8,22 @@ semantic versioning once it reaches 1.0.
 
 ### Fixed
 
+- **Codex threads kept only in Codex's history database are indexed.**
+  Codex now stores thread history in `thread_history_1.sqlite` and may
+  remove a thread's rollout file after migrating it. Only rollouts in
+  `~/.codex/sessions` were read, so one machine with 2,987 threads of history
+  showed 128 Codex sessions. Threads without a rollout are now read from the
+  history database, with cwd and sub-agent status taken from `state_5.sqlite`.
+  Rollouts in `~/.codex/archived_sessions` are indexed too (#65).
+- **A Codex session that changes location is listed once.** Codex moves a
+  rollout into `archived_sessions` when a thread is archived, and the rollout
+  may be removed while the thread continues in the history database. The old
+  location's row was kept as a deleted session beside the new one. It is now
+  merged into the new row, with its tags and note, unless it held more
+  messages than the new copy.
+- **`sync --tool codex` covers every Codex store.** It ran only the first
+  adapter of that name.
+
 - **Codex MCP calls recorded only as events are indexed.** Some Codex
   rollouts record an MCP call only as its `mcp_tool_call_end` event, with no
   tool call or output beside it, and those calls were not indexed at all -

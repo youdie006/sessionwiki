@@ -1110,6 +1110,7 @@ fn index_one(
             if session.subagent { "sub" } else { "main" },
         ],
     )?;
+    fold_moved_copy(tx, session, key)?;
     // Contract: messages are inserted in transcript order within one
     // transaction, so the autoincrement messages.id is a monotonic proxy for
     // order (preview + the web transcript rely on it). Keep this sequential.
@@ -1192,6 +1193,58 @@ fn restore_unchanged(conn: &mut Connection, keys: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// A Codex conversation can change path: archiving a thread moves its rollout,
+/// and after the history migration Codex may delete the rollout while the
+/// thread lives on in its history db. The old path's row is kept as archived,
+/// so once the conversation is indexed at its new path the kept row is a second
+/// listing of it. Fold it in, moving its tags and note across, unless it held
+/// more messages than the new copy - folding that would lose content.
+fn fold_moved_copy(
+    tx: &rusqlite::Transaction,
+    session: &crate::model::Session,
+    key: &str,
+) -> Result<()> {
+    if session.tool != "codex" {
+        return Ok(());
+    }
+    let Some(native) = native_id_of(key) else {
+        return Ok(());
+    };
+    let kept: Vec<(String, String, i64)> = tx
+        .prepare(
+            "SELECT path, session_id, msg_count FROM files
+             WHERE tool = 'codex' AND archived_at IS NOT NULL AND path <> ?1
+               AND instr(lower(path), ?2) > 0",
+        )?
+        .query_map(params![key, native], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for (path, sid, count) in kept {
+        if sid == session.id
+            || native_id_of(&path).as_deref() != Some(native.as_str())
+            || count > session.messages.len() as i64
+        {
+            continue;
+        }
+        for table in ["tags", "notes"] {
+            tx.execute(
+                &format!("UPDATE OR IGNORE {table} SET session_id = ?2 WHERE session_id = ?1"),
+                params![sid, session.id],
+            )?;
+        }
+        delete_session_msgs(tx, &sid)?;
+        delete_session_provenance(tx, &sid)?;
+        for table in ["files", "archive", "summaries", "tags", "notes"] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE session_id = ?1"),
+                params![sid],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// The end-of-adapter sync line. Honest about failures: "indexed 12/14
 /// (2 failed to parse)" rather than pretending everything landed.
 fn report_indexed(tool: &str, total: usize, failed: usize) {
@@ -1221,7 +1274,7 @@ pub fn sync_bounded(
     since: Option<i64>,
 ) -> Result<()> {
     let adapters: Vec<Box<dyn Adapter>> = match only_tool {
-        Some(t) => adapters::by_name(t).into_iter().collect(),
+        Some(t) => adapters::named(t),
         None => adapters::all(),
     };
     sync_with(conn, &adapters, since)
@@ -3681,6 +3734,9 @@ mod legacy_migration_tests {
         assert!(legacy_candidates(std::path::Path::new("/")).is_empty());
     }
 }
+
+#[cfg(test)]
+mod codex_history_tests;
 
 #[cfg(test)]
 mod embedder_hook_tests {

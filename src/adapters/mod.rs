@@ -11,7 +11,7 @@ mod opencode;
 mod prodex;
 pub use claude_code::ClaudeCode;
 pub(crate) use codex::is_subagent_meta as codex_is_subagent_meta;
-pub use codex::Codex;
+pub use codex::{Codex, CodexHistory};
 pub(crate) use gemini::project_root as gemini_project_root;
 pub use prodex::thread_url_for_task as prodex_thread_url;
 
@@ -143,6 +143,8 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
     vec![
         Box::new(ClaudeCode::default()),
         Box::new(Codex::default()),
+        Box::new(Codex::archived()),
+        Box::new(CodexHistory::default()),
         Box::new(gemini::Gemini),
         Box::new(opencode::OpenCode),
         Box::new(cline::Cline),
@@ -158,6 +160,12 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
 
 pub fn by_name(name: &str) -> Option<Box<dyn Adapter>> {
     all().into_iter().find(|a| a.name() == name)
+}
+
+/// Every registered store of one tool. Codex has three: its rollouts, its
+/// archived rollouts and its thread history; [`by_name`] returns the first.
+pub fn named(name: &str) -> Vec<Box<dyn Adapter>> {
+    all().into_iter().filter(|a| a.name() == name).collect()
 }
 
 /// Filesystem-only summary of a store, used by `scan`. No parsing involved.

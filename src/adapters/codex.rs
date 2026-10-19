@@ -10,18 +10,33 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+mod history;
+pub use history::CodexHistory;
+
 /// Codex CLI stores one JSONL rollout per session under
 /// `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`.
 /// Lines carry a `type` plus a `payload`; the schema has shifted across
 /// versions, so both `response_item` and `event_msg` shapes are handled.
 ///
+/// Archiving a thread moves its rollout to `~/.codex/archived_sessions/`, laid
+/// out the same way; [`Codex::archived_in`] reads that directory.
+///
 /// `Codex::default()` reads the stock `~/.codex` install. An embedder that
 /// runs several Codex installs in different homes builds one adapter per
 /// install with [`Codex::in_home`].
-#[derive(Default)]
 pub struct Codex {
-    /// Explicit sessions directory, or `None` for the stock location.
+    /// Explicit rollout directory, or `None` for `dir` under the stock home.
     root: Option<PathBuf>,
+    dir: &'static str,
+}
+
+impl Default for Codex {
+    fn default() -> Self {
+        Codex {
+            root: None,
+            dir: "sessions",
+        }
+    }
 }
 
 impl Codex {
@@ -31,6 +46,23 @@ impl Codex {
     pub fn in_home(home: impl Into<PathBuf>) -> Self {
         Codex {
             root: Some(home.into().join("sessions")),
+            dir: "sessions",
+        }
+    }
+
+    /// The archived rollouts of the stock install.
+    pub fn archived() -> Self {
+        Codex {
+            root: None,
+            dir: "archived_sessions",
+        }
+    }
+
+    /// The archived rollouts of the Codex install rooted at `home`.
+    pub fn archived_in(home: impl Into<PathBuf>) -> Self {
+        Codex {
+            root: Some(home.into().join("archived_sessions")),
+            dir: "archived_sessions",
         }
     }
 }
@@ -43,7 +75,7 @@ impl Adapter for Codex {
     fn root(&self) -> Option<PathBuf> {
         match &self.root {
             Some(root) => Some(root.clone()),
-            None => Some(dirs::home_dir()?.join(".codex").join("sessions")),
+            None => Some(dirs::home_dir()?.join(".codex").join(self.dir)),
         }
     }
 
