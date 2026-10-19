@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.4] - 2026-10-19
+
 ### Fixed
 
 - **Codex threads kept only in Codex's history database are indexed.**
