@@ -69,3 +69,27 @@ fn sessions_touching_matches_abs_and_relative_and_parses_times() {
     );
     assert_eq!(abs.project, "/home/dev/proj");
 }
+
+/// `_` and `%` in the file name are literal. Unescaped, `_` matched any one
+/// character, so blaming `newdata_copy.py` also took the session that edited
+/// `newdata copy.py` - a pair that exists side by side on a real machine.
+#[test]
+fn sessions_touching_treats_like_metacharacters_literally() {
+    let _g = LOCK.lock().unwrap();
+    let conn = fresh();
+    let (s, e) = ("2026-06-08T10:00:00+00:00", "2026-06-08T11:00:00+00:00");
+    seed(&conn, "s_under", "/p/KBS/newdata_copy.py", s, e, "/p");
+    seed(&conn, "s_space", "/p/KBS/newdata copy.py", s, e, "/p");
+    seed(&conn, "s_pct", "/p/KBS/100%.py", s, e, "/p");
+    seed(&conn, "s_other", "/p/KBS/1000.py", s, e, "/p");
+
+    let ids = |q: &str| -> Vec<String> {
+        index::sessions_touching(&conn, q)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.session_id)
+            .collect()
+    };
+    assert_eq!(ids("KBS/newdata_copy.py"), ["s_under"]);
+    assert_eq!(ids("KBS/100%.py"), ["s_pct"]);
+}

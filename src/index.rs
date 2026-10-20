@@ -2854,11 +2854,11 @@ pub fn sessions_touching(
     query: &str,
 ) -> Result<Vec<crate::blame::TouchingSession>> {
     let q = crate::util::nfc(query.trim().trim_start_matches("./"));
-    let suffix = format!("%/{q}");
+    let suffix = format!("%/{}", escape_like(&q));
     let mut stmt = conn.prepare(
         "SELECT f.session_id, f.tool, f.title, f.project, f.started, f.ended, (f.archived_at IS NOT NULL)
          FROM touched t JOIN files f ON f.session_id = t.session_id
-         WHERE t.path = ?1 OR t.path LIKE ?2
+         WHERE t.path = ?1 OR t.path LIKE ?2 ESCAPE '\\'
          GROUP BY f.session_id",
     )?;
     let rows = stmt.query_map(params![q, suffix], |r| {

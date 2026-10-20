@@ -6,6 +6,13 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- `blame` no longer credits a session that edited a different file whose name
+  differs only where the asked-for name has `_` or `%`. The path query used
+  them as SQL wildcards, so `blame KBS/newdata_copy.py` also took the session
+  that edited `KBS/newdata copy.py`. `trace` already treated them literally.
+
 ## [0.34.7] - 2026-10-20
 
 ### Fixed
