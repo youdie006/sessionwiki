@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.7] - 2026-10-20
+
 ### Fixed
 
 - **Gemini CLI chats written as JSONL are indexed.** Gemini CLI now saves
