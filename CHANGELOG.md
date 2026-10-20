@@ -6,6 +6,16 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Search finds what was said in the middle of a large session.** A session
+  over the 256 MB cap was indexed from its first 256 KB and last 512 KB only,
+  so its conversation in between could not be searched: one 352 MB session
+  had 1,733 prompts and 7 of them were indexed. The user and assistant text
+  of a windowed Claude or Codex session is now kept from the whole file (up to
+  64 MB of it); tool output in the middle stays windowed. The live windowed
+  sessions are re-parsed once on the next sync.
+
 ## [0.34.6] - 2026-10-20
 
 ### Fixed

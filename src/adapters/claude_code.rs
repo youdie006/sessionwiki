@@ -88,7 +88,12 @@ impl Adapter for ClaudeCode {
         // A session over the byte cap is WINDOWED (head+tail) rather than
         // dropped, so the biggest sessions - the ones most worth referencing -
         // stay searchable and partially readable.
-        let (lines, windowed) = crate::util::session_lines(path)?;
+        // Past the cap, the conversation is still read from the middle; only
+        // its tool output is windowed.
+        let (lines, windowed) = crate::util::session_lines_keeping(path, |line| {
+            (line.contains("\"type\":\"user\"") && !line.contains("\"tool_result\""))
+                || (line.contains("\"type\":\"assistant\"") && line.contains("\"type\":\"text\""))
+        })?;
 
         let mut messages: Vec<Message> = Vec::new();
         let mut touched: Vec<String> = Vec::new();
@@ -558,5 +563,51 @@ mod tests {
         assert_eq!(session.touched.len(), 30, "{:?}", session.touched);
         assert_eq!(session.edits.len(), 30);
         assert!(session.touched.contains(&"/repo/src/f15.rs".to_string()));
+    }
+
+    /// A windowed session kept only its first and last turns' text, so search
+    /// could not find what was asked in between: one 352 MB session had 1,733
+    /// prompts and 8 of them were indexed. Its conversation text is kept from
+    /// the whole file; bulky tool output in the middle is still dropped.
+    #[test]
+    fn a_windowed_session_keeps_the_conversation_in_between() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir
+            .path()
+            .join("11111111-2222-3333-4444-555555555555.jsonl");
+        let mut body = String::new();
+        for i in 0..30 {
+            body.push_str(&format!(
+                "{{\"type\":\"user\",\"timestamp\":\"2026-10-01T00:00:{i:02}Z\",\"message\":{{\"content\":\"question number {i}\"}}}}\n"
+            ));
+            body.push_str(&format!(
+                "{{\"type\":\"user\",\"message\":{{\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"t{i}\",\"content\":\"bulky output {i}\"}}]}}}}\n"
+            ));
+            body.push_str(&format!(
+                "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"answer number {i}\"}}]}}}}\n"
+            ));
+        }
+        std::fs::write(&file, body).unwrap();
+        crate::util::TEST_WINDOW.with(|w| w.set(Some((2_000, 600, 600))));
+        let session = ClaudeCode::default().parse(&file).unwrap();
+        crate::util::TEST_WINDOW.with(|w| w.set(None));
+        assert!(session.title.starts_with("[large]"), "{}", session.title);
+        let text = |role: Role| -> Vec<String> {
+            session
+                .messages
+                .iter()
+                .filter(|m| m.role == role)
+                .map(|m| m.text.clone())
+                .collect()
+        };
+        let questions: Vec<String> = (0..30).map(|i| format!("question number {i}")).collect();
+        let answers: Vec<String> = (0..30).map(|i| format!("answer number {i}")).collect();
+        assert_eq!(text(Role::User), questions);
+        assert_eq!(text(Role::Assistant), answers);
+        let results = session.messages.iter().filter(|m| m.tool.is_some()).count();
+        assert!(
+            results < 30,
+            "tool output in the middle stays windowed: {results}"
+        );
     }
 }

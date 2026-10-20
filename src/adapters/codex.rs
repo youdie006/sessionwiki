@@ -109,7 +109,13 @@ impl Adapter for Codex {
 
     fn parse(&self, path: &Path) -> Result<Session> {
         // Over the byte cap: window (head+tail) instead of dropping the session.
-        let (lines, windowed) = crate::util::session_lines(path)?;
+        // Past the cap, the conversation is still read from the middle; only
+        // its tool calls and output are windowed.
+        let (lines, windowed) = crate::util::session_lines_keeping(path, |line| {
+            line.contains("\"user_message\"")
+                || line.contains("\"agent_message\"")
+                || line.contains("\"type\":\"message\"")
+        })?;
 
         let mut messages: Vec<Message> = Vec::new();
         let mut touched: Vec<String> = Vec::new();
@@ -776,5 +782,45 @@ mod tests {
         assert_eq!(session.touched.len(), 60, "{:?}", session.touched);
         assert!(session.touched.contains(&"src/f15.rs".to_string()));
         assert!(session.touched.contains(&"src/g15.rs".to_string()));
+    }
+
+    /// The same for a Codex rollout's conversation.
+    #[test]
+    fn a_windowed_rollout_keeps_the_conversation_in_between() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("rollout-2026-10-01T00-00-00-abc.jsonl");
+        let mut body =
+            String::from("{\"type\":\"session_meta\",\"payload\":{\"cwd\":\"/repo\"}}\n");
+        for i in 0..30 {
+            body.push_str(&format!(
+                "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"question number {i}\"}}}}\n"
+            ));
+            body.push_str(&format!(
+                "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"question number {i}\"}}]}}}}\n"
+            ));
+            body.push_str(&format!(
+                "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"function_call_output\",\"call_id\":\"c{i}\",\"output\":\"bulky output {i}\"}}}}\n"
+            ));
+            body.push_str(&format!(
+                "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"agent_message\",\"message\":\"answer number {i}\"}}}}\n"
+            ));
+        }
+        std::fs::write(&file, body).unwrap();
+        crate::util::TEST_WINDOW.with(|w| w.set(Some((2_000, 600, 600))));
+        let session = Codex::default().parse(&file).unwrap();
+        crate::util::TEST_WINDOW.with(|w| w.set(None));
+        assert!(session.title.starts_with("[large]"), "{}", session.title);
+        let text = |role: Role| -> Vec<String> {
+            session
+                .messages
+                .iter()
+                .filter(|m| m.role == role)
+                .map(|m| m.text.clone())
+                .collect()
+        };
+        let questions: Vec<String> = (0..30).map(|i| format!("question number {i}")).collect();
+        let answers: Vec<String> = (0..30).map(|i| format!("answer number {i}")).collect();
+        assert_eq!(text(Role::User), questions, "each prompt once");
+        assert_eq!(text(Role::Assistant), answers);
     }
 }

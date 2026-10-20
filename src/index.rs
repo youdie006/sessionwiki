@@ -922,9 +922,10 @@ fn reparse_codex_for_mcp_errors(conn: &Connection) -> Result<()> {
 /// between their head and tail; an ended session never changes, so it is never
 /// parsed again. Mark the live windowed rows for one re-parse whenever the
 /// windowed reader has changed since. 1: provenance read from the whole file.
+/// 2: the conversation between head and tail kept too.
 fn reparse_large_for_provenance(conn: &Connection) -> Result<()> {
     const KEY: &str = "large_provenance_reparsed";
-    const READER: i64 = 1;
+    const READER: i64 = 2;
     let done: i64 = conn
         .query_row("SELECT value FROM meta WHERE key = ?1", [KEY], |r| {
             r.get::<_, String>(0)

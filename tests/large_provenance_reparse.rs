@@ -78,4 +78,19 @@ fn live_windowed_rows_are_reparsed_once_after_upgrading() {
     drop(conn);
     let conn = index::open().unwrap();
     assert_eq!(mtime(&conn, "/s/claude-large.jsonl"), 7, "only once");
+
+    // An index that took the first re-parse (edited files) takes the second
+    // (the conversation between head and tail) too.
+    conn.execute(
+        "UPDATE meta SET value = '1' WHERE key = 'large_provenance_reparsed'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let conn = index::open().unwrap();
+    assert_eq!(
+        mtime(&conn, "/s/claude-large.jsonl"),
+        -1,
+        "the newer reader re-parses it"
+    );
 }

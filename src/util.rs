@@ -22,6 +22,91 @@ pub fn session_lines(path: &Path) -> Result<(Vec<String>, bool)> {
     session_lines_windowed(path, cap, head, tail)
 }
 
+/// Most text a windowed read keeps from the middle of a file. Conversation is a
+/// small share of a large session - its bulk is tool output - so this is a
+/// ceiling against a hostile file, not a budget a real one reaches.
+const MIDDLE_KEPT_BYTES: u64 = 64 * 1024 * 1024;
+
+/// [`session_lines`], keeping from the middle of a windowed file the lines
+/// `keep` accepts - an adapter's conversation, without its tool output - so a
+/// session over the cap is searchable for what was said between its first
+/// and last turns. The whole file is read, a line at a time.
+pub fn session_lines_keeping(
+    path: &Path,
+    keep: impl Fn(&str) -> bool,
+) -> Result<(Vec<String>, bool)> {
+    let (cap, head, tail) = window_limits();
+    lines_keeping(path, cap, head, tail, MIDDLE_KEPT_BYTES, keep)
+}
+
+fn lines_keeping(
+    path: &Path,
+    cap: u64,
+    head_bytes: u64,
+    tail_bytes: u64,
+    middle_bytes: u64,
+    keep: impl Fn(&str) -> bool,
+) -> Result<(Vec<String>, bool)> {
+    let mut all: Vec<String> = Vec::new();
+    let mut total = 0u64;
+    // A plain file's size is known before reading, so one over the cap is
+    // windowed from its first line instead of being buffered up to the cap; a
+    // compressed one is measured as it decodes.
+    let mut windowed = path.extension().is_none_or(|x| x != "zst")
+        && std::fs::metadata(path).is_ok_and(|m| m.len() > cap);
+    let mut head: Vec<String> = Vec::new();
+    let mut middle: Vec<String> = Vec::new();
+    let mut middle_used = 0u64;
+    let mut tail: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    let mut tail_used = 0u64;
+    let mut head_used = 0u64;
+    // Once over the cap: a line goes to the head while it fits, then through
+    // the tail, and a line leaving the tail survives only if it is kept.
+    let mut place = |line: String,
+                     head: &mut Vec<String>,
+                     middle: &mut Vec<String>,
+                     tail: &mut std::collections::VecDeque<String>| {
+        let n = line.len() as u64 + 1;
+        if head_used + n <= head_bytes && middle.is_empty() && tail.is_empty() {
+            head_used += n;
+            head.push(line);
+            return;
+        }
+        tail_used += n;
+        tail.push_back(line);
+        while tail_used > tail_bytes {
+            let Some(old) = tail.pop_front() else { break };
+            let m = old.len() as u64 + 1;
+            tail_used -= m;
+            if middle_used + m <= middle_bytes && keep(&old) {
+                middle_used += m;
+                middle.push(old);
+            }
+        }
+    };
+    for_each_line(path, |raw| {
+        let line = raw.trim_end_matches(['\n', '\r']).to_owned();
+        total += raw.len() as u64;
+        if !windowed {
+            all.push(line);
+            if total > cap {
+                windowed = true;
+                for line in std::mem::take(&mut all) {
+                    place(line, &mut head, &mut middle, &mut tail);
+                }
+            }
+        } else {
+            place(line, &mut head, &mut middle, &mut tail);
+        }
+    })?;
+    if !windowed {
+        return Ok((all, false));
+    }
+    head.extend(middle);
+    head.extend(tail);
+    Ok((head, true))
+}
+
 #[cfg(test)]
 thread_local! {
     /// Lets an adapter test window a small file: (cap, head, tail) bytes.
@@ -393,7 +478,7 @@ pub fn green(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{decoded_lines_windowed, session_lines_windowed, truncate};
+    use super::{decoded_lines_windowed, lines_keeping, session_lines_windowed, truncate};
 
     #[test]
     fn truncate_strips_control_characters() {
@@ -455,6 +540,47 @@ mod tests {
         assert_eq!(win.first().map(String::as_str), Some("line00000"));
         assert_eq!(win.last().map(String::as_str), Some("line19999"));
         assert!(win.len() <= 6, "{} lines kept", win.len());
+    }
+
+    /// Over the cap, the lines a reader asks to keep survive from the middle,
+    /// in order, once each; everything else in the middle is dropped.
+    #[test]
+    fn a_windowed_read_keeps_the_middle_lines_asked_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("s.jsonl");
+        let content: String = (0..100)
+            .map(|i| {
+                if i % 10 == 5 {
+                    format!("keep{i:03}\n")
+                } else {
+                    format!("drop{i:03}\n")
+                }
+            })
+            .collect();
+        std::fs::write(&p, &content).unwrap();
+        let (lines, windowed) =
+            lines_keeping(&p, 100, 24, 24, 1 << 20, |l: &str| l.starts_with("keep")).unwrap();
+        assert!(windowed);
+        assert_eq!(
+            &lines[..3],
+            ["drop000", "drop001", "drop002"],
+            "head: {lines:?}"
+        );
+        let middle: Vec<&str> = lines[3..lines.len() - 3]
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let kept: Vec<String> = (0..10).map(|i| format!("keep{:03}", i * 10 + 5)).collect();
+        assert_eq!(middle, kept, "{lines:?}");
+        assert_eq!(&lines[lines.len() - 3..], ["drop097", "drop098", "drop099"]);
+        // Under the cap nothing is dropped.
+        let (all, windowed) = lines_keeping(&p, 10_000, 24, 24, 1 << 20, |_: &str| false).unwrap();
+        assert!(!windowed);
+        assert_eq!(all.len(), 100);
+        // The middle is bounded.
+        let (bounded, _) =
+            lines_keeping(&p, 100, 24, 24, 20, |l: &str| l.starts_with("keep")).unwrap();
+        assert_eq!(bounded.len(), 3 + 2 + 3, "{bounded:?}");
     }
 
     /// Codex compresses older rollouts in place (`rollout-*.jsonl.zst`).
