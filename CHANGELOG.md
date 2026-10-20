@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.8] - 2026-10-20
+
 ### Fixed
 
 - `blame` no longer credits a session that edited a different file whose name
