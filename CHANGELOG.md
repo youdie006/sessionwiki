@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.6] - 2026-10-20
+
 ### Fixed
 
 - **`trace` finds the files a large session edited.** A session over the
