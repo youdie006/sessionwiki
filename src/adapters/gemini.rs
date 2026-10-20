@@ -10,9 +10,57 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 /// Gemini CLI stores one JSON document per saved chat under
-/// `~/.gemini/tmp/<project>/chats/session-*.json`:
+/// `~/.gemini/tmp/<project>/chats/session-*.json` (newer CLIs write `.jsonl`, see [`fold_jsonl`]):
 /// `{ sessionId, startTime, lastUpdated, messages: [{ type, content, timestamp }] }`.
 pub struct Gemini;
+
+/// A chat file: `chats/*.json`, or `chats/*.jsonl` as Gemini CLI writes now.
+fn is_chat(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|x| x == "json" || x == "jsonl")
+        && path
+            .parent()
+            .and_then(|p| p.file_name())
+            .is_some_and(|d| d == "chats")
+}
+
+/// Rebuild the chat document a JSONL chat records: its header line, `$set`
+/// lines that replace fields, and message lines, a repeated id replacing the
+/// earlier copy of that message as it grew.
+fn fold_jsonl(raw: &str) -> Option<Value> {
+    let mut doc = serde_json::Map::new();
+    let mut messages: Vec<Value> = Vec::new();
+    let mut read_any = false;
+    for line in raw.lines() {
+        let Ok(Value::Object(entry)) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        read_any = true;
+        if let Some(Value::Object(set)) = entry.get("$set") {
+            for (key, value) in set {
+                match (key.as_str(), value) {
+                    ("messages", Value::Array(list)) => messages = list.clone(),
+                    _ => {
+                        doc.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        } else if entry.contains_key("type") && entry.contains_key("id") {
+            let message = Value::Object(entry);
+            match messages
+                .iter_mut()
+                .find(|m| m.get("id") == message.get("id"))
+            {
+                Some(earlier) => *earlier = message,
+                None => messages.push(message),
+            }
+        } else {
+            doc.extend(entry);
+        }
+    }
+    doc.insert("messages".into(), Value::Array(messages));
+    read_any.then_some(Value::Object(doc))
+}
 
 /// The store dir is named by a slug (older versions: a hash of the path), not
 /// the path itself; newer versions record the real directory in
@@ -47,13 +95,7 @@ impl Adapter for Gemini {
             .into_iter()
             .filter_map(|e| ok_or_flag(e, &mut had_error))
             .filter(|e| e.file_type().is_file())
-            .filter(|e| {
-                e.path().extension().is_some_and(|x| x == "json")
-                    && e.path()
-                        .parent()
-                        .and_then(|p| p.file_name())
-                        .is_some_and(|d| d == "chats")
-            })
+            .filter(|e| is_chat(e.path()))
             .map(|e| e.into_path())
             .collect();
         Discovered { files, had_error }
@@ -61,8 +103,13 @@ impl Adapter for Gemini {
 
     fn parse(&self, path: &Path) -> Result<Session> {
         let raw = crate::util::read_to_string_capped(path)?;
-        let v: Value =
-            serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
+        // A `.jsonl` chat is a log to fold, unless the file is one whole
+        // document after all.
+        let v: Value = match serde_json::from_str(&raw) {
+            Err(_) if path.extension().is_some_and(|x| x == "jsonl") => fold_jsonl(&raw)
+                .with_context(|| format!("parse {}: no JSON lines", path.display()))?,
+            parsed => parsed.with_context(|| format!("parse {}", path.display()))?,
+        };
 
         let started = v
             .get("startTime")
@@ -311,5 +358,57 @@ fn redact_json_strings(value: &mut Value) {
         Value::Array(values) => values.iter_mut().for_each(redact_json_strings),
         Value::Object(values) => values.values_mut().for_each(redact_json_strings),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Role;
+
+    /// Gemini CLI now writes each chat as JSONL: a header line, `$set` lines
+    /// that replace fields, and one line per message - repeated with the same id
+    /// as the message grows. Only `.json` chats were read, so on one machine the
+    /// 14 written since mid-June were never indexed.
+    #[test]
+    fn a_jsonl_chat_is_folded_into_its_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let chats = dir.path().join("proj").join("chats");
+        std::fs::create_dir_all(&chats).unwrap();
+        let file = chats.join("session-2026-07-14T02-10-bbfe7356.jsonl");
+        std::fs::write(
+            &file,
+            [
+                r#"{"sessionId":"s1","projectHash":"h","startTime":"2026-07-14T02:10:00.000Z","lastUpdated":"2026-07-14T02:10:00.000Z","kind":"main"}"#,
+                r#"{"$set":{"messages":[{"id":"m1","timestamp":"2026-07-14T02:10:01.000Z","type":"user","content":[{"text":"rename the config loader"}]}],"lastUpdated":"2026-07-14T02:10:01.000Z"}}"#,
+                r#"{"id":"m2","timestamp":"2026-07-14T02:10:02.000Z","type":"gemini","content":"Look"}"#,
+                r#"{"id":"m2","timestamp":"2026-07-14T02:10:03.000Z","type":"gemini","content":"Looking at the loader now."}"#,
+                r#"{"$set":{"lastUpdated":"2026-07-14T02:10:03.000Z"}}"#,
+                r#"{"id":"m3","timestamp":"2026-07-14T02:10:04.000Z","type":"user","content":[{"text":"thanks"}]}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        assert!(is_chat(&file));
+        let session = Gemini.parse(&file).unwrap();
+        let said: Vec<(Role, String)> = session
+            .messages
+            .iter()
+            .map(|m| (m.role, m.text.clone()))
+            .collect();
+        assert_eq!(
+            said,
+            vec![
+                (Role::User, "rename the config loader".to_string()),
+                (Role::Assistant, "Looking at the loader now.".to_string()),
+                (Role::User, "thanks".to_string()),
+            ]
+        );
+        assert_eq!(
+            session.ended.map(|t| t.to_rfc3339()).as_deref(),
+            Some("2026-07-14T02:10:03+00:00")
+        );
+        assert!(is_chat(&chats.join("session-old.json")));
+        assert!(!is_chat(&dir.path().join("proj").join("logs.json")));
     }
 }

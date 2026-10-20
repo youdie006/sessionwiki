@@ -8,6 +8,12 @@ semantic versioning once it reaches 1.0.
 
 ### Fixed
 
+- **Gemini CLI chats written as JSONL are indexed.** Gemini CLI now saves
+  each chat as `chats/session-*.jsonl` - a header line, `$set` lines and one
+  line per message, repeated as the message grows - and only `.json` chats
+  were read, so every Gemini session since mid-June was missing (14 on one
+  machine). These chats are now folded back into their messages, each
+  message once.
 - **Search finds what was said in the middle of a large session.** A session
   over the 256 MB cap was indexed from its first 256 KB and last 512 KB only,
   so its conversation in between could not be searched: one 352 MB session

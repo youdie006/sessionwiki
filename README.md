@@ -359,7 +359,7 @@ one feature that touches an LLM is `summarize`, and it does so by running a CLI
 |---|---|---|
 | Claude Code | `~/.claude/projects/**/*.jsonl` (incl. nested subagent transcripts) | supported |
 | Codex CLI | `~/.codex/sessions/**/rollout-*.jsonl[.zst]`, `~/.codex/archived_sessions/`, `~/.codex/thread_history_*.sqlite` | supported |
-| Gemini CLI | `~/.gemini/tmp/*/chats/*.json` | supported |
+| Gemini CLI | `~/.gemini/tmp/*/chats/*.json[l]` | supported |
 | OpenCode | `~/.local/share/opencode/opencode.db` (SQLite; also the legacy `storage/**` JSON) | supported |
 | Cline, Roo Code, Kilo Code | VS Code `globalStorage/<ext>/tasks/<id>/` (one parser, three tools) | supported |
 | gajae-code (& Pi) | `~/.gjc/agent/sessions/**/*.jsonl` | supported |
