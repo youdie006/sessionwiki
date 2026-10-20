@@ -6,6 +6,14 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`doctor` no longer calls Codex's thread history unreadable.** Since
+  0.34.4 Codex's thread history is indexed from `thread_history_1.sqlite`,
+  one database file, and `doctor` read every store as a directory, so it
+  reported `store: codex - present but unreadable: Not a directory` on any
+  machine that has one. A store that is a file is now opened as a file.
+
 ## [0.34.5] - 2026-10-19
 
 ### Fixed

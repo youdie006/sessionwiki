@@ -153,6 +153,32 @@ pub fn unlocatable_store(name: &str, root: Option<&std::path::Path>) -> Option<C
     })
 }
 
+/// Whether a store that exists can be read, or `None` when it is absent (not
+/// every tool is installed). Confirmed WITHOUT a full recursive walk: a large
+/// store (a 40GB codex history) would make `doctor` crawl. A shallow read still
+/// catches a permission problem. A store can be one database file rather than a
+/// directory (Codex's thread history), and is opened as one.
+fn present_store(tool: &str, root: &std::path::Path) -> Option<Check> {
+    if !root.exists() {
+        return None;
+    }
+    let readable = if root.is_dir() {
+        std::fs::read_dir(root).map(|_| ())
+    } else {
+        std::fs::File::open(root).map(|_| ())
+    };
+    Some(match readable {
+        Ok(()) => Check::ok(
+            &format!("store: {tool}"),
+            format!("present at {}", root.display()),
+        ),
+        Err(e) => Check::warn(
+            &format!("store: {tool}"),
+            format!("present but unreadable: {e}"),
+        ),
+    })
+}
+
 pub fn store_checks() -> Vec<Check> {
     let mut checks = Vec::new();
     let mut any = false;
@@ -164,22 +190,9 @@ pub fn store_checks() -> Vec<Check> {
             continue;
         }
         let root = located.expect("checked just above");
-        if !root.exists() {
-            continue; // an absent store is normal - not every tool is installed
-        }
-        any = true;
-        // Confirm the root is readable WITHOUT a full recursive walk: a large
-        // store (a 40GB codex history) would make `doctor` crawl. A shallow
-        // read_dir still catches a permission problem.
-        match std::fs::read_dir(&root) {
-            Ok(_) => checks.push(Check::ok(
-                &format!("store: {}", adapter.name()),
-                format!("present at {}", root.display()),
-            )),
-            Err(e) => checks.push(Check::warn(
-                &format!("store: {}", adapter.name()),
-                format!("present but unreadable: {e}"),
-            )),
+        if let Some(c) = present_store(adapter.name(), &root) {
+            checks.push(c);
+            any = true;
         }
     }
     if !any {
@@ -232,6 +245,20 @@ pub fn run(json: bool) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Codex's thread history is one database file, not a directory, and every
+    /// machine with that store got "present but unreadable: Not a directory".
+    #[test]
+    fn a_store_that_is_one_database_file_is_read_as_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("thread_history_1.sqlite");
+        std::fs::write(&db, b"").unwrap();
+        let check = present_store("codex", &db).expect("it exists");
+        assert_eq!(check.status, Status::Ok, "{:?}", check.detail);
+        let check = present_store("codex", dir.path()).expect("it exists");
+        assert_eq!(check.status, Status::Ok, "a directory store still reads");
+        assert!(present_store("codex", &dir.path().join("absent")).is_none());
+    }
 
     fn conn() -> Connection {
         let c = Connection::open_in_memory().unwrap();
