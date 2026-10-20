@@ -192,9 +192,7 @@ impl Adapter for Codex {
                         Some("function_call") => {
                             let payload = v.get("payload").unwrap_or(&Value::Null);
                             let raw_args = payload.get("arguments").and_then(Value::as_str);
-                            // Inspect the original JSON string so escaped patch
-                            // newlines continue to contribute to provenance.
-                            collect_patched_paths(raw_args.unwrap_or_default(), &mut touched);
+                            touched_by(payload, &mut touched);
                             let mut args = if let Some(raw_args) = raw_args {
                                 serde_json::from_str(raw_args)
                                     .unwrap_or_else(|_| json!({"arguments": raw_args}))
@@ -225,7 +223,7 @@ impl Adapter for Codex {
                                     .map(|(_, patch)| format!("*** Begin Patch{patch}"))
                                     .unwrap_or_else(|| input.to_owned())
                                     .replace("\\n", "\n");
-                                collect_patched_paths(&patch, &mut touched);
+                                touched_by(payload, &mut touched);
                                 ("apply_patch", json!({"patch": patch}))
                             } else if let Some(cmd) = exec_command_cmd(input) {
                                 // The `exec` tool runs a JS snippet; the common shape is
@@ -358,6 +356,27 @@ impl Adapter for Codex {
             }
         }
 
+        // The window drops the middle of the file, and with it the files the
+        // rollout patched there. Those are read from the whole file: only lines
+        // that carry a patch marker are parsed.
+        if windowed {
+            let mut all = Vec::new();
+            let read = crate::util::for_each_line(path, |line| {
+                if !line.contains("*** ") {
+                    return;
+                }
+                let Ok(v) = serde_json::from_str::<Value>(line) else {
+                    return;
+                };
+                if v.get("type").and_then(Value::as_str) == Some("response_item") {
+                    touched_by(v.get("payload").unwrap_or(&Value::Null), &mut all);
+                }
+            });
+            if read.is_ok() {
+                touched = all;
+            }
+        }
+
         let project = cwd.unwrap_or_default();
         for message in &mut messages {
             if let Some(crate::model::ToolEvent::Part(crate::model::ToolPart::Result(result))) =
@@ -418,6 +437,29 @@ fn collect_patched_paths(args: &str, out: &mut Vec<String>) {
                 }
             }
         }
+    }
+}
+
+/// The files one `response_item` payload patched: an apply_patch carried by a
+/// function call's arguments or by a custom tool call's input.
+fn touched_by(payload: &Value, out: &mut Vec<String>) {
+    match payload.get("type").and_then(Value::as_str) {
+        // Inspect the original JSON string so escaped patch newlines continue
+        // to contribute to provenance.
+        Some("function_call") => collect_patched_paths(
+            payload
+                .get("arguments")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            out,
+        ),
+        Some("custom_tool_call") => {
+            let input = payload.get("input").and_then(Value::as_str).unwrap_or("");
+            if let Some((_, patch)) = input.split_once("*** Begin Patch") {
+                collect_patched_paths(&format!("*** Begin Patch{patch}").replace("\\n", "\n"), out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -708,5 +750,31 @@ mod tests {
         assert!(!codex.parse(&main).unwrap().subagent);
         assert!(codex.parse(&by_thread).unwrap().subagent);
         assert!(codex.parse(&by_source).unwrap().subagent);
+    }
+
+    /// The same for a Codex rollout: its patches in the middle of a windowed
+    /// file are still the files it edited.
+    #[test]
+    fn a_windowed_rollout_keeps_every_file_it_patched() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("rollout-2026-10-01T00-00-00-abc.jsonl");
+        let mut body =
+            String::from("{\"type\":\"session_meta\",\"payload\":{\"cwd\":\"/repo\"}}\n");
+        for i in 0..30 {
+            body.push_str(&format!(
+                "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"custom_tool_call\",\"call_id\":\"c{i}\",\"name\":\"apply_patch\",\"input\":\"*** Begin Patch\\n*** Update File: src/f{i}.rs\\n@@\\n-a\\n+b\\n*** End Patch\"}}}}\n"
+            ));
+            body.push_str(&format!(
+                "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"function_call\",\"call_id\":\"s{i}\",\"name\":\"shell\",\"arguments\":\"{{\\\"cmd\\\":\\\"apply_patch <<EOF\\\\n*** Begin Patch\\\\n*** Add File: src/g{i}.rs\\\\n+x\\\\n*** End Patch\\\\nEOF\\\"}}\"}}}}\n"
+            ));
+        }
+        std::fs::write(&file, body).unwrap();
+        crate::util::TEST_WINDOW.with(|w| w.set(Some((2_000, 600, 600))));
+        let session = Codex::default().parse(&file).unwrap();
+        crate::util::TEST_WINDOW.with(|w| w.set(None));
+        assert!(session.title.starts_with("[large]"), "{}", session.title);
+        assert_eq!(session.touched.len(), 60, "{:?}", session.touched);
+        assert!(session.touched.contains(&"src/f15.rs".to_string()));
+        assert!(session.touched.contains(&"src/g15.rs".to_string()));
     }
 }

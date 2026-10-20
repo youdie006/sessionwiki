@@ -223,6 +223,46 @@ impl Adapter for ClaudeCode {
             }
         }
 
+        // The window drops the middle of the file, and with it the files the
+        // session edited there. Those are read from the whole file: only lines
+        // that carry a tool call are parsed.
+        if windowed {
+            let mut all_touched = Vec::new();
+            let mut all_edits = Vec::new();
+            let read = crate::util::for_each_line(path, |line| {
+                if !line.contains("\"tool_use\"") {
+                    return;
+                }
+                let Ok(v) = serde_json::from_str::<Value>(line) else {
+                    return;
+                };
+                if v.get("type").and_then(Value::as_str) != Some("assistant") {
+                    return;
+                }
+                let ts = v
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .and_then(parse_ts);
+                let Some(Value::Array(blocks)) = v.pointer("/message/content") else {
+                    return;
+                };
+                for b in blocks {
+                    if b.get("type").and_then(Value::as_str) != Some("tool_use") {
+                        continue;
+                    }
+                    let name = b.get("name").and_then(Value::as_str).unwrap_or("?");
+                    if let Some(ev) = edit_event(name, b.get("input"), ts) {
+                        all_touched.push(ev.path.clone());
+                        all_edits.push(ev);
+                    }
+                }
+            });
+            if read.is_ok() {
+                touched = all_touched;
+                edits = all_edits;
+            }
+        }
+
         let project = cwd.unwrap_or_else(|| {
             // Fall back to the sanitized directory name.
             path.parent()
@@ -492,5 +532,31 @@ mod tests {
             crate::adapters::root_scope(ClaudeCode::default().root().as_deref()),
             "the stock adapter speaks only for its own install"
         );
+    }
+
+    /// A session over the byte cap is indexed from its head and tail, and the
+    /// files it edited in between were dropped with the rest: on one machine
+    /// a 352 MB session with 1,999 Edit calls traced to none of them. Every
+    /// edit in the file is kept, however the text is windowed.
+    #[test]
+    fn a_windowed_session_keeps_every_file_it_edited() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir
+            .path()
+            .join("11111111-2222-3333-4444-555555555555.jsonl");
+        let mut body = String::new();
+        for i in 0..30 {
+            body.push_str(&format!(
+                "{{\"type\":\"assistant\",\"timestamp\":\"2026-10-01T00:00:{i:02}Z\",\"message\":{{\"content\":[{{\"type\":\"tool_use\",\"id\":\"t{i}\",\"name\":\"Edit\",\"input\":{{\"file_path\":\"/repo/src/f{i}.rs\",\"old_string\":\"a\",\"new_string\":\"b\"}}}}]}}}}\n"
+            ));
+        }
+        std::fs::write(&file, body).unwrap();
+        crate::util::TEST_WINDOW.with(|w| w.set(Some((2_000, 600, 600))));
+        let session = ClaudeCode::default().parse(&file).unwrap();
+        crate::util::TEST_WINDOW.with(|w| w.set(None));
+        assert!(session.title.starts_with("[large]"), "{}", session.title);
+        assert_eq!(session.touched.len(), 30, "{:?}", session.touched);
+        assert_eq!(session.edits.len(), 30);
+        assert!(session.touched.contains(&"/repo/src/f15.rs".to_string()));
     }
 }

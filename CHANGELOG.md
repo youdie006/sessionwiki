@@ -8,6 +8,15 @@ semantic versioning once it reaches 1.0.
 
 ### Fixed
 
+- **`trace` finds the files a large session edited.** A session over the
+  256 MB cap is indexed from its first 256 KB and last 512 KB, and the files
+  it edited in between were dropped with the rest of the middle. On one
+  machine 82 sessions (29 GB) were windowed, the longest-running work there
+  was, and three of them that edited 574 to 585 files each traced to none.
+  The edited files are now read from the whole file, parsing only the lines
+  that carry a tool call or patch, so `trace`, `files` and `blame` see every
+  edit; the text stays windowed. The live windowed sessions are re-parsed
+  once on the next sync (about 4 s per 3 GB).
 - **`doctor` no longer calls Codex's thread history unreadable.** Since
   0.34.4 Codex's thread history is indexed from `thread_history_1.sqlite`,
   one database file, and `doctor` read every store as a directory, so it

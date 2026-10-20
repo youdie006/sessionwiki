@@ -18,12 +18,23 @@ const WINDOW_TAIL_BYTES: u64 = 512 * 1024;
 /// `session_window`/`show` - instead of being dropped entirely. Byte-bounded, so
 /// even a 256 MB+ file is read cheaply (no full scan).
 pub fn session_lines(path: &Path) -> Result<(Vec<String>, bool)> {
-    session_lines_windowed(
-        path,
-        MAX_SESSION_FILE_BYTES,
-        WINDOW_HEAD_BYTES,
-        WINDOW_TAIL_BYTES,
-    )
+    let (cap, head, tail) = window_limits();
+    session_lines_windowed(path, cap, head, tail)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Lets an adapter test window a small file: (cap, head, tail) bytes.
+    pub(crate) static TEST_WINDOW: std::cell::Cell<Option<(u64, u64, u64)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn window_limits() -> (u64, u64, u64) {
+    #[cfg(test)]
+    if let Some(limits) = TEST_WINDOW.with(|w| w.get()) {
+        return limits;
+    }
+    (MAX_SESSION_FILE_BYTES, WINDOW_HEAD_BYTES, WINDOW_TAIL_BYTES)
 }
 
 fn session_lines_windowed(
@@ -127,6 +138,28 @@ fn window_lines(head: &[u8], tail: &[u8]) -> Vec<String> {
     }
     lines.extend(tl.iter().map(|s| s.to_string()));
     lines
+}
+
+/// Every line of a session file, plain or zstd, one at a time - for reading a
+/// file past the byte cap end to end without holding it in memory.
+pub fn for_each_line(path: &Path, mut f: impl FnMut(&str)) -> Result<()> {
+    use std::io::{BufRead, BufReader};
+    let file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut reader: Box<dyn BufRead> = if path.extension().is_some_and(|x| x == "zst") {
+        let decoder = ruzstd::decoding::StreamingDecoder::new(BufReader::new(file))
+            .map_err(|e| anyhow::anyhow!("decompress {}: {e}", path.display()))?;
+        Box::new(BufReader::new(decoder))
+    } else {
+        Box::new(BufReader::new(file))
+    };
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            return Ok(());
+        }
+        f(&String::from_utf8_lossy(&line));
+    }
 }
 
 /// The last `max_bytes` of a file as whole lines, newest last.
