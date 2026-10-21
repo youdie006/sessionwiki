@@ -93,4 +93,24 @@ fn live_windowed_rows_are_reparsed_once_after_upgrading() {
         -1,
         "the newer reader re-parses it"
     );
+
+    // And one that took the second takes the third (a Codex `compacted`
+    // record no longer crowding the conversation out of the middle).
+    conn.execute(
+        "UPDATE files SET mtime = 9 WHERE path = '/s/claude-large.jsonl'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE meta SET value = '2' WHERE key = 'large_provenance_reparsed'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let conn = index::open().unwrap();
+    assert_eq!(
+        mtime(&conn, "/s/claude-large.jsonl"),
+        -1,
+        "reader 3 re-parses it"
+    );
 }

@@ -14,19 +14,32 @@ use walkdir::WalkDir;
 /// `{ sessionId, startTime, lastUpdated, messages: [{ type, content, timestamp }] }`.
 pub struct Gemini;
 
-/// A chat file: `chats/*.json`, or `chats/*.jsonl` as Gemini CLI writes now.
+/// A chat file: `chats/*.json`, or `chats/*.jsonl` as Gemini CLI writes now,
+/// or a subagent's at `chats/<parent session id>/*.jsonl`.
 fn is_chat(path: &Path) -> bool {
     path.extension()
         .is_some_and(|x| x == "json" || x == "jsonl")
-        && path
-            .parent()
-            .and_then(|p| p.file_name())
-            .is_some_and(|d| d == "chats")
+        && chats_dir(path).is_some()
+}
+
+/// The `chats` directory a chat file belongs to.
+fn chats_dir(path: &Path) -> Option<&Path> {
+    let named_chats = |p: &&Path| p.file_name().is_some_and(|d| d == "chats");
+    let parent = path.parent()?;
+    std::iter::once(parent)
+        .chain(parent.parent())
+        .find(named_chats)
+}
+
+/// Written under a parent chat's directory, so a subagent's transcript.
+fn is_subagent_chat(path: &Path) -> bool {
+    chats_dir(path).is_some_and(|c| Some(c) != path.parent())
 }
 
 /// Rebuild the chat document a JSONL chat records: its header line, `$set`
-/// lines that replace fields, and message lines, a repeated id replacing the
-/// earlier copy of that message as it grew.
+/// lines that replace fields, `$rewindTo` lines that drop rewound turns, and
+/// message lines, a repeated id replacing the earlier copy of that message as
+/// it grew.
 fn fold_jsonl(raw: &str) -> Option<Value> {
     let mut doc = serde_json::Map::new();
     let mut messages: Vec<Value> = Vec::new();
@@ -36,7 +49,17 @@ fn fold_jsonl(raw: &str) -> Option<Value> {
             continue;
         };
         read_any = true;
-        if let Some(Value::Object(set)) = entry.get("$set") {
+        // `/rewind`: drop that message and everything after it, or every
+        // message when the id is unknown - Gemini CLI's own loader does both.
+        if let Some(Value::String(id)) = entry.get("$rewindTo") {
+            match messages
+                .iter()
+                .position(|m| m.get("id").and_then(Value::as_str) == Some(id.as_str()))
+            {
+                Some(at) => messages.truncate(at),
+                None => messages.clear(),
+            }
+        } else if let Some(Value::Object(set)) = entry.get("$set") {
             for (key, value) in set {
                 match (key.as_str(), value) {
                     ("messages", Value::Array(list)) => messages = list.clone(),
@@ -62,13 +85,27 @@ fn fold_jsonl(raw: &str) -> Option<Value> {
     read_any.then_some(Value::Object(doc))
 }
 
+/// Every chat under `root` (`~/.gemini/tmp`).
+fn discover_in(root: &Path) -> Discovered {
+    let mut had_error = false;
+    let files = WalkDir::new(root)
+        .max_depth(4)
+        .into_iter()
+        .filter_map(|e| ok_or_flag(e, &mut had_error))
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| is_chat(e.path()))
+        .map(|e| e.into_path())
+        .collect();
+    Discovered { files, had_error }
+}
+
 /// The store dir is named by a slug (older versions: a hash of the path), not
 /// the path itself; newer versions record the real directory in
 /// `.project_root` beside `chats/`. That path is what other tools' projects,
 /// `--project` and the recall hook compare against.
 pub(crate) fn project_root(chat: &Path) -> Option<String> {
-    let root =
-        crate::util::read_to_string_capped(&chat.ancestors().nth(2)?.join(".project_root")).ok()?;
+    let store = chats_dir(chat)?.parent()?;
+    let root = crate::util::read_to_string_capped(&store.join(".project_root")).ok()?;
     let root = root.trim();
     Path::new(root).is_absolute().then(|| root.to_string())
 }
@@ -89,16 +126,7 @@ impl Adapter for Gemini {
         if !root.exists() {
             return Vec::new().into(); // no store on this machine - normal
         }
-        let mut had_error = false;
-        let files = WalkDir::new(root)
-            .max_depth(3)
-            .into_iter()
-            .filter_map(|e| ok_or_flag(e, &mut had_error))
-            .filter(|e| e.file_type().is_file())
-            .filter(|e| is_chat(e.path()))
-            .map(|e| e.into_path())
-            .collect();
-        Discovered { files, had_error }
+        discover_in(&root)
     }
 
     fn parse(&self, path: &Path) -> Result<Session> {
@@ -241,8 +269,8 @@ impl Adapter for Gemini {
         // ~/.gemini/tmp/<project>/chats/file.json
         let project = project_root(path)
             .or_else(|| {
-                path.ancestors()
-                    .nth(2)
+                chats_dir(path)
+                    .and_then(Path::parent)
                     .and_then(|p| p.file_name())
                     .map(|n| n.to_string_lossy().into_owned())
             })
@@ -257,7 +285,7 @@ impl Adapter for Gemini {
             started,
             ended,
             title,
-            subagent: false,
+            subagent: is_subagent_chat(path),
             messages,
             // Gemini CLI chat logs do not record structured file edits, so
             // there is nothing to link to the codebase here.
@@ -410,5 +438,59 @@ mod tests {
         );
         assert!(is_chat(&chats.join("session-old.json")));
         assert!(!is_chat(&dir.path().join("proj").join("logs.json")));
+    }
+
+    /// A subagent's transcript is written under its parent's chat, at
+    /// `chats/<parent session id>/<file>.jsonl`. Only files directly in
+    /// `chats/` were accepted and the walk stopped one level short, so those
+    /// were never indexed.
+    #[test]
+    fn a_subagent_chat_nested_under_its_parent_is_indexed_as_a_subagent() {
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("proj");
+        std::fs::create_dir_all(proj.join("chats/parent-1")).unwrap();
+        std::fs::write(proj.join(".project_root"), "/work/app").unwrap();
+        let line = r#"{"sessionId":"c1","projectHash":"h","kind":"subagent"}
+{"id":"m1","type":"user","content":[{"text":"look into the cache"}]}"#;
+        let top = proj.join("chats/session-a.jsonl");
+        let nested = proj.join("chats/parent-1/child.jsonl");
+        std::fs::write(&top, line).unwrap();
+        std::fs::write(&nested, line).unwrap();
+
+        let mut found = discover_in(dir.path()).files;
+        found.sort();
+        assert_eq!(found, vec![nested.clone(), top.clone()]);
+        let child = Gemini.parse(&nested).unwrap();
+        assert!(child.subagent);
+        assert_eq!(child.project, "/work/app");
+        assert!(!Gemini.parse(&top).unwrap().subagent);
+    }
+
+    /// `/rewind` appends `{"$rewindTo": id}`: Gemini CLI drops that message and
+    /// everything after it, or every message when the id is unknown. The fold
+    /// kept them, so rewound turns stayed searchable as part of the chat.
+    #[test]
+    fn a_rewind_record_drops_the_rewound_messages() {
+        let chat = |lines: &[&str]| {
+            let msgs = fold_jsonl(&lines.join("\n")).unwrap()["messages"].clone();
+            msgs.as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m["id"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        let head = r#"{"sessionId":"s1","projectHash":"h","kind":"main"}"#;
+        let m = |id: &str| format!(r#"{{"id":"{id}","type":"user","content":"{id}"}}"#);
+        let (m1, m2, m3, m4) = (m("m1"), m("m2"), m("m3"), m("m4"));
+        assert_eq!(
+            chat(&[head, &m1, &m2, &m3, r#"{"$rewindTo":"m2"}"#, &m4]),
+            ["m1", "m4"]
+        );
+        assert_eq!(
+            chat(&[head, &m1, &m2, r#"{"$rewindTo":"gone"}"#, &m3]),
+            ["m3"]
+        );
+        let doc = fold_jsonl(&[head, &m1, r#"{"$rewindTo":"m1"}"#].join("\n")).unwrap();
+        assert!(doc.get("$rewindTo").is_none(), "{doc}");
     }
 }

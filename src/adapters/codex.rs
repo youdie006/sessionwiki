@@ -68,6 +68,25 @@ impl Codex {
     }
 }
 
+/// A rollout line that is conversation, for keeping from a windowed file.
+///
+/// Read from the record's own tags, not from anywhere in the line: Codex
+/// writes the record type first and the payload's type next, while a
+/// `compacted` record or a tool's output can contain the same words further in.
+fn conversation_line(line: &str) -> bool {
+    let mut tags = line.match_indices("\"type\":\"").map(|(at, tag)| {
+        let rest = &line[at + tag.len()..];
+        &rest[..rest.find('"').unwrap_or(0)]
+    });
+    matches!(
+        (tags.next(), tags.next()),
+        (
+            Some("response_item" | "event_msg"),
+            Some("message" | "user_message" | "agent_message")
+        )
+    )
+}
+
 impl Adapter for Codex {
     fn name(&self) -> &'static str {
         "codex"
@@ -111,11 +130,7 @@ impl Adapter for Codex {
         // Over the byte cap: window (head+tail) instead of dropping the session.
         // Past the cap, the conversation is still read from the middle; only
         // its tool calls and output are windowed.
-        let (lines, windowed) = crate::util::session_lines_keeping(path, |line| {
-            line.contains("\"user_message\"")
-                || line.contains("\"agent_message\"")
-                || line.contains("\"type\":\"message\"")
-        })?;
+        let (lines, windowed) = crate::util::session_lines_keeping(path, conversation_line)?;
 
         let mut messages: Vec<Message> = Vec::new();
         let mut touched: Vec<String> = Vec::new();
@@ -782,6 +797,34 @@ mod tests {
         assert_eq!(session.touched.len(), 60, "{:?}", session.touched);
         assert!(session.touched.contains(&"src/f15.rs".to_string()));
         assert!(session.touched.contains(&"src/g15.rs".to_string()));
+    }
+
+    /// Only conversation is kept from the middle. A `compacted` record carries
+    /// the whole replacement history, so it contains `"type":"message"` too;
+    /// kept, 205 of them filled the 64 MB budget of a real 1.1 GB rollout and
+    /// 5025 of its 6960 conversation lines were dropped. A tool's output that
+    /// merely mentions `user_message` is not conversation either.
+    #[test]
+    fn only_conversation_records_are_kept_from_the_middle() {
+        let t = |line: &str| conversation_line(line);
+        assert!(t(
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"user_message","message":"hi"}}"#
+        ));
+        assert!(t(
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"agent_message","message":"ok"}}"#
+        ));
+        assert!(t(
+            r#"{"timestamp":"t","type":"response_item","payload":{"type":"message","role":"user","content":[]}}"#
+        ));
+        assert!(t(
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}"#
+        ));
+        assert!(!t(
+            r#"{"timestamp":"t","type":"compacted","payload":{"message":"","replacement_history":[{"type":"message","role":"user","content":[]}]}}"#
+        ));
+        assert!(!t(
+            r#"{"timestamp":"t","type":"response_item","payload":{"type":"function_call_output","call_id":"c","output":{"content":[{"type":"message","text":"from a tool"}]}}}"#
+        ));
     }
 
     /// The same for a Codex rollout's conversation.

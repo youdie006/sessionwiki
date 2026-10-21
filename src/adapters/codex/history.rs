@@ -235,7 +235,11 @@ fn read_item(
     touched: &mut Vec<String>,
 ) {
     let id = item.get("id").and_then(Value::as_str).map(str::to_owned);
-    let failed = item.get("status").and_then(Value::as_str) == Some("failed");
+    // `declined` is a call refused at approval: it never ran.
+    let failed = matches!(
+        item.get("status").and_then(Value::as_str),
+        Some("failed" | "declined")
+    );
     let call = |messages: &mut Vec<Message>,
                 name: &str,
                 mut args: Value,

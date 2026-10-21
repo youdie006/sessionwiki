@@ -6,6 +6,28 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- A large Codex session keeps its whole conversation again. From the middle
+  of a session over the size cap only conversation records are kept, within a
+  64 MB budget, but `compacted` records (which carry the whole replacement
+  history) were matched as conversation and filled the budget first. In one
+  real 1.1 GB rollout 5025 of 6960 conversation lines were dropped; it now
+  indexes 2883 messages instead of 926. Large sessions are re-parsed once on
+  the next sync.
+- A Codex session that changes path keeps its summary. Moving a rollout to or
+  from `archived_sessions`, or between a rollout and the history database,
+  carried its tags and note over and deleted its summary.
+- A rollout taken back out of `archived_sessions` is listed once. The old row
+  was still live when the new one was indexed, so both stayed, and its tags
+  stayed on the archived one.
+- A Codex call declined at approval is recorded as not having run, instead of
+  as a success.
+- A Gemini chat's `/rewind` is applied: the rewound turns are no longer
+  indexed and searchable as part of the chat.
+- Gemini subagent transcripts, written under their parent chat at
+  `chats/<parent session id>/`, are indexed, as subagents.
+
 ## [0.34.8] - 2026-10-20
 
 ### Fixed

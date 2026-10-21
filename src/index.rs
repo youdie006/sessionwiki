@@ -922,10 +922,11 @@ fn reparse_codex_for_mcp_errors(conn: &Connection) -> Result<()> {
 /// between their head and tail; an ended session never changes, so it is never
 /// parsed again. Mark the live windowed rows for one re-parse whenever the
 /// windowed reader has changed since. 1: provenance read from the whole file.
-/// 2: the conversation between head and tail kept too.
+/// 2: the conversation between head and tail kept too. 3: Codex `compacted`
+/// records no longer fill the middle's budget ahead of the conversation.
 fn reparse_large_for_provenance(conn: &Connection) -> Result<()> {
     const KEY: &str = "large_provenance_reparsed";
-    const READER: i64 = 2;
+    const READER: i64 = 3;
     let done: i64 = conn
         .query_row("SELECT value FROM meta WHERE key = ?1", [KEY], |r| {
             r.get::<_, String>(0)
@@ -1242,24 +1243,27 @@ fn fold_moved_copy(
     let Some(native) = native_id_of(key) else {
         return Ok(());
     };
-    let kept: Vec<(String, String, i64)> = tx
+    // Not only rows already archived: the old row can still be live when the
+    // new one is indexed (its adapter reconciles later). A live row whose
+    // file still exists is a second copy, not a move, and is left alone.
+    let kept: Vec<(String, String, i64, bool)> = tx
         .prepare(
-            "SELECT path, session_id, msg_count FROM files
-             WHERE tool = 'codex' AND archived_at IS NOT NULL AND path <> ?1
-               AND instr(lower(path), ?2) > 0",
+            "SELECT path, session_id, msg_count, archived_at IS NOT NULL FROM files
+             WHERE tool = 'codex' AND path <> ?1 AND instr(lower(path), ?2) > 0",
         )?
         .query_map(params![key, native], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    for (path, sid, count) in kept {
+    for (path, sid, count, archived) in kept {
         if sid == session.id
             || native_id_of(&path).as_deref() != Some(native.as_str())
             || count > session.messages.len() as i64
+            || (!archived && std::path::Path::new(&path).exists())
         {
             continue;
         }
-        for table in ["tags", "notes"] {
+        for table in ["tags", "notes", "summaries"] {
             tx.execute(
                 &format!("UPDATE OR IGNORE {table} SET session_id = ?2 WHERE session_id = ?1"),
                 params![sid, session.id],

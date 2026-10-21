@@ -209,6 +209,9 @@ fn history_tool_calls_keep_their_outcome_and_edited_files() {
                 serde_json::json!({"type":"mcpToolCall","id":"m2","server":"playwright",
                     "tool":"browser_tabs","status":"completed","arguments":{},
                     "result":{"content":[{"type":"text","text":"0: about:blank"}]},"error":null}),
+                // Refused at approval: it never ran, so it is not a success.
+                serde_json::json!({"type":"commandExecution","id":"c2","command":"rm -rf build",
+                    "cwd":"/repo","status":"declined","aggregatedOutput":null,"exitCode":null}),
             ],
         )],
     );
@@ -234,6 +237,7 @@ fn history_tool_calls_keep_their_outcome_and_edited_files() {
             (String::new(), false),
             ("element not found".to_string(), true),
             ("0: about:blank".to_string(), false),
+            (String::new(), true),
         ]
     );
     let calls: Vec<String> = session
@@ -252,7 +256,8 @@ fn history_tool_calls_keep_their_outcome_and_edited_files() {
             "exec_command",
             "apply_patch",
             "browser_click",
-            "browser_tabs"
+            "browser_tabs",
+            "exec_command"
         ]
     );
 }
@@ -271,7 +276,7 @@ fn archived_sessions_rollouts_are_indexed() {
 /// The old path is gone, so its row is kept as archived; the new path must not
 /// add a second listing of the same conversation beside it.
 #[test]
-fn a_rollout_moved_to_archived_sessions_is_listed_once_and_keeps_its_tags() {
+fn a_rollout_moved_to_archived_sessions_is_listed_once_and_keeps_its_curation() {
     let home = tempfile::tempdir().unwrap();
     let before = rollout(home.path(), "sessions", GONE, "moved later");
     let mut c = index();
@@ -284,6 +289,7 @@ fn a_rollout_moved_to_archived_sessions_is_listed_once_and_keeps_its_tags() {
         )
         .unwrap();
     add_tag(&c, &old_sid, "release").unwrap();
+    set_summary(&c, &old_sid, "a synopsis the user paid for").unwrap();
 
     let after = home
         .path()
@@ -307,6 +313,15 @@ fn a_rollout_moved_to_archived_sessions_is_listed_once_and_keeps_its_tags() {
         )
         .unwrap();
     assert_eq!(tagged, 1, "the tag follows the session to its new path");
+    let summarized: i64 = c
+        .query_row(
+            "SELECT count(*) FROM summaries s JOIN files f ON f.session_id = s.session_id
+             WHERE f.path = ?1",
+            [after.to_string_lossy()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(summarized, 1, "the summary follows the session too");
     assert_eq!(
         c.query_row("SELECT count(*) FROM archive", [], |r| r.get::<_, i64>(0))
             .unwrap(),
@@ -428,4 +443,64 @@ fn a_thread_with_a_compressed_rollout_is_not_read_from_history() {
     sync_with(&mut c, &adapters(home.path()), None).unwrap();
     assert_eq!(codex_rows(&c).len(), 1, "{:?}", codex_rows(&c));
     assert_eq!(messages_matching(&c, "only once"), 1);
+}
+
+/// The other direction: a rollout taken back out of `archived_sessions`. The
+/// fold looked only at rows already archived, and the old row was still live
+/// when the new one was indexed, so both stayed listed and the tag stayed
+/// behind on the archived one.
+#[test]
+fn a_rollout_moved_back_from_archived_sessions_is_listed_once_and_keeps_its_tags() {
+    let home = tempfile::tempdir().unwrap();
+    let before = rollout(home.path(), "archived_sessions", GONE, "came back");
+    let mut c = index();
+    sync_with(&mut c, &adapters(home.path()), None).unwrap();
+    let old_sid: String = c
+        .query_row(
+            "SELECT session_id FROM files WHERE tool = 'codex'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    add_tag(&c, &old_sid, "keep").unwrap();
+
+    let after = home
+        .path()
+        .join("sessions/2026/10/01")
+        .join(before.file_name().unwrap());
+    std::fs::create_dir_all(after.parent().unwrap()).unwrap();
+    std::fs::rename(&before, &after).unwrap();
+    sync_with(&mut c, &adapters(home.path()), None).unwrap();
+
+    assert_eq!(
+        codex_rows(&c),
+        vec![(after.to_string_lossy().into_owned(), false)]
+    );
+    let tagged: i64 = c
+        .query_row(
+            "SELECT count(*) FROM tags t JOIN files f ON f.session_id = t.session_id
+             WHERE t.tag = 'keep' AND f.path = ?1",
+            [after.to_string_lossy()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(tagged, 1, "the tag follows the session to its new path");
+}
+
+/// Two rollout files of one thread that both exist are two files, not a move:
+/// neither is folded into the other.
+#[test]
+fn two_live_copies_of_a_rollout_are_not_folded() {
+    let home = tempfile::tempdir().unwrap();
+    let first = rollout(home.path(), "sessions", GONE, "kept twice");
+    let second = home
+        .path()
+        .join("archived_sessions/2026/10/01")
+        .join(first.file_name().unwrap());
+    std::fs::create_dir_all(second.parent().unwrap()).unwrap();
+    std::fs::copy(&first, &second).unwrap();
+    let mut c = index();
+    sync_with(&mut c, &adapters(home.path()), None).unwrap();
+    sync_with(&mut c, &adapters(home.path()), None).unwrap();
+    assert_eq!(codex_rows(&c).len(), 2, "{:?}", codex_rows(&c));
 }
