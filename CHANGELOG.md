@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.9] - 2026-10-21
+
 ### Fixed
 
 - A large Codex session keeps its whole conversation again. From the middle
