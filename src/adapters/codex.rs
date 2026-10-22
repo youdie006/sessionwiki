@@ -78,13 +78,15 @@ fn conversation_line(line: &str) -> bool {
         let rest = &line[at + tag.len()..];
         &rest[..rest.find('"').unwrap_or(0)]
     });
-    matches!(
-        (tags.next(), tags.next()),
-        (
-            Some("response_item" | "event_msg"),
+    match tags.next() {
+        // Older rollouts wrote a message at the top level.
+        Some("message") => true,
+        Some("response_item" | "event_msg") => matches!(
+            tags.next(),
             Some("message" | "user_message" | "agent_message")
-        )
-    )
+        ),
+        _ => false,
+    }
 }
 
 impl Adapter for Codex {
@@ -818,6 +820,10 @@ mod tests {
         ));
         assert!(t(
             r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}"#
+        ));
+        // Older rollouts wrote a message at the top level.
+        assert!(t(
+            r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}"#
         ));
         assert!(!t(
             r#"{"timestamp":"t","type":"compacted","payload":{"message":"","replacement_history":[{"type":"message","role":"user","content":[]}]}}"#

@@ -751,6 +751,7 @@ pub fn open() -> Result<Connection> {
     resolve_gemini_projects(&conn)?;
     reparse_codex_for_mcp_errors(&conn)?;
     reparse_large_for_provenance(&conn)?;
+    reparse_after_reader_fixes(&conn)?;
     Ok(conn)
 }
 
@@ -916,6 +917,41 @@ fn reparse_codex_for_mcp_errors(conn: &Connection) -> Result<()> {
             vec![],
         )],
     )
+}
+
+/// Mark the live rows a fixed reader produces for one re-parse, so the fix
+/// reaches sessions that never change again. Each key names its rows and the
+/// reader version they were last parsed with.
+fn reparse_after_reader_fixes(conn: &Connection) -> Result<()> {
+    // Codex history threads (keys carry the store's \x1f separator): 1, a call
+    // declined at approval is a failure. Gemini chats: 1, `/rewind` applied.
+    let fixes: [(&str, i64, &str); 2] = [
+        (
+            "codex_history_reparsed",
+            1,
+            "UPDATE files SET mtime = -1, size = -1
+             WHERE tool = 'codex' AND archived_at IS NULL AND instr(path, char(31)) > 0",
+        ),
+        (
+            "gemini_reparsed",
+            1,
+            "UPDATE files SET mtime = -1, size = -1
+             WHERE tool = 'gemini' AND archived_at IS NULL",
+        ),
+    ];
+    for (key, reader, sql) in fixes {
+        let done: i64 = conn
+            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        if done < reader {
+            apply_without_waiting(conn, key, reader, &[(sql, vec![])])?;
+        }
+    }
+    Ok(())
 }
 
 /// Sessions over the byte cap were indexed without the files they edited
