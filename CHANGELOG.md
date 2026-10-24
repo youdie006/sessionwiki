@@ -6,6 +6,12 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Changed
+
+- The README notes that Google retired Gemini CLI for personal accounts on
+  2026-06-18 in favour of Antigravity CLI. Gemini CLI chats already on disk
+  are still indexed; Antigravity support is in review (#83).
+
 ### Fixed
 
 - A large Codex rollout in the older format, which writes each message at the

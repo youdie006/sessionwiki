@@ -254,7 +254,8 @@ flowchart LR
 |---|---|---|
 | Claude Code | `~/.claude/projects/**/*.jsonl` (중첩 서브에이전트 트랜스크립트 포함) | 지원 |
 | Codex CLI | `~/.codex/sessions/**/rollout-*.jsonl` | 지원 |
-| Gemini CLI | `~/.gemini/tmp/*/chats/*.json` | 지원 |
+| Gemini CLI | `~/.gemini/tmp/*/chats/*.json[l]` | 지원 &mdash; Google이 2026-06-18 개인 계정용 Gemini CLI를 종료하고 Antigravity CLI로 대체했습니다. 디스크에 남은 채팅은 계속 인덱싱됩니다 |
+| Antigravity CLI / IDE | `~/.gemini/antigravity-cli/brain/*/.system_generated/logs/transcript.jsonl`, `~/.gemini/antigravity/brain/` | 리뷰 중 ([#83](https://github.com/youdie006/sessionwiki/pull/83)) |
 | OpenCode | `~/.local/share/opencode/opencode.db` (SQLite; 레거시 `storage/**` JSON도) | 지원 |
 | Cline, Roo Code, Kilo Code | VS Code `globalStorage/<ext>/tasks/<id>/` (파서 하나로 세 툴) | 지원 |
 | gajae-code (& Pi) | `~/.gjc/agent/sessions/**/*.jsonl` | 지원 |
