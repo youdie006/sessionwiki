@@ -654,3 +654,80 @@ mod cap_tests {
         let _ = std::fs::remove_file(&p);
     }
 }
+
+
+/// Query available disk space in bytes on the filesystem of `path`.
+#[cfg(windows)]
+pub fn available_space(path: &Path) -> Result<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    let dir = if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+    };
+    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut free_bytes: u64 = 0;
+    extern "system" {
+        fn GetDiskFreeSpaceExW(
+            lpDirectoryName: *const u16,
+            lpFreeBytesAvailableToCaller: *mut u64,
+            lpTotalNumberOfBytes: *mut u64,
+            lpTotalNumberOfFreeBytes: *mut u64,
+        ) -> i32;
+    }
+    let res = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free_bytes,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if res == 0 {
+        return Err(anyhow::anyhow!(
+            "failed to query disk space: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(free_bytes)
+}
+
+#[cfg(unix)]
+pub fn available_space(path: &Path) -> Result<u64> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let dir = if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+    };
+    let c_path = CString::new(dir.as_os_str().as_bytes())
+        .context("invalid path for statvfs")?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    let res = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
+    if res != 0 {
+        return Err(anyhow::anyhow!(
+            "failed to query disk space: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let stat = unsafe { stat.assume_init() };
+    let bsize = if stat.f_frsize > 0 { stat.f_frsize as u64 } else { stat.f_bsize as u64 };
+    Ok(stat.f_bavail as u64 * bsize)
+}
+
+#[cfg(test)]
+mod space_tests {
+    use super::*;
+
+    #[test]
+    fn available_space_returns_positive_bytes_on_temp_dir() {
+        let temp = std::env::temp_dir();
+        let bytes = available_space(&temp).expect("query available space on temp dir");
+        assert!(bytes > 0);
+    }
+}
