@@ -514,6 +514,7 @@
             <button role="option" data-lang="ko">한국어</button>
             <button role="option" data-lang="ja">日本語</button>
             <button role="option" data-lang="zh">中文</button>
+            <button role="option" data-lang="ru">Русский</button>
           </div>
         </div>
         <button class="themebtn" id="theme">Dark</button>
@@ -537,6 +538,37 @@ let currentTag = null;
 
 /* ---------- i18n ---------- */
 const I18N = {
+  ru: {
+    loading: "Загрузка индекса…",
+    searchPh: "Поиск по сессиям",
+    allTools: "все инструменты",
+    allRoles: "все роли сообщений",
+    conversationRoles: "пользователь и ассистент",
+    userRole: "сообщения пользователя",
+    assistantRole: "ответы ассистента",
+    toolRole: "вывод инструментов",
+    groups: { today: "Сегодня", yesterday: "Вчера", week: "На этой неделе", month: "В этом месяце", earlier: "Ранее" },
+    msgs: (n) => `${n} сообщ.`,
+    subagent: "подагент",
+    untitled: "(без названия)",
+    noMatches: "Ничего не найдено.",
+    emptyIndex: "Индекс пуст — выполните sessionwiki list в терминале",
+    phTitle: "Выберите сессию слева",
+    phP1: "Все ваши диалоги с ИИ-агентами в одном месте. Поиск по всем инструментам сразу — включая частичные совпадения.",
+    phP2: "Индекс обновляется при выполнении `sessionwiki list` или `search` в терминале; обновите страницу после этого.",
+    messages: (n) => `${n} сообщений`,
+    resumeLabel: "возобновить в терминале: ",
+    copied: "скопировано",
+    clickToCopy: "Нажмите для копирования",
+    outline: (n) => `Содержание · ${n} шагов`,
+    seeAlso: "Смотрите также", filtering: "фильтрация", filterByTag: "фильтр по тегу",
+    filesLabel: "Файлы", tracedBy: (f) => `Сессии, изменившие ${f}`,
+    fileHistory: (f) => `Как создавался ${f}`,
+    moreEdits: (n) => `ещё +${n}`, loadFailed: "Не удалось загрузить",
+    hint: "только чтение · обновить: sessionwiki list",
+    themeDark: "Тёмная", themeLight: "Светлая",
+    stats: (s, t, b) => `сессий: ${s} · инструментов: ${t} · ${b}`,
+  },
   en: {
     loading: "loading index…",
     searchPh: "Search sessions",
@@ -667,7 +699,7 @@ const lang = localStorage.getItem("sdx-lang")
 const L = I18N[lang] || I18N.en;
 document.documentElement.lang = lang;
 
-const LANG_NAMES = { en: "English", ko: "한국어", ja: "日本語", zh: "中文" };
+const LANG_NAMES = { en: "English", ko: "한국어", ja: "日本語", zh: "中文", ru: "Русский" };
 
 function applyStaticStrings() {
   $("q").placeholder = L.searchPh;
