@@ -6,6 +6,12 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.10] - 2026-10-24
+
+### Added
+
+- The web interface is available in Russian (#89, thanks @AlexZander85).
+
 ### Changed
 
 - The README notes that Google retired Gemini CLI for personal accounts on
