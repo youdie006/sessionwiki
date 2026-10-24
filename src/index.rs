@@ -483,7 +483,9 @@ fn create_cache_schema_with_tokenizer(conn: &Connection, tokenizer: &str) -> Res
             kind       TEXT NOT NULL DEFAULT 'main',
             -- Set when the tool deleted the original session file but we kept
             -- the indexed copy (archive mode). NULL for live sessions.
-            archived_at TEXT
+            archived_at TEXT,
+            -- The `READER` that parsed the row; 0 from a binary without it.
+            reader     INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_files_session ON files(session_id);
         -- Plain transcript rows + external-content FTS. Deleting a session is
@@ -565,6 +567,9 @@ fn create_cache_schema_with_tokenizer(conn: &Connection, tokenizer: &str) -> Res
         CREATE INDEX IF NOT EXISTS idx_edits_session ON edits(session_id);
         ",
     )?;
+    if !files_has_reader(conn)? {
+        conn.execute_batch("ALTER TABLE files ADD COLUMN reader INTEGER NOT NULL DEFAULT 0")?;
+    }
     create_msgs_table(conn, tokenizer)?;
     if !msgs_exists {
         conn.execute_batch("INSERT INTO msgs(msgs) VALUES('rebuild');")?;
@@ -597,7 +602,15 @@ fn cache_schema_needs_work(conn: &Connection) -> Result<bool> {
             return Ok(true);
         }
     }
-    Ok(false)
+    Ok(!files_has_reader(conn)?)
+}
+
+fn files_has_reader(conn: &Connection) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('files') WHERE name = 'reader')",
+        [],
+        |row| row.get(0),
+    )?)
 }
 
 #[cfg(test)]
@@ -919,39 +932,34 @@ fn reparse_codex_for_mcp_errors(conn: &Connection) -> Result<()> {
     )
 }
 
-/// Mark the live rows a fixed reader produces for one re-parse, so the fix
-/// reaches sessions that never change again. Each key names its rows and the
-/// reader version they were last parsed with.
+/// Stamped on every `files` row this version parses. Raise it with each reader
+/// fix listed in `reparse_after_reader_fixes`.
+pub const READER: i64 = 1;
+
+/// Mark the live rows a fixed reader produces for a re-parse, so the fix
+/// reaches sessions that never change again. Each fix names its rows and the
+/// `READER` that introduced it; a row parsed by an older reader - including one
+/// an older `sessionwiki mcp` rewrites after this ran - is marked again.
 fn reparse_after_reader_fixes(conn: &Connection) -> Result<()> {
-    // Codex history threads (keys carry the store's \x1f separator): 1, a call
-    // declined at approval is a failure. Gemini chats: 1, `/rewind` applied.
-    let fixes: [(&str, i64, &str); 2] = [
-        (
-            "codex_history_reparsed",
-            1,
-            "UPDATE files SET mtime = -1, size = -1
-             WHERE tool = 'codex' AND archived_at IS NULL AND instr(path, char(31)) > 0",
-        ),
-        (
-            "gemini_reparsed",
-            1,
-            "UPDATE files SET mtime = -1, size = -1
-             WHERE tool = 'gemini' AND archived_at IS NULL",
-        ),
-    ];
-    for (key, reader, sql) in fixes {
-        let done: i64 = conn
-            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| {
-                r.get::<_, String>(0)
-            })
-            .optional()?
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
-        if done < reader {
-            apply_without_waiting(conn, key, reader, &[(sql, vec![])])?;
-        }
+    // 1: a Codex history call (keys carry the store's \x1f separator) declined
+    // at approval is a failure; Gemini `/rewind` is applied.
+    const STALE: &str = "SELECT EXISTS(SELECT 1 FROM files
+         WHERE archived_at IS NULL AND mtime != -1 AND reader < 1
+           AND (tool = 'gemini' OR (tool = 'codex' AND instr(path, char(31)) > 0)))";
+    if !conn.query_row(STALE, [], |r| r.get::<_, bool>(0))? {
+        return Ok(());
     }
-    Ok(())
+    apply_without_waiting(
+        conn,
+        "reader_fixes_marked",
+        READER,
+        &[(
+            "UPDATE files SET mtime = -1, size = -1
+             WHERE archived_at IS NULL AND mtime != -1 AND reader < 1
+               AND (tool = 'gemini' OR (tool = 'codex' AND instr(path, char(31)) > 0))",
+            vec![],
+        )],
+    )
 }
 
 /// Sessions over the byte cap were indexed without the files they edited
@@ -1163,8 +1171,9 @@ fn index_one(
     )?;
     tx.execute(
         "INSERT OR REPLACE INTO files
-         (path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+         (path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind,
+          reader)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
         params![
             key,
             mtime,
@@ -1177,6 +1186,7 @@ fn index_one(
             session.ended.map(|t| t.to_rfc3339()),
             session.messages.len() as i64,
             if session.subagent { "sub" } else { "main" },
+            READER,
         ],
     )?;
     fold_moved_copy(tx, session, key)?;

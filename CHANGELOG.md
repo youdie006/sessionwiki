@@ -13,8 +13,11 @@ semantic versioning once it reaches 1.0.
   the current record types there.
 - The 0.34.9 fixes for Codex calls declined at approval and Gemini `/rewind`
   now reach sessions indexed before it: Codex history threads and Gemini
-  chats are re-parsed once on the next sync. Before, a session that no longer
-  changed kept its old reading.
+  chats are re-parsed on the next sync. Before, a session that no longer
+  changed kept its old reading. Each indexed session now records which reader
+  parsed it, so a session that a `sessionwiki mcp` started before the upgrade
+  re-parses with its old reader is re-parsed again instead of keeping that
+  result.
 
 ## [0.34.9] - 2026-10-21
 

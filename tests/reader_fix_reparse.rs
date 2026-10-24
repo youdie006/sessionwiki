@@ -2,7 +2,8 @@
 //! again, and a session that never changes is never parsed again. 0.34.9 read
 //! Codex history calls declined at approval as failures and applied Gemini
 //! `/rewind` records; the first open after upgrading marks exactly the rows
-//! those readers produce - Codex history threads and Gemini chats - once.
+//! those readers produce - Codex history threads and Gemini chats - until
+//! this version has parsed them.
 
 use rusqlite::{params, Connection};
 use sessionwiki::index;
@@ -22,11 +23,6 @@ fn rows_of_a_fixed_reader_are_reparsed_once_after_upgrading() {
     std::env::set_var("SESSIONWIKI_DATA", &dir);
 
     let conn = index::open().unwrap();
-    conn.execute(
-        "DELETE FROM meta WHERE key IN ('codex_history_reparsed', 'gemini_reparsed')",
-        [],
-    )
-    .unwrap();
     let history = "/h/thread_history_1.sqlite\u{1f}019a0000";
     for (path, tool, archived) in [
         (history, "codex", false),
@@ -68,8 +64,8 @@ fn rows_of_a_fixed_reader_are_reparsed_once_after_upgrading() {
     assert_eq!(mtime(&conn, "/c/claude.jsonl"), 5);
 
     conn.execute(
-        "UPDATE files SET mtime = 7 WHERE path IN (?1, '/g/chats/session-a.jsonl')",
-        [history],
+        "UPDATE files SET mtime = 7, reader = ?2 WHERE path IN (?1, '/g/chats/session-a.jsonl')",
+        params![history, index::READER],
     )
     .unwrap();
     drop(conn);
