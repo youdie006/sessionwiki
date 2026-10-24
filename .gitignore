@@ -6,6 +6,7 @@
 *.db
 *.db-wal
 *.db-shm
+!tests/fixtures/**/*.db
 index.db
 index.db.bak-*
 /sessionwiki/
