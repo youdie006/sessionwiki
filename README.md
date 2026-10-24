@@ -359,7 +359,8 @@ one feature that touches an LLM is `summarize`, and it does so by running a CLI
 |---|---|---|
 | Claude Code | `~/.claude/projects/**/*.jsonl` (incl. nested subagent transcripts) | supported |
 | Codex CLI | `~/.codex/sessions/**/rollout-*.jsonl[.zst]`, `~/.codex/archived_sessions/`, `~/.codex/thread_history_*.sqlite` | supported |
-| Gemini CLI | `~/.gemini/tmp/*/chats/*.json[l]` | supported |
+| Gemini CLI | `~/.gemini/tmp/*/chats/*.json[l]` | supported &mdash; Google retired Gemini CLI for personal accounts on 2026-06-18 in favour of Antigravity CLI; the chats it left on disk are still indexed |
+| Antigravity CLI and IDE | `~/.gemini/antigravity-cli/brain/*/.system_generated/logs/transcript.jsonl`, `~/.gemini/antigravity/brain/` | in review ([#83](https://github.com/youdie006/sessionwiki/pull/83)) |
 | OpenCode | `~/.local/share/opencode/opencode.db` (SQLite; also the legacy `storage/**` JSON) | supported |
 | Cline, Roo Code, Kilo Code | VS Code `globalStorage/<ext>/tasks/<id>/` (one parser, three tools) | supported |
 | gajae-code (& Pi) | `~/.gjc/agent/sessions/**/*.jsonl` | supported |
