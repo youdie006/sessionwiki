@@ -107,7 +107,7 @@ pub(crate) fn project_root(chat: &Path) -> Option<String> {
     let store = chats_dir(chat)?.parent()?;
     let root = crate::util::read_to_string_capped(&store.join(".project_root")).ok()?;
     let root = root.trim();
-    Path::new(root).is_absolute().then(|| root.to_string())
+    (Path::new(root).is_absolute() || Path::new(root).has_root()).then(|| root.to_string())
 }
 
 impl Adapter for Gemini {
