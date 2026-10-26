@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.13] - 2026-10-26
+
 ### Fixed
 
 - An OpenCode, Continue or gajae-code edit that failed no longer counts as a
