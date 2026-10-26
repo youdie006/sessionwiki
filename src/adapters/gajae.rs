@@ -101,7 +101,9 @@ fn parse_jsonl(tool: &'static str, path: &Path) -> Result<Session> {
     let mut last_ts: Option<DateTime<Utc>> = None;
 
     let mut messages: Vec<Message> = Vec::new();
-    let mut touched: Vec<String> = Vec::new();
+    // Edited files by call; a call whose result is an error changed nothing.
+    let mut edit_calls: Vec<(Option<String>, Vec<String>)> = Vec::new();
+    let mut failed_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for line in raw.lines() {
         let line = line.trim();
@@ -161,16 +163,21 @@ fn parse_jsonl(tool: &'static str, path: &Path) -> Result<Session> {
                     .or(outer_ts);
 
                 if raw_role == Some("toolResult") {
+                    let call_id = msg
+                        .get("toolCallId")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                        .map(str::to_owned);
+                    let is_error = msg.get("isError").and_then(Value::as_bool).unwrap_or(false);
+                    if let (true, Some(id)) = (is_error, &call_id) {
+                        failed_calls.insert(id.clone());
+                    }
                     messages.push(Message::tool_result(
                         ts,
                         ToolResult {
-                            call_id: msg
-                                .get("toolCallId")
-                                .and_then(Value::as_str)
-                                .filter(|id| !id.is_empty())
-                                .map(str::to_owned),
+                            call_id,
                             text: bounded_redacted_output(&block_text(msg.get("content"))),
-                            is_error: msg.get("isError").and_then(Value::as_bool).unwrap_or(false),
+                            is_error,
                         },
                     ));
                     continue;
@@ -190,10 +197,13 @@ fn parse_jsonl(tool: &'static str, path: &Path) -> Result<Session> {
                                     let name =
                                         block.get("name").and_then(Value::as_str).unwrap_or("?");
                                     let args = block.get("arguments");
+                                    let id = block
+                                        .get("id")
+                                        .and_then(Value::as_str)
+                                        .filter(|id| !id.is_empty())
+                                        .map(str::to_owned);
                                     if EDIT_TOOLS.contains(&name) {
-                                        for p in arg_paths(args) {
-                                            touched.push(p);
-                                        }
+                                        edit_calls.push((id.clone(), arg_paths(args)));
                                     }
                                     let mut args =
                                         args.cloned().unwrap_or_else(|| serde_json::json!({}));
@@ -201,11 +211,7 @@ fn parse_jsonl(tool: &'static str, path: &Path) -> Result<Session> {
                                     messages.push(Message::tool_call(
                                         ts,
                                         ToolCall {
-                                            id: block
-                                                .get("id")
-                                                .and_then(Value::as_str)
-                                                .filter(|id| !id.is_empty())
-                                                .map(str::to_owned),
+                                            id,
                                             name: name.to_owned(),
                                             args,
                                         },
@@ -225,6 +231,11 @@ fn parse_jsonl(tool: &'static str, path: &Path) -> Result<Session> {
     }
 
     let _ = session_id;
+    let touched: Vec<String> = edit_calls
+        .into_iter()
+        .filter(|(id, _)| !id.as_ref().is_some_and(|id| failed_calls.contains(id)))
+        .flat_map(|(_, paths)| paths)
+        .collect();
     let title = header_title.unwrap_or_else(|| title_from_messages(&messages));
 
     Ok(Session {

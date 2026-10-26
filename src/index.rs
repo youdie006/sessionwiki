@@ -934,7 +934,7 @@ fn reparse_codex_for_mcp_errors(conn: &Connection) -> Result<()> {
 
 /// Stamped on every `files` row this version parses. Raise it with each reader
 /// fix listed in `reparse_after_reader_fixes`.
-pub const READER: i64 = 3;
+pub const READER: i64 = 4;
 
 /// Mark the live rows a fixed reader produces for a re-parse, so the fix
 /// reaches sessions that never change again. Each fix names its rows and the
@@ -954,6 +954,12 @@ fn reparse_after_reader_fixes(conn: &Connection) -> Result<()> {
         (
             3,
             "(tool = 'codex' AND instr(path, char(31)) = 0)".to_owned(),
+        ),
+        // 4: an OpenCode, Continue or gajae-code edit that failed is not a file
+        // the session edited.
+        (
+            4,
+            "tool IN ('opencode', 'continue', 'gajae-code')".to_owned(),
         ),
     ];
     let stale = fixes

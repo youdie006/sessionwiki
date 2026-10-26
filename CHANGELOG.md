@@ -6,6 +6,17 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- An OpenCode, Continue or gajae-code edit that failed no longer counts as a
+  file the session edited. Each tool records the outcome beside the call -
+  OpenCode a tool part in `error` state (the user rejected the permission, or
+  the text to replace was not found), Continue a `toolCallStates` status of
+  errored or canceled, gajae-code a tool result with `isError` - but the
+  readers took the file at call time, so `trace`, `files` and `blame` named the
+  session for a file it never changed. A call with no outcome yet still counts.
+  Sessions from these tools are re-parsed once on the next sync.
+
 ## [0.34.12] - 2026-10-26
 
 ### Fixed

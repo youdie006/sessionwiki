@@ -420,7 +420,15 @@ fn emit_tool_part(
 ) {
     let name = part.get("tool").and_then(Value::as_str).unwrap_or("?");
     let input = part.pointer("/state/input");
-    if let Some(path) = edited_path(name, input) {
+    let state = part.get("state");
+    let status = state
+        .and_then(|value| value.get("status"))
+        .and_then(Value::as_str);
+    let has_error_field = state.is_some_and(|value| value.get("error").is_some());
+    let is_error = status == Some("error") || has_error_field;
+    // An edit that ended in error - rejected at permission, or no match -
+    // changed nothing.
+    if let Some(path) = edited_path(name, input).filter(|_| !is_error) {
         touched.push(path);
     }
 
@@ -439,17 +447,12 @@ fn emit_tool_part(
         },
     ));
 
-    let state = part.get("state");
-    let status = state
-        .and_then(|value| value.get("status"))
-        .and_then(Value::as_str);
     let output = state
         .and_then(|value| value.get("output"))
         .and_then(Value::as_str);
     let error = state
         .and_then(|value| value.get("error"))
         .and_then(Value::as_str);
-    let has_error_field = state.is_some_and(|value| value.get("error").is_some());
     let is_terminal = matches!(status, Some("completed" | "error"));
 
     if is_terminal || output.is_some() || error.is_some() || has_error_field {
@@ -462,7 +465,7 @@ fn emit_tool_part(
                     .filter(|id| !id.is_empty())
                     .map(str::to_owned),
                 text: bounded_redacted_output(output.or(error).unwrap_or_default()),
-                is_error: status == Some("error") || has_error_field,
+                is_error,
             },
         ));
     }
@@ -579,5 +582,40 @@ mod tests {
         let _ = std::fs::remove_file(&db);
         let _ = std::fs::remove_file(db.with_extension("db-wal"));
         let _ = std::fs::remove_file(db.with_extension("db-shm"));
+    }
+
+    /// An edit that ended in error changed nothing: OpenCode records the
+    /// user rejecting the permission and a failed match ("oldString not found")
+    /// as `status: "error"`. A call still running has no outcome yet and keeps
+    /// its file, as a finished one does.
+    #[test]
+    fn an_edit_that_ended_in_error_edited_nothing() {
+        let part = |path: &str, state: serde_json::Value| {
+            let mut state = state;
+            state["input"] = serde_json::json!({ "filePath": path });
+            serde_json::json!({"type": "tool", "tool": "edit", "callID": path, "state": state})
+        };
+        let parts = [
+            part(
+                "done.ts",
+                serde_json::json!({"status": "completed", "output": "ok"}),
+            ),
+            part("running.ts", serde_json::json!({"status": "running"})),
+            part(
+                "rejected.ts",
+                serde_json::json!({"status": "error", "error": "The user rejected permission to use this specific tool call."}),
+            ),
+            part(
+                "nomatch.ts",
+                serde_json::json!({"status": "error", "error": "oldString not found in content"}),
+            ),
+            part("unstated.ts", serde_json::json!({"error": "failed"})),
+            part("bare.ts", serde_json::json!({"status": "error"})),
+        ];
+        let (mut messages, mut touched) = (Vec::new(), Vec::new());
+        for p in &parts {
+            super::emit_tool_part(p, None, &mut messages, &mut touched);
+        }
+        assert_eq!(touched, ["done.ts", "running.ts"]);
     }
 }

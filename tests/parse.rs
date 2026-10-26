@@ -892,3 +892,74 @@ fn prodex_multibyte_task_id_never_panics() {
         "unparseable stamp -> None, not a crash"
     );
 }
+
+/// A Continue edit that errored or was canceled changed nothing, so it is not a
+/// file the session edited. Continue keeps each call's outcome in the
+/// `toolCallStates` beside it.
+#[test]
+fn a_continue_edit_that_failed_edited_nothing() {
+    let mut session: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(fixture(
+            "continue/sessions/5f1d2c9a-8b34-4e21-9d6e-7a0c1b2e3f44.json",
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let edit = |id: &str, path: &str, status: &str| {
+        serde_json::json!({
+            "message": {"role": "assistant", "content": "", "toolCalls": [{
+                "id": id, "type": "function",
+                "function": {"name": "edit_existing_file", "arguments": format!("{{\"filepath\":\"{path}\"}}")}
+            }]},
+            "toolCallStates": [{"toolCallId": id, "status": status}]
+        })
+    };
+    let history = session["history"].as_array_mut().unwrap();
+    history.push(edit("e1", "src/errored.ts", "errored"));
+    history.push(edit("e2", "src/canceled.ts", "canceled"));
+    history.push(edit("e3", "src/pending.ts", "generated"));
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("5f1d2c9a-8b34-4e21-9d6e-7a0c1b2e3f44.json");
+    std::fs::write(&file, session.to_string()).unwrap();
+    let adapter = adapters::by_name("continue").unwrap();
+    let s = adapters::parse_session(adapter.as_ref(), &file).unwrap();
+    assert_eq!(s.touched, ["src/http.ts", "src/pending.ts"]);
+}
+
+/// A gajae-code (Pi) edit whose result is an error changed nothing - the text
+/// to replace was not found, or the call was aborted - so it is not a file the
+/// session edited.
+#[test]
+fn a_gajae_edit_that_failed_edited_nothing() {
+    let line = |v: serde_json::Value| v.to_string() + "\n";
+    let call = |id: &str, path: &str| {
+        line(
+            serde_json::json!({"type": "message", "timestamp": "2026-10-01T00:00:01Z",
+            "message": {"role": "assistant", "content": [
+                {"type": "toolCall", "id": id, "name": "edit", "arguments": {"path": path}}
+            ]}}),
+        )
+    };
+    let result = |id: &str, is_error: bool| {
+        line(
+            serde_json::json!({"type": "message", "timestamp": "2026-10-01T00:00:02Z",
+            "message": {"role": "toolResult", "toolCallId": id, "isError": is_error,
+                "content": [{"type": "text", "text": "result"}]}}),
+        )
+    };
+    let body = [
+        line(serde_json::json!({"type": "session", "id": "s1", "cwd": "/repo", "timestamp": "2026-10-01T00:00:00Z"})),
+        call("ok", "src/ok.ts"),
+        result("ok", false),
+        call("bad", "src/bad.ts"),
+        result("bad", true),
+        call("open", "src/open.ts"),
+    ]
+    .concat();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("2026-10-01T00-00-00-000Z_s1.jsonl");
+    std::fs::write(&file, body).unwrap();
+    let adapter = adapters::by_name("gajae-code").unwrap();
+    let s = adapters::parse_session(adapter.as_ref(), &file).unwrap();
+    assert_eq!(s.touched, ["src/ok.ts", "src/open.ts"]);
+}
