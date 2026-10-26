@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.11] - 2026-10-26
+
 ### Fixed
 
 - A file an edit was attempted on but never changed no longer counts as a
