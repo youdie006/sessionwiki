@@ -104,6 +104,147 @@ pub enum Attribution {
 /// (commits often land well after the conversation). Tunable.
 pub const LAG_WINDOW_SECS: i64 = 14 * 24 * 3600;
 
+/// Whether a session may have edited `target`, given the paths it touched that
+/// matched the query by suffix. A suffix match is a file name, not a file: it
+/// is false only when every matching path - a relative one read against the
+/// session's directory - names another existing file outside this repository's
+/// history. A worktree or clone commits into the same history, so its copy
+/// counts (`same_history` is asked with the copy's directory), and a path that
+/// no longer exists may still have been this file.
+pub fn may_have_edited(
+    target: &Path,
+    project: &str,
+    matched: &[String],
+    same_history: &mut dyn FnMut(&Path) -> bool,
+) -> bool {
+    let Ok(target_meta) = std::fs::metadata(target) else {
+        return true;
+    };
+    matched.is_empty()
+        || matched.iter().any(|p| {
+            let p = Path::new(p);
+            let p = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                Path::new(project).join(p)
+            };
+            match std::fs::metadata(&p) {
+                Ok(meta) => {
+                    same_file(&p, &meta, target, &target_meta)
+                        || p.parent().is_some_and(&mut *same_history)
+                }
+                Err(_) => true,
+            }
+        })
+}
+
+#[cfg(unix)]
+fn same_file(_: &Path, a: &std::fs::Metadata, _: &Path, b: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+#[cfg(not(unix))]
+fn same_file(a: &Path, _: &std::fs::Metadata, b: &Path, _: &std::fs::Metadata) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => true,
+    }
+}
+
+/// The nearest directory at or above `dir` holding a `.git` entry - a
+/// repository or worktree root - found without starting git.
+pub fn repo_dir(dir: &Path) -> Option<PathBuf> {
+    dir.ancestors()
+        .find(|d| d.join(".git").exists())
+        .map(Path::to_path_buf)
+}
+
+/// What makes two checkouts the same repository, read from files alone (a
+/// process per directory cost 52 git runs and 8 s on one real blame): the
+/// shared git directory, which every worktree points at, and the `origin` a
+/// clone was made from.
+#[derive(Debug, PartialEq)]
+pub struct RepoId {
+    root: PathBuf,
+    common: Option<PathBuf>,
+    origin: Option<String>,
+}
+
+impl RepoId {
+    pub fn of(root: &Path) -> RepoId {
+        let dotgit = root.join(".git");
+        let gitdir = if dotgit.is_dir() {
+            Some(dotgit)
+        } else {
+            std::fs::read_to_string(&dotgit).ok().and_then(|text| {
+                let dir = text.trim().strip_prefix("gitdir:")?.trim().to_owned();
+                Some(root.join(dir))
+            })
+        };
+        let common = gitdir.map(
+            |gitdir| match std::fs::read_to_string(gitdir.join("commondir")) {
+                Ok(rel) => gitdir.join(rel.trim()),
+                Err(_) => gitdir,
+            },
+        );
+        let common = common.map(|c| std::fs::canonicalize(&c).unwrap_or(c));
+        let origin = common
+            .as_ref()
+            .and_then(|c| std::fs::read_to_string(c.join("config")).ok())
+            .and_then(|config| origin_url(&config))
+            .map(|url| local_origin(&url, root));
+        RepoId {
+            root: std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()),
+            common,
+            origin,
+        }
+    }
+
+    /// Whether `self` and `other` are checkouts of one repository: a worktree
+    /// of it, a clone of it, or two clones of one origin.
+    pub fn same_as(&self, other: &RepoId) -> bool {
+        let names = |id: &RepoId, url: &str| {
+            Path::new(url) == id.root || id.common.as_deref() == Some(Path::new(url))
+        };
+        self.common.is_some() && self.common == other.common
+            || self.origin.is_some() && self.origin == other.origin
+            || self.origin.as_deref().is_some_and(|url| names(other, url))
+            || other.origin.as_deref().is_some_and(|url| names(self, url))
+    }
+}
+
+/// A local origin as its canonical path, so a clone made from a path, a
+/// `file://` URL or a path relative to the checkout names one source. A remote
+/// URL is kept as written.
+fn local_origin(url: &str, root: &Path) -> String {
+    let path = url.strip_prefix("file://").unwrap_or(url);
+    if path == url && !(url.starts_with('/') || url.starts_with('.')) {
+        return url.to_owned();
+    }
+    std::fs::canonicalize(root.join(path))
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.to_owned())
+}
+
+/// The `url` of `[remote "origin"]` in a git config file.
+fn origin_url(config: &str) -> Option<String> {
+    let mut in_origin = false;
+    for line in config.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_origin = line == "[remote \"origin\"]";
+        } else if in_origin {
+            if let Some((key, value)) = line.split_once('=') {
+                if key.trim() == "url" {
+                    return Some(value.trim().to_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
 fn project_is_ancestor(project: &str, repo_path: &str) -> bool {
     !project.is_empty() && repo_path.starts_with(project)
 }
@@ -239,6 +380,59 @@ pub fn run_git_blame(repo: &Path, file: &Path, range: Option<(usize, usize)>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_clones_of_one_origin_are_one_repository() {
+        let id = |root: &str, origin: Option<&str>| RepoId {
+            root: root.into(),
+            common: Some(format!("{root}/.git").into()),
+            origin: origin.map(str::to_owned),
+        };
+        let url = "https://github.com/o/r.git";
+        assert!(id("/a", Some(url)).same_as(&id("/b", Some(url))));
+        assert!(!id("/a", Some(url)).same_as(&id("/b", Some("https://github.com/o/s.git"))));
+        assert!(!id("/a", None).same_as(&id("/b", None)));
+        // The clone named on either side.
+        assert!(id("/a", None).same_as(&id("/b", Some("/a"))));
+        assert!(id("/b", Some("/a")).same_as(&id("/a", None)));
+        let bare = |root: &str| RepoId {
+            root: root.into(),
+            common: None,
+            origin: None,
+        };
+        assert!(
+            !bare("/a").same_as(&bare("/b")),
+            "no git directory is no repository"
+        );
+        let config = "[core]\n\tbare = false\n[remote \"upstream\"]\n\turl = https://x/up.git\n[remote \"origin\"]\n\turl = https://x/mine.git\n";
+        assert_eq!(origin_url(config).as_deref(), Some("https://x/mine.git"));
+    }
+
+    /// Two clones of one local source, one made from its path and one from a
+    /// `file://` URL (or a relative path), name the same origin.
+    #[test]
+    fn local_origins_are_compared_as_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(base.join("src")).unwrap();
+        let checkout = |name: &str, url: &str| {
+            let git = base.join(name).join(".git");
+            std::fs::create_dir_all(&git).unwrap();
+            std::fs::write(
+                git.join("config"),
+                format!("[remote \"origin\"]\n\turl = {url}\n"),
+            )
+            .unwrap();
+            RepoId::of(&base.join(name))
+        };
+        let by_path = checkout("a", &base.join("src").to_string_lossy());
+        let by_url = checkout("b", &format!("file://{}", base.join("src").display()));
+        let relative = checkout("c", "../src");
+        assert!(by_path.same_as(&by_url));
+        assert!(by_path.same_as(&relative));
+        let elsewhere = checkout("d", &base.join("a").to_string_lossy());
+        assert!(!elsewhere.same_as(&by_url));
+    }
 
     fn sess(id: &str, started: i64, ended: i64, project: &str) -> TouchingSession {
         TouchingSession {

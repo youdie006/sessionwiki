@@ -2945,6 +2945,22 @@ pub fn sessions_touching(
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// The paths one session touched that `sessions_touching` matched `query` by.
+pub fn touched_paths_matching(
+    conn: &Connection,
+    session_id: &str,
+    query: &str,
+) -> Result<Vec<String>> {
+    let q = crate::util::nfc(query.trim().trim_start_matches("./"));
+    let suffix = format!("%/{}", escape_like(&q));
+    let mut stmt = conn.prepare(
+        "SELECT path FROM touched
+         WHERE session_id = ?1 AND (path = ?2 OR path LIKE ?3 ESCAPE '\\')",
+    )?;
+    let rows = stmt.query_map(params![session_id, q, suffix], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
+}
+
 /// Parse a stored timestamp (RFC3339) to epoch seconds; None if unparseable.
 fn to_epoch(s: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(s)
