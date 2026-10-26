@@ -48,9 +48,10 @@ fn live_windowed_rows_are_reparsed_once_after_upgrading() {
         ("/s/claude-small.jsonl", "claude-code", "small work", false),
     ] {
         conn.execute(
-            "INSERT INTO files(path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind, archived_at)
-             VALUES (?1, 5, 5, ?1, ?2, '/p', ?3, '2026-10-01T00:00:00+00:00', NULL, 1, 'main', ?4)",
-            params![path, tool, title, archived.then_some("2026-10-02T00:00:00+00:00")],
+            // Parsed by this reader, so only the fix under test marks them.
+            "INSERT INTO files(path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind, archived_at, reader)
+             VALUES (?1, 5, 5, ?1, ?2, '/p', ?3, '2026-10-01T00:00:00+00:00', NULL, 1, 'main', ?4, ?5)",
+            params![path, tool, title, archived.then_some("2026-10-02T00:00:00+00:00"), index::READER],
         )
         .unwrap();
     }

@@ -96,8 +96,8 @@ impl Adapter for ClaudeCode {
         })?;
 
         let mut messages: Vec<Message> = Vec::new();
-        let mut touched: Vec<String> = Vec::new();
-        let mut edits: Vec<crate::model::EditEvent> = Vec::new();
+        let mut edit_calls: Vec<(Option<String>, crate::model::EditEvent)> = Vec::new();
+        let mut failed_calls = std::collections::HashSet::new();
         let mut cwd: Option<String> = None;
         let mut summary: Option<String> = None;
         let mut ai_title: Option<String> = None;
@@ -159,6 +159,7 @@ impl Adapter for ClaudeCode {
                                         }
                                     }
                                     Some("tool_result") => {
+                                        note_failed_call(b, &mut failed_calls);
                                         let output =
                                             bounded_redacted_output(&block_text(b.get("content")));
                                         messages.push(Message::tool_result(
@@ -202,8 +203,7 @@ impl Adapter for ClaudeCode {
                             Some("tool_use") => {
                                 let name = b.get("name").and_then(Value::as_str).unwrap_or("?");
                                 if let Some(ev) = edit_event(name, b.get("input"), ts) {
-                                    touched.push(ev.path.clone());
-                                    edits.push(ev);
+                                    edit_calls.push((call_id(b), ev));
                                 }
                                 let mut args = b.get("input").cloned().unwrap_or_else(|| json!({}));
                                 redact_json_strings(&mut args);
@@ -232,15 +232,24 @@ impl Adapter for ClaudeCode {
         // session edited there. Those are read from the whole file: only lines
         // that carry a tool call are parsed.
         if windowed {
-            let mut all_touched = Vec::new();
-            let mut all_edits = Vec::new();
+            let mut all_calls = Vec::new();
+            let mut all_failed = std::collections::HashSet::new();
             let read = crate::util::for_each_line(path, |line| {
-                if !line.contains("\"tool_use\"") {
+                let failed_result = has_error_true(line);
+                if !line.contains("\"tool_use\"") && !failed_result {
                     return;
                 }
                 let Ok(v) = serde_json::from_str::<Value>(line) else {
                     return;
                 };
+                if failed_result && v.get("type").and_then(Value::as_str) == Some("user") {
+                    if let Some(Value::Array(blocks)) = v.pointer("/message/content") {
+                        for b in blocks {
+                            note_failed_call(b, &mut all_failed);
+                        }
+                    }
+                    return;
+                }
                 if v.get("type").and_then(Value::as_str) != Some("assistant") {
                     return;
                 }
@@ -257,16 +266,16 @@ impl Adapter for ClaudeCode {
                     }
                     let name = b.get("name").and_then(Value::as_str).unwrap_or("?");
                     if let Some(ev) = edit_event(name, b.get("input"), ts) {
-                        all_touched.push(ev.path.clone());
-                        all_edits.push(ev);
+                        all_calls.push((call_id(b), ev));
                     }
                 }
             });
             if read.is_ok() {
-                touched = all_touched;
-                edits = all_edits;
+                edit_calls = all_calls;
+                failed_calls = all_failed;
             }
         }
+        let (touched, edits) = applied_edits(edit_calls, &failed_calls);
 
         let project = cwd.unwrap_or_else(|| {
             // Fall back to the sanitized directory name.
@@ -327,6 +336,51 @@ fn edited_path(name: &str, input: Option<&Value>) -> Option<String> {
 }
 
 const SNIPPET_CAP: usize = 200;
+
+/// A cheap prefilter for a line carrying `"is_error": true`, however the JSON
+/// is spaced. Tool results are the bulk of a large transcript, so the windowed
+/// read parses only these.
+fn has_error_true(line: &str) -> bool {
+    line.match_indices("\"is_error\"").any(|(at, field)| {
+        line[at + field.len()..]
+            .trim_start()
+            .strip_prefix(':')
+            .is_some_and(|rest| rest.trim_start().starts_with("true"))
+    })
+}
+
+fn call_id(block: &Value) -> Option<String> {
+    block
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+}
+
+/// Record a call whose result is an error: rejected by the user, or refused by
+/// the tool ("File has not been read yet"). Its edit never happened.
+fn note_failed_call(block: &Value, failed: &mut std::collections::HashSet<String>) {
+    if block.get("type").and_then(Value::as_str) == Some("tool_result")
+        && block.get("is_error").and_then(Value::as_bool) == Some(true)
+    {
+        if let Some(id) = block.get("tool_use_id").and_then(Value::as_str) {
+            failed.insert(id.to_owned());
+        }
+    }
+}
+
+/// The edits that took effect. A call with no result yet (a session cut off)
+/// is kept: nothing says it did not run.
+fn applied_edits(
+    calls: Vec<(Option<String>, crate::model::EditEvent)>,
+    failed: &std::collections::HashSet<String>,
+) -> (Vec<String>, Vec<crate::model::EditEvent>) {
+    calls
+        .into_iter()
+        .filter(|(id, _)| id.as_ref().is_none_or(|id| !failed.contains(id)))
+        .map(|(_, ev)| (ev.path.clone(), ev))
+        .unzip()
+}
 
 /// Extract the structured edit evidence from one write tool call - the richer
 /// sibling of `edited_path`: not just WHICH file, but what kind of change and a
@@ -563,6 +617,41 @@ mod tests {
         assert_eq!(session.touched.len(), 30, "{:?}", session.touched);
         assert_eq!(session.edits.len(), 30);
         assert!(session.touched.contains(&"/repo/src/f15.rs".to_string()));
+    }
+
+    /// The same reading drops an edit whose result is an error, wherever in
+    /// the file that result is.
+    #[test]
+    fn a_windowed_session_drops_edits_that_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir
+            .path()
+            .join("11111111-2222-3333-4444-555555555555.jsonl");
+        let mut body = String::new();
+        for i in 0..30 {
+            body.push_str(&format!(
+                "{{\"type\":\"assistant\",\"timestamp\":\"2026-10-01T00:00:{i:02}Z\",\"message\":{{\"content\":[{{\"type\":\"tool_use\",\"id\":\"t{i}\",\"name\":\"Edit\",\"input\":{{\"file_path\":\"/repo/src/f{i}.rs\",\"old_string\":\"a\",\"new_string\":\"b\"}}}}]}}}}\n"
+            ));
+            let failed = i % 2 == 1;
+            // Valid JSON need not be compact: one failure is spelled with spaces.
+            let field = if i == 15 {
+                "\"is_error\": "
+            } else {
+                "\"is_error\":"
+            };
+            body.push_str(&format!(
+                "{{\"type\":\"user\",\"message\":{{\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"t{i}\",{field}{failed},\"content\":\"result {i}\"}}]}}}}\n"
+            ));
+        }
+        std::fs::write(&file, body).unwrap();
+        crate::util::TEST_WINDOW.with(|w| w.set(Some((2_000, 600, 600))));
+        let session = ClaudeCode::default().parse(&file).unwrap();
+        crate::util::TEST_WINDOW.with(|w| w.set(None));
+        assert!(session.title.starts_with("[large]"), "{}", session.title);
+        assert_eq!(session.touched.len(), 15, "{:?}", session.touched);
+        assert_eq!(session.edits.len(), 15);
+        assert!(session.touched.contains(&"/repo/src/f14.rs".to_string()));
+        assert!(!session.touched.contains(&"/repo/src/f15.rs".to_string()));
     }
 
     /// A windowed session kept only its first and last turns' text, so search

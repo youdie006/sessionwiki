@@ -7,6 +7,10 @@
 
 use rusqlite::{params, Connection};
 use sessionwiki::index;
+use std::sync::Mutex;
+
+// SESSIONWIKI_DATA is process-global; each test holds this for its whole run.
+static INDEX_ENV: Mutex<()> = Mutex::new(());
 
 fn mtime(conn: &Connection, path: &str) -> i64 {
     conn.query_row("SELECT mtime FROM files WHERE path = ?1", [path], |r| {
@@ -17,6 +21,7 @@ fn mtime(conn: &Connection, path: &str) -> i64 {
 
 #[test]
 fn rows_of_a_fixed_reader_are_reparsed_once_after_upgrading() {
+    let _env = INDEX_ENV.lock().unwrap_or_else(|e| e.into_inner());
     let dir = std::env::temp_dir().join("sessionwiki-test-reader-fix-reparse");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -61,10 +66,15 @@ fn rows_of_a_fixed_reader_are_reparsed_once_after_upgrading() {
         5,
         "archived rows stay"
     );
-    assert_eq!(mtime(&conn, "/c/claude.jsonl"), 5);
+    assert_eq!(
+        mtime(&conn, "/c/claude.jsonl"),
+        -1,
+        "a Claude session is re-read for its unapplied edits"
+    );
 
     conn.execute(
-        "UPDATE files SET mtime = 7, reader = ?2 WHERE path IN (?1, '/g/chats/session-a.jsonl')",
+        "UPDATE files SET mtime = 7, reader = ?2
+         WHERE path IN (?1, '/g/chats/session-a.jsonl', '/c/claude.jsonl')",
         params![history, index::READER],
     )
     .unwrap();
@@ -72,4 +82,43 @@ fn rows_of_a_fixed_reader_are_reparsed_once_after_upgrading() {
     let conn = index::open().unwrap();
     assert_eq!(mtime(&conn, history), 7, "only once");
     assert_eq!(mtime(&conn, "/g/chats/session-a.jsonl"), 7, "only once");
+    assert_eq!(mtime(&conn, "/c/claude.jsonl"), 7, "only once");
+}
+
+/// Each fix names its own rows: a row already parsed by reader 1 is re-read
+/// only if fix 2 covers it.
+#[test]
+fn each_reader_fix_marks_only_its_rows() {
+    let _env = INDEX_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join("sessionwiki-test-reader-fix-scope");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::env::set_var("SESSIONWIKI_DATA", &dir);
+
+    let conn = index::open().unwrap();
+    for (path, tool) in [
+        ("/c/one.jsonl", "claude-code"),
+        ("/g/chats/one.jsonl", "gemini"),
+        ("/s/rollout-one.jsonl", "codex"),
+    ] {
+        conn.execute(
+            "INSERT INTO files(path, mtime, size, session_id, tool, project, title, msg_count, kind, reader)
+             VALUES (?1, 5, 5, ?1, ?2, '/p', 't', 1, 'main', 1)",
+            params![path, tool],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    let conn = index::open().unwrap();
+    assert_eq!(mtime(&conn, "/c/one.jsonl"), -1, "fix 2 covers Claude");
+    assert_eq!(
+        mtime(&conn, "/g/chats/one.jsonl"),
+        5,
+        "Gemini had fix 1 already"
+    );
+    assert_eq!(
+        mtime(&conn, "/s/rollout-one.jsonl"),
+        5,
+        "rollouts are in neither"
+    );
 }

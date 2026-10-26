@@ -6,6 +6,17 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- A file an edit was attempted on but never changed no longer counts as a
+  file the session edited. A Claude Code Edit or Write the user rejected, or
+  that failed ("File has not been read yet", a subagent told to return
+  findings as text), and a Codex patch declined at approval or that failed
+  to apply, made `trace`, `files` and `blame` name that session for the
+  file. On one real index this removed 281 of 8179 session-file links, each
+  one checked to have only failed edits. Claude sessions and Codex history
+  threads are re-parsed once on the next sync.
+
 ## [0.34.10] - 2026-10-24
 
 ### Added
