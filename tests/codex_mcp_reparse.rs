@@ -29,9 +29,10 @@ fn live_codex_rows_are_reparsed_once_after_upgrading() {
         ("/s/claude.jsonl", "claude-code", false),
     ] {
         conn.execute(
-            "INSERT INTO files(path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind, archived_at)
-             VALUES (?1, 5, 5, ?1, ?2, '/p', 't', '2026-10-01T00:00:00+00:00', NULL, 1, 'main', ?3)",
-            params![path, tool, archived.then_some("2026-10-02T00:00:00+00:00")],
+            // Parsed by this reader, so only the fix under test marks them.
+            "INSERT INTO files(path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind, archived_at, reader)
+             VALUES (?1, 5, 5, ?1, ?2, '/p', 't', '2026-10-01T00:00:00+00:00', NULL, 1, 'main', ?3, ?4)",
+            params![path, tool, archived.then_some("2026-10-02T00:00:00+00:00"), index::READER],
         )
         .unwrap();
     }

@@ -307,7 +307,9 @@ fn read_item(
                 let Some(path) = change.get("path").and_then(Value::as_str) else {
                     continue;
                 };
-                touched.push(path.to_owned());
+                if !failed {
+                    touched.push(path.to_owned());
+                }
                 let header = match change.pointer("/kind/type").and_then(Value::as_str) {
                     Some("add") => "Add File",
                     Some("delete") => "Delete File",
@@ -315,7 +317,9 @@ fn read_item(
                 };
                 patch.push_str(&format!("*** {header}: {path}\n"));
                 if let Some(to) = change.pointer("/kind/move_path").and_then(Value::as_str) {
-                    touched.push(to.to_owned());
+                    if !failed {
+                        touched.push(to.to_owned());
+                    }
                     patch.push_str(&format!("*** Move to: {to}\n"));
                 }
                 if let Some(diff) = change.get("diff").and_then(Value::as_str) {

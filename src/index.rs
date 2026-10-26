@@ -934,32 +934,39 @@ fn reparse_codex_for_mcp_errors(conn: &Connection) -> Result<()> {
 
 /// Stamped on every `files` row this version parses. Raise it with each reader
 /// fix listed in `reparse_after_reader_fixes`.
-pub const READER: i64 = 1;
+pub const READER: i64 = 2;
 
 /// Mark the live rows a fixed reader produces for a re-parse, so the fix
 /// reaches sessions that never change again. Each fix names its rows and the
 /// `READER` that introduced it; a row parsed by an older reader - including one
 /// an older `sessionwiki mcp` rewrites after this ran - is marked again.
 fn reparse_after_reader_fixes(conn: &Connection) -> Result<()> {
-    // 1: a Codex history call (keys carry the store's \x1f separator) declined
-    // at approval is a failure; Gemini `/rewind` is applied.
-    const STALE: &str = "SELECT EXISTS(SELECT 1 FROM files
-         WHERE archived_at IS NULL AND mtime != -1 AND reader < 1
-           AND (tool = 'gemini' OR (tool = 'codex' AND instr(path, char(31)) > 0)))";
-    if !conn.query_row(STALE, [], |r| r.get::<_, bool>(0))? {
+    // Codex history threads: their keys carry the store's \x1f separator.
+    const HISTORY: &str = "(tool = 'codex' AND instr(path, char(31)) > 0)";
+    let fixes = [
+        // 1: a history call declined at approval is a failure; Gemini
+        // `/rewind` is applied.
+        (1, format!("(tool = 'gemini' OR {HISTORY})")),
+        // 2: an edit that was rejected or failed is not a file the session
+        // edited.
+        (2, format!("(tool = 'claude-code' OR {HISTORY})")),
+    ];
+    let stale = fixes
+        .iter()
+        .map(|(reader, rows)| format!("(reader < {reader} AND {rows})"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let filter = format!("archived_at IS NULL AND mtime != -1 AND ({stale})");
+    let any: bool = conn.query_row(
+        &format!("SELECT EXISTS(SELECT 1 FROM files WHERE {filter})"),
+        [],
+        |r| r.get(0),
+    )?;
+    if !any {
         return Ok(());
     }
-    apply_without_waiting(
-        conn,
-        "reader_fixes_marked",
-        READER,
-        &[(
-            "UPDATE files SET mtime = -1, size = -1
-             WHERE archived_at IS NULL AND mtime != -1 AND reader < 1
-               AND (tool = 'gemini' OR (tool = 'codex' AND instr(path, char(31)) > 0))",
-            vec![],
-        )],
-    )
+    let mark = format!("UPDATE files SET mtime = -1, size = -1 WHERE {filter}");
+    apply_without_waiting(conn, "reader_fixes_marked", READER, &[(&mark, vec![])])
 }
 
 /// Sessions over the byte cap were indexed without the files they edited

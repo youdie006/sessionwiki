@@ -262,6 +262,39 @@ fn history_tool_calls_keep_their_outcome_and_edited_files() {
     );
 }
 
+/// A patch refused at approval, or one that failed to apply, changed no file:
+/// the call stays in the transcript, the file is not one the session edited.
+#[test]
+fn a_declined_or_failed_file_change_edits_nothing() {
+    let home = tempfile::tempdir().unwrap();
+    let change = |id: &str, status: &str, path: &str| {
+        serde_json::json!({"type":"fileChange","id":id,"status":status,
+            "changes":[{"path":path,"kind":{"type":"update","move_path":null},"diff":"@@ -1 +1 @@\n-a\n+b\n"}]})
+    };
+    history(
+        home.path(),
+        &[(
+            GONE,
+            "user",
+            &[
+                change("f1", "completed", "/repo/src/applied.rs"),
+                change("f2", "declined", "/repo/src/declined.rs"),
+                change("f3", "failed", "/repo/src/failed.rs"),
+            ],
+        )],
+    );
+    let adapter = CodexHistory::in_home(home.path());
+    let store = adapter.store().expect("the history db is a store");
+    let session = adapter.parse_key(&store.keys[0].0).unwrap();
+    assert_eq!(session.touched, vec!["/repo/src/applied.rs".to_string()]);
+    let patches = session
+        .messages
+        .iter()
+        .filter(|m| matches!(&m.tool, Some(crate::model::ToolEvent::Part(crate::model::ToolPart::Call(c))) if c.name == "apply_patch"))
+        .count();
+    assert_eq!(patches, 3, "every attempt stays in the transcript");
+}
+
 #[test]
 fn archived_sessions_rollouts_are_indexed() {
     let home = tempfile::tempdir().unwrap();
