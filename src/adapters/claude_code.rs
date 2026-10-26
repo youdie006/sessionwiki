@@ -235,7 +235,7 @@ impl Adapter for ClaudeCode {
             let mut all_calls = Vec::new();
             let mut all_failed = std::collections::HashSet::new();
             let read = crate::util::for_each_line(path, |line| {
-                let failed_result = line.contains("\"is_error\":true");
+                let failed_result = has_error_true(line);
                 if !line.contains("\"tool_use\"") && !failed_result {
                     return;
                 }
@@ -336,6 +336,18 @@ fn edited_path(name: &str, input: Option<&Value>) -> Option<String> {
 }
 
 const SNIPPET_CAP: usize = 200;
+
+/// A cheap prefilter for a line carrying `"is_error": true`, however the JSON
+/// is spaced. Tool results are the bulk of a large transcript, so the windowed
+/// read parses only these.
+fn has_error_true(line: &str) -> bool {
+    line.match_indices("\"is_error\"").any(|(at, field)| {
+        line[at + field.len()..]
+            .trim_start()
+            .strip_prefix(':')
+            .is_some_and(|rest| rest.trim_start().starts_with("true"))
+    })
+}
 
 fn call_id(block: &Value) -> Option<String> {
     block
@@ -621,8 +633,14 @@ mod tests {
                 "{{\"type\":\"assistant\",\"timestamp\":\"2026-10-01T00:00:{i:02}Z\",\"message\":{{\"content\":[{{\"type\":\"tool_use\",\"id\":\"t{i}\",\"name\":\"Edit\",\"input\":{{\"file_path\":\"/repo/src/f{i}.rs\",\"old_string\":\"a\",\"new_string\":\"b\"}}}}]}}}}\n"
             ));
             let failed = i % 2 == 1;
+            // Valid JSON need not be compact: one failure is spelled with spaces.
+            let field = if i == 15 {
+                "\"is_error\": "
+            } else {
+                "\"is_error\":"
+            };
             body.push_str(&format!(
-                "{{\"type\":\"user\",\"message\":{{\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"t{i}\",\"is_error\":{failed},\"content\":\"result {i}\"}}]}}}}\n"
+                "{{\"type\":\"user\",\"message\":{{\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"t{i}\",{field}{failed},\"content\":\"result {i}\"}}]}}}}\n"
             ));
         }
         std::fs::write(&file, body).unwrap();
