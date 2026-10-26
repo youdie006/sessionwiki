@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.12] - 2026-10-26
+
 ### Fixed
 
 - A Codex patch that did not apply no longer counts as a file the session
