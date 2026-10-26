@@ -892,3 +892,20 @@ fn prodex_multibyte_task_id_never_panics() {
         "unparseable stamp -> None, not a crash"
     );
 }
+
+#[test]
+fn antigravity_cli_session() {
+    let s = parse(
+        "antigravity",
+        "antigravity-cli/brain/cli_session_jwt_test/.system_generated/logs/transcript.jsonl",
+    );
+
+    assert_eq!(s.tool, "antigravity");
+    assert_eq!(s.id, "cli_session_jwt_test");
+    assert_eq!(s.title, "Refactor auth module with JWT support");
+    assert_eq!(roles(&s), ["user", "assistant", "tool", "assistant"]);
+    assert!(s.messages[0].text.contains("JWT"));
+    assert_eq!(s.touched, ["d:/crypto/src/auth.rs"]);
+    assert_eq!(s.edits.len(), 1);
+    assert_eq!(s.edits[0].path, "d:/crypto/src/auth.rs");
+}
