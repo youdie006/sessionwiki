@@ -192,7 +192,8 @@ impl RepoId {
         let origin = common
             .as_ref()
             .and_then(|c| std::fs::read_to_string(c.join("config")).ok())
-            .and_then(|config| origin_url(&config));
+            .and_then(|config| origin_url(&config))
+            .map(|url| local_origin(&url, root));
         RepoId {
             root: std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()),
             common,
@@ -204,7 +205,6 @@ impl RepoId {
     /// of it, a clone of it, or two clones of one origin.
     pub fn same_as(&self, other: &RepoId) -> bool {
         let names = |id: &RepoId, url: &str| {
-            let url = url.trim_start_matches("file://");
             Path::new(url) == id.root || id.common.as_deref() == Some(Path::new(url))
         };
         self.common.is_some() && self.common == other.common
@@ -212,6 +212,19 @@ impl RepoId {
             || self.origin.as_deref().is_some_and(|url| names(other, url))
             || other.origin.as_deref().is_some_and(|url| names(self, url))
     }
+}
+
+/// A local origin as its canonical path, so a clone made from a path, a
+/// `file://` URL or a path relative to the checkout names one source. A remote
+/// URL is kept as written.
+fn local_origin(url: &str, root: &Path) -> String {
+    let path = url.strip_prefix("file://").unwrap_or(url);
+    if path == url && !(url.starts_with('/') || url.starts_with('.')) {
+        return url.to_owned();
+    }
+    std::fs::canonicalize(root.join(path))
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.to_owned())
 }
 
 /// The `url` of `[remote "origin"]` in a git config file.
@@ -393,6 +406,32 @@ mod tests {
         );
         let config = "[core]\n\tbare = false\n[remote \"upstream\"]\n\turl = https://x/up.git\n[remote \"origin\"]\n\turl = https://x/mine.git\n";
         assert_eq!(origin_url(config).as_deref(), Some("https://x/mine.git"));
+    }
+
+    /// Two clones of one local source, one made from its path and one from a
+    /// `file://` URL (or a relative path), name the same origin.
+    #[test]
+    fn local_origins_are_compared_as_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(base.join("src")).unwrap();
+        let checkout = |name: &str, url: &str| {
+            let git = base.join(name).join(".git");
+            std::fs::create_dir_all(&git).unwrap();
+            std::fs::write(
+                git.join("config"),
+                format!("[remote \"origin\"]\n\turl = {url}\n"),
+            )
+            .unwrap();
+            RepoId::of(&base.join(name))
+        };
+        let by_path = checkout("a", &base.join("src").to_string_lossy());
+        let by_url = checkout("b", &format!("file://{}", base.join("src").display()));
+        let relative = checkout("c", "../src");
+        assert!(by_path.same_as(&by_url));
+        assert!(by_path.same_as(&relative));
+        let elsewhere = checkout("d", &base.join("a").to_string_lossy());
+        assert!(!elsewhere.same_as(&by_url));
     }
 
     fn sess(id: &str, started: i64, ended: i64, project: &str) -> TouchingSession {
