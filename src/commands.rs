@@ -1735,7 +1735,27 @@ pub fn blame_runs(
     runs: Vec<crate::blame::Run>,
 ) -> Result<Vec<BlameRun>> {
     use std::collections::HashMap;
-    let candidates = index::sessions_touching(conn, file_query)?;
+    let mut candidates = index::sessions_touching(conn, file_query)?;
+    // The match is by path suffix, so it also finds sessions that edited a
+    // file of the same name in another repository.
+    let target = std::path::Path::new(repo_path).join(file_query);
+    let this_repo = crate::blame::RepoId::of(std::path::Path::new(repo_path));
+    let mut same: HashMap<std::path::PathBuf, bool> = HashMap::new();
+    let mut same_history = |dir: &std::path::Path| {
+        crate::blame::repo_dir(dir).is_some_and(|repo| {
+            *same
+                .entry(repo)
+                .or_insert_with_key(|repo| crate::blame::RepoId::of(repo).same_as(&this_repo))
+        })
+    };
+    let mut kept = Vec::with_capacity(candidates.len());
+    for s in candidates {
+        let matched = index::touched_paths_matching(conn, &s.session_id, file_query)?;
+        if crate::blame::may_have_edited(&target, &s.project, &matched, &mut same_history) {
+            kept.push(s);
+        }
+    }
+    candidates = kept;
     let mut memo: HashMap<String, crate::blame::Attribution> = HashMap::new();
     let mut out = Vec::new();
     for r in runs {

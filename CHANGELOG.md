@@ -6,6 +6,17 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- `blame` no longer weighs a session that edited a file of the same name in
+  another repository. Its candidates were every session whose touched path
+  ended in the blamed path, so a `README.md` edited elsewhere at the same time
+  made a line "ambiguous", and alone it would have been named as the line's
+  author. A candidate whose matching paths all name another existing file,
+  outside this repository and its worktrees and clones, is left out; a path
+  that no longer exists still counts. On one real repository this resolved 22
+  of 27 README lines that another repository's session had made ambiguous.
+
 ## [0.34.13] - 2026-10-26
 
 ### Fixed
