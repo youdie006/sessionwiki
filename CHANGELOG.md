@@ -6,6 +6,17 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- A Codex patch that did not apply no longer counts as a file the session
+  edited. In a rollout, an `apply_patch` that failed verification ("Failed to
+  find expected lines", "Failed to read file to update"), returned a nonzero
+  exit code, or was aborted by the user writes none of the files it names, yet
+  `trace`, `files` and `blame` named that session for each of them, including
+  files that never existed. A patch run from an `exec` script is dropped only
+  when apply_patch's own error ended the script and the script ran that one
+  patch. Codex rollouts are re-parsed once on the next sync.
+
 ## [0.34.11] - 2026-10-26
 
 ### Fixed

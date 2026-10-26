@@ -58,8 +58,8 @@ fn rows_of_a_fixed_reader_are_reparsed_once_after_upgrading() {
     );
     assert_eq!(
         mtime(&conn, "/s/rollout.jsonl"),
-        5,
-        "rollouts are not touched"
+        -1,
+        "a rollout is re-read for its patches that did not apply"
     );
     assert_eq!(
         mtime(&conn, "/g/chats/session-gone.json"),
@@ -74,7 +74,7 @@ fn rows_of_a_fixed_reader_are_reparsed_once_after_upgrading() {
 
     conn.execute(
         "UPDATE files SET mtime = 7, reader = ?2
-         WHERE path IN (?1, '/g/chats/session-a.jsonl', '/c/claude.jsonl')",
+         WHERE path IN (?1, '/g/chats/session-a.jsonl', '/c/claude.jsonl', '/s/rollout.jsonl')",
         params![history, index::READER],
     )
     .unwrap();
@@ -83,10 +83,11 @@ fn rows_of_a_fixed_reader_are_reparsed_once_after_upgrading() {
     assert_eq!(mtime(&conn, history), 7, "only once");
     assert_eq!(mtime(&conn, "/g/chats/session-a.jsonl"), 7, "only once");
     assert_eq!(mtime(&conn, "/c/claude.jsonl"), 7, "only once");
+    assert_eq!(mtime(&conn, "/s/rollout.jsonl"), 7, "only once");
 }
 
 /// Each fix names its own rows: a row already parsed by reader 1 is re-read
-/// only if fix 2 covers it.
+/// only if fix 2 or 3 covers it, and one parsed by reader 2 only if fix 3 does.
 #[test]
 fn each_reader_fix_marks_only_its_rows() {
     let _env = INDEX_ENV.lock().unwrap_or_else(|e| e.into_inner());
@@ -96,15 +97,19 @@ fn each_reader_fix_marks_only_its_rows() {
     std::env::set_var("SESSIONWIKI_DATA", &dir);
 
     let conn = index::open().unwrap();
-    for (path, tool) in [
-        ("/c/one.jsonl", "claude-code"),
-        ("/g/chats/one.jsonl", "gemini"),
-        ("/s/rollout-one.jsonl", "codex"),
+    let history = "/h/thread_history_1.sqlite\u{1f}019a0001";
+    for (path, tool, reader) in [
+        ("/c/one.jsonl", "claude-code", 1),
+        ("/g/chats/one.jsonl", "gemini", 1),
+        ("/s/rollout-one.jsonl", "codex", 1),
+        ("/c/two.jsonl", "claude-code", 2),
+        (history, "codex", 2),
+        ("/s/rollout-two.jsonl", "codex", 2),
     ] {
         conn.execute(
             "INSERT INTO files(path, mtime, size, session_id, tool, project, title, msg_count, kind, reader)
-             VALUES (?1, 5, 5, ?1, ?2, '/p', 't', 1, 'main', 1)",
-            params![path, tool],
+             VALUES (?1, 5, 5, ?1, ?2, '/p', 't', 1, 'main', ?3)",
+            params![path, tool, reader],
         )
         .unwrap();
     }
@@ -118,7 +123,14 @@ fn each_reader_fix_marks_only_its_rows() {
     );
     assert_eq!(
         mtime(&conn, "/s/rollout-one.jsonl"),
-        5,
-        "rollouts are in neither"
+        -1,
+        "fix 3 covers rollouts"
+    );
+    assert_eq!(mtime(&conn, "/c/two.jsonl"), 5, "Claude had fix 2 already");
+    assert_eq!(mtime(&conn, history), 5, "history threads are not in fix 3");
+    assert_eq!(
+        mtime(&conn, "/s/rollout-two.jsonl"),
+        -1,
+        "fix 3 covers rollouts"
     );
 }
