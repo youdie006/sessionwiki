@@ -934,7 +934,7 @@ fn reparse_codex_for_mcp_errors(conn: &Connection) -> Result<()> {
 
 /// Stamped on every `files` row this version parses. Raise it with each reader
 /// fix listed in `reparse_after_reader_fixes`.
-pub const READER: i64 = 2;
+pub const READER: i64 = 3;
 
 /// Mark the live rows a fixed reader produces for a re-parse, so the fix
 /// reaches sessions that never change again. Each fix names its rows and the
@@ -950,6 +950,11 @@ fn reparse_after_reader_fixes(conn: &Connection) -> Result<()> {
         // 2: an edit that was rejected or failed is not a file the session
         // edited.
         (2, format!("(tool = 'claude-code' OR {HISTORY})")),
+        // 3: a rollout's patch that did not apply is not a file it edited.
+        (
+            3,
+            "(tool = 'codex' AND instr(path, char(31)) = 0)".to_owned(),
+        ),
     ];
     let stale = fixes
         .iter()
