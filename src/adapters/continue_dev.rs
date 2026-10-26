@@ -155,7 +155,12 @@ fn parse_session(tool: &'static str, path: &Path) -> Result<Session> {
                     .get("filepath")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                if EDIT_TOOLS.contains(&call.name.as_str()) && !filepath.is_empty() {
+                // An edit that errored or was canceled changed nothing.
+                let failed = call
+                    .id
+                    .as_deref()
+                    .is_some_and(|id| tool_status_is_error(history, id));
+                if EDIT_TOOLS.contains(&call.name.as_str()) && !filepath.is_empty() && !failed {
                     touched.push(filepath.to_owned());
                 }
                 messages.push(Message::tool_call(None, call));

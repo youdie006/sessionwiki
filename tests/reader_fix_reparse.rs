@@ -105,6 +105,10 @@ fn each_reader_fix_marks_only_its_rows() {
         ("/c/two.jsonl", "claude-code", 2),
         (history, "codex", 2),
         ("/s/rollout-two.jsonl", "codex", 2),
+        ("/o/three.db", "opencode", 3),
+        ("/k/three.json", "continue", 3),
+        ("/j/three.jsonl", "gajae-code", 3),
+        ("/s/rollout-three.jsonl", "codex", 3),
     ] {
         conn.execute(
             "INSERT INTO files(path, mtime, size, session_id, tool, project, title, msg_count, kind, reader)
@@ -132,5 +136,13 @@ fn each_reader_fix_marks_only_its_rows() {
         mtime(&conn, "/s/rollout-two.jsonl"),
         -1,
         "fix 3 covers rollouts"
+    );
+    for path in ["/o/three.db", "/k/three.json", "/j/three.jsonl"] {
+        assert_eq!(mtime(&conn, path), -1, "fix 4 covers {path}");
+    }
+    assert_eq!(
+        mtime(&conn, "/s/rollout-three.jsonl"),
+        5,
+        "rollouts had fix 3 already"
     );
 }
