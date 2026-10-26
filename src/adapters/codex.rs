@@ -533,8 +533,9 @@ impl Patches {
         self.calls.push((id, paths));
     }
 
-    /// A script or shell command can fail after its patch applied, so only
-    /// apply_patch's own error says the patch failed.
+    /// A script or shell command can fail after its patch applied, or print
+    /// apply_patch's error text from a log, so it failed only if it failed with
+    /// that error.
     fn result(&mut self, payload: &Value, output: &str, is_error: bool) {
         let Some(id) = call_id(payload) else {
             return;
@@ -542,9 +543,13 @@ impl Patches {
         let Some(&direct) = self.single.get(&id) else {
             return;
         };
-        if output.contains(Self::VERIFY_FAILED)
-            || (direct && (is_error || output.starts_with("aborted by user")))
-        {
+        let verify_failed = output.contains(Self::VERIFY_FAILED);
+        let failed = if direct {
+            is_error || verify_failed || output.starts_with("aborted by user")
+        } else {
+            is_error && verify_failed
+        };
+        if failed {
             self.failed.insert(id);
         }
     }
@@ -554,7 +559,9 @@ impl Patches {
         line.contains("_output\"")
             && (line.contains(Self::VERIFY_FAILED)
                 || line.contains("aborted by user")
-                || line.contains("exit_code"))
+                || line.contains("exit_code")
+                || line.contains("Exit code: ")
+                || line.contains("exited with code "))
     }
 
     fn applied(self) -> Vec<String> {
@@ -892,6 +899,16 @@ mod tests {
                 "exit",
                 json!(r#"{"output":"Failed to find expected lines in src/c.rs","metadata":{"exit_code":1,"duration_seconds":0.0}}"#),
             ),
+            patch("text", "apply_patch", &one("src/t.rs")),
+            output(
+                "text",
+                json!("Exit code: 1\nWall time: 0 seconds\nOutput:\nFailed to find expected lines in src/t.rs"),
+            ),
+            patch("process", "apply_patch", &one("src/u.rs")),
+            output(
+                "process",
+                json!("Process exited with code 1\nOutput:\nFailed to read file to update src/u.rs"),
+            ),
             patch("abort", "apply_patch", &one("src/d.rs")),
             output("abort", json!("aborted by user after 4.2s")),
             patch(
@@ -918,6 +935,19 @@ mod tests {
                 &format!("text(await tools.apply_patch({:?})); boom()", one("src/f.rs")),
             ),
             output("other", script_failed("ReferenceError: boom is not defined")),
+            // A script that applied its patch and then printed the phrase.
+            patch(
+                "printed",
+                "exec",
+                &format!("text(await tools.apply_patch({:?})); text(log)", one("src/p.rs")),
+            ),
+            output(
+                "printed",
+                json!([
+                    {"type":"input_text","text":"Script completed\nWall time 0.2 seconds\nOutput:\n"},
+                    {"type":"input_text","text":"Success. Updated the following files:\nM src/p.rs\nlog: apply_patch verification failed: Failed to find expected lines"}
+                ]),
+            ),
             patch(
                 "two",
                 "exec",
@@ -947,11 +977,12 @@ mod tests {
             + "\n"
     }
 
-    const APPLIED: [&str; 6] = [
+    const APPLIED: [&str; 7] = [
         "src/f.rs",
         "src/g.rs",
         "src/h.rs",
         "src/ok.rs",
+        "src/p.rs",
         "src/pending.rs",
         "src/r.rs",
     ];
