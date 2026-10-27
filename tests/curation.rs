@@ -782,3 +782,33 @@ fn tags_are_nfc_normalized_on_add_filter_and_remove() {
     assert_eq!(index::remove_tag(&conn, "nfc1", nfd).unwrap(), 1);
     assert!(index::tag_counts(&conn).unwrap().is_empty());
 }
+
+/// Codex records a path relative to the folder it ran in, Claude Code a full
+/// one: `src/auth.rs` from `/proj/api` and `/proj/api/src/auth.rs` are one
+/// file, while `src/auth.rs` from `/proj/web` is another.
+#[test]
+fn shared_file_relatedness_reads_relative_paths_against_their_folder() {
+    let _g = LOCK.lock().unwrap();
+    let conn = fresh_index();
+    let t = "2026-06-10T10:00:00+00:00";
+    seed(&conn, "full", "claude-code", "/proj", "full path", t);
+    seed(&conn, "rel", "codex", "/proj/api", "relative path", t);
+    seed(&conn, "cased", "claude-code", "/elsewhere", "other case", t);
+    seed(&conn, "web", "codex", "/proj/web", "another file", t);
+    touch(&conn, "full", "/proj/api/src/auth.rs");
+    touch(&conn, "rel", "src/auth.rs");
+    touch(&conn, "cased", "/proj/API/src/auth.rs");
+    touch(&conn, "web", "src/auth.rs");
+    let ids = |id: &str| -> Vec<String> {
+        let mut v: Vec<String> = index::related(&conn, id, 10)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.session_id)
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(ids("rel"), ["cased", "full"]);
+    assert_eq!(ids("full"), ["cased", "rel"]);
+    assert_eq!(ids("web"), Vec::<String>::new());
+}
