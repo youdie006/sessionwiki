@@ -2778,14 +2778,16 @@ pub fn edits_for_session(
         .replace('_', "\\_");
     let suffix = format!("%/{esc}");
     let mut stmt = conn.prepare(
-        "SELECT session_id, kind, ts, snippet, path
-         FROM edits
-         WHERE session_id = ?1
-           AND (path = ?2 OR path LIKE ?3 ESCAPE '\\'
-                OR (length(?2) > length(path)
-                    AND substr(?2, -length(path)) = path
-                    AND substr(?2, -length(path)-1, 1) = '/'))
-         ORDER BY ts DESC, rowid DESC LIMIT ?4",
+        "SELECT e.session_id, e.kind, e.ts, e.snippet, e.path
+         FROM edits e LEFT JOIN files f ON f.session_id = e.session_id
+         WHERE e.session_id = ?1
+           AND (e.path = ?2 OR e.path LIKE ?3 ESCAPE '\\'
+                OR (length(?2) > length(e.path)
+                    AND substr(?2, -length(e.path)) = e.path
+                    AND substr(?2, -length(e.path)-1, 1) = '/'
+                    AND (substr(?2, 1, 1) <> '/'
+                         OR rtrim(f.project, '/') || '/' || e.path = ?2)))
+         ORDER BY e.ts DESC, e.rowid DESC LIMIT ?4",
     )?;
     let rows = stmt.query_map(params![session_id, q, suffix, sql_limit(limit)], |r| {
         Ok(FileEdit {
@@ -2861,6 +2863,33 @@ pub fn basename_fallback(query: &str) -> Option<String> {
     (!head.is_empty() && !name.is_empty()).then(|| name.to_string())
 }
 
+/// `trace`'s fallback when no session recorded the path: sessions that touched
+/// a file of the same name at a path that is gone - where the file was before
+/// its folder moved. A same-named file that still exists is another file.
+pub fn sessions_for_moved_file(
+    conn: &Connection,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<(SessionRow, String)>> {
+    let Some(name) = basename_fallback(query) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    // A hit carries one of the session's matching paths; another may be the gone one.
+    for (row, _) in sessions_for_file(conn, &name, 500)? {
+        let gone = touched_paths_matching(conn, &row.session_id, &name)?
+            .into_iter()
+            .find(|p| !std::path::Path::new(&row.project).join(p).exists());
+        if let Some(gone) = gone {
+            out.push((row, gone));
+            if out.len() == limit {
+                break;
+            }
+        }
+    }
+    Ok(out)
+}
+
 pub fn sessions_for_file(
     conn: &Connection,
     query: &str,
@@ -2882,7 +2911,8 @@ pub fn sessions_for_file(
          WHERE t.path = ?1 OR t.path LIKE ?2 ESCAPE '\\'
             OR (length(?1) > length(t.path)
                 AND substr(?1, -length(t.path)) = t.path
-                AND substr(?1, -length(t.path)-1, 1) = '/')
+                AND substr(?1, -length(t.path)-1, 1) = '/'
+                AND (substr(?1, 1, 1) <> '/' OR rtrim(f.project, '/') || '/' || t.path = ?1))
          GROUP BY f.session_id
          ORDER BY f.started DESC, f.session_id LIMIT ?3"
     ))?;
@@ -3471,7 +3501,8 @@ mod edits_tests {
         c.execute_batch(
             "CREATE TABLE edits(session_id TEXT NOT NULL, path TEXT NOT NULL,
                  kind TEXT NOT NULL, ts TEXT, snippet TEXT NOT NULL);
-             CREATE INDEX idx_edits_path ON edits(path);",
+             CREATE INDEX idx_edits_path ON edits(path);
+             CREATE TABLE files(session_id TEXT, project TEXT);",
         )
         .unwrap();
         c
@@ -3624,6 +3655,26 @@ mod edits_tests {
         let hits = edits_for_session(&c, "s1", "/p/a.rs", 10).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].snippet, "s1-edit");
+    }
+
+    #[test]
+    fn edits_for_session_reads_a_relative_path_against_the_session_folder() {
+        let c = conn_with_edits();
+        c.execute("INSERT INTO files VALUES ('s1', '/proj/api')", [])
+            .unwrap();
+        let ts = "2026-01-01T00:00:00Z";
+        add(&c, "s1", "/proj/other/README.md", "edit", ts, "other");
+        add(&c, "s1", "README.md", "edit", ts, "own");
+        let snips = |q: &str| -> Vec<String> {
+            edits_for_session(&c, "s1", q, 10)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.snippet)
+                .collect()
+        };
+        assert_eq!(snips("/proj/other/README.md"), ["other"]);
+        assert_eq!(snips("/proj/api/README.md"), ["own"]);
+        assert_eq!(snips("api/README.md"), ["own"]);
     }
 
     #[test]

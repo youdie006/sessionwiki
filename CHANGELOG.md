@@ -6,6 +6,21 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- `trace` with a full path (and the `trace_file` MCP tool, which agents call
+  with one) no longer lists sessions that edited another project's file of the
+  same name. A relative path such as Codex's `README.md` matched any full path
+  ending in it; it now matches only when read against the folder its session
+  ran in. On one machine, 6 of the 8 sessions `trace` gave for this
+  repository's README had edited other projects' READMEs, and such hits could
+  push real ones past the 20-result cap; across 115 files, 140 wrong hits are
+  gone and no right one is lost.
+- When no session recorded a path, `trace` falls back to the file name and
+  says the folder has moved. It now lists only paths that are gone, as a moved
+  folder's would be; before, it listed every same-named file that still exists
+  elsewhere, such as 20 unrelated `.gitignore` files.
+
 ## [0.34.15] - 2026-10-27
 
 ### Fixed

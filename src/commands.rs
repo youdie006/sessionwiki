@@ -1657,10 +1657,8 @@ pub fn trace(path: &str, json: bool, no_sync: bool) -> Result<()> {
     // reporting that nothing ever touched the file.
     let mut by_name = false;
     if hits.is_empty() {
-        if let Some(name) = index::basename_fallback(path) {
-            hits = index::sessions_for_file(&conn, &name, 20)?;
-            by_name = !hits.is_empty();
-        }
+        hits = index::sessions_for_moved_file(&conn, path, 20)?;
+        by_name = !hits.is_empty();
     }
     if json {
         let out: Vec<serde_json::Value> = hits
