@@ -2874,10 +2874,20 @@ pub fn sessions_for_moved_file(
     let Some(name) = basename_fallback(query) else {
         return Ok(Vec::new());
     };
-    let mut hits = sessions_for_file(conn, &name, 500)?;
-    hits.retain(|(r, matched)| !std::path::Path::new(&r.project).join(matched).exists());
-    hits.truncate(limit);
-    Ok(hits)
+    let mut out = Vec::new();
+    // A hit carries one of the session's matching paths; another may be the gone one.
+    for (row, _) in sessions_for_file(conn, &name, 500)? {
+        let gone = touched_paths_matching(conn, &row.session_id, &name)?
+            .into_iter()
+            .find(|p| !std::path::Path::new(&row.project).join(p).exists());
+        if let Some(gone) = gone {
+            out.push((row, gone));
+            if out.len() == limit {
+                break;
+            }
+        }
+    }
+    Ok(out)
 }
 
 pub fn sessions_for_file(

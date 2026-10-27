@@ -263,7 +263,12 @@ fn a_name_match_lists_only_paths_that_are_gone() {
     let t = chrono::DateTime::from_timestamp(1500, 0)
         .unwrap()
         .to_rfc3339();
-    for (id, path) in [("live", "live/x.cfg"), ("gone", "old/x.cfg")] {
+    for (id, path) in [
+        ("live", "live/x.cfg"),
+        ("gone", "old/x.cfg"),
+        ("both", "live/x.cfg"),
+        ("both", "old/x.cfg"),
+    ] {
         seed(&conn, id, "codex", &t);
         conn.execute(
             "INSERT INTO touched(session_id, path) VALUES (?1, ?2)",
@@ -272,10 +277,14 @@ fn a_name_match_lists_only_paths_that_are_gone() {
         .unwrap();
     }
     let query = dir.path().join("new/x.cfg");
-    let ids: Vec<String> = index::sessions_for_moved_file(&conn, &query.to_string_lossy(), 10)
-        .unwrap()
-        .into_iter()
-        .map(|(r, _)| r.session_id)
-        .collect();
-    assert_eq!(ids, ["gone"]);
+    let mut hits: Vec<(String, String)> =
+        index::sessions_for_moved_file(&conn, &query.to_string_lossy(), 10)
+            .unwrap()
+            .into_iter()
+            .map(|(r, matched)| (r.session_id, matched))
+            .collect();
+    hits.sort();
+    let old = dir.path().join("old/x.cfg").to_string_lossy().into_owned();
+    // A session that touched both is kept, and shown with the path that is gone.
+    assert_eq!(hits, [("both".into(), old.clone()), ("gone".into(), old)]);
 }
