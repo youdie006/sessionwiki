@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.19] - 2026-10-27
+
 ### Fixed
 
 - `trace` with a full path (and the `trace_file` MCP tool and the web file
