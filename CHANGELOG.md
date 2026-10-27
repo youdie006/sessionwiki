@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.18] - 2026-10-27
+
 ### Fixed
 
 - In the web UI, clicking a file a Codex session edited showed the history of
