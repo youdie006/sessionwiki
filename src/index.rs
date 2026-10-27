@@ -2876,7 +2876,7 @@ pub fn sessions_for_moved_file(
     };
     let mut out = Vec::new();
     // A hit carries one of the session's matching paths; another may be the gone one.
-    for (row, _) in sessions_for_file(conn, &name, 500)? {
+    for (row, _) in sessions_for_file(conn, &name, usize::MAX)? {
         let gone = touched_paths_matching(conn, &row.session_id, &name)?
             .into_iter()
             .find(|p| !std::path::Path::new(&row.project).join(p).exists());

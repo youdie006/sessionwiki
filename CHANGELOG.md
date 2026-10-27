@@ -6,6 +6,19 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- The "Sessions that touched this file" list under `blame` now names only the
+  sessions its lines are attributed among. It searched by the repository-relative
+  path alone, so it listed sessions that edited a file of the same name in any
+  other project: for `src/main.rs` in this repository all 20 were other
+  projects' files, and for `README.md` all 20 were too. Now a session that
+  edited another existing file of that name is left out, as it already was
+  from the line attribution.
+- `trace`'s file-name fallback looked at the newest 500 sessions with that
+  name and filtered them afterwards, so 500 newer sessions elsewhere could hide
+  a moved file's history. It now filters every match before taking 20.
+
 ## [0.34.16] - 2026-10-27
 
 ### Fixed

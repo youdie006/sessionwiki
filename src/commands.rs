@@ -1715,6 +1715,20 @@ pub fn trace(path: &str, json: bool, no_sync: bool) -> Result<()> {
     Ok(())
 }
 
+/// The sessions listed under a blame: those that touched the file, kept to
+/// the blame's candidates.
+pub fn blame_floor(
+    conn: &rusqlite::Connection,
+    file_query: &str,
+    candidates: &[crate::blame::TouchingSession],
+    limit: usize,
+) -> Result<Vec<(index::SessionRow, String)>> {
+    let mut hits = index::sessions_for_file(conn, file_query, usize::MAX)?;
+    hits.retain(|(r, _)| candidates.iter().any(|c| c.session_id == r.session_id));
+    hits.truncate(limit);
+    Ok(hits)
+}
+
 /// One contiguous line range with its commit and the session attributed to it.
 pub struct BlameRun {
     pub start: usize,
@@ -1732,8 +1746,19 @@ pub fn blame_runs(
     repo_path: &str,
     runs: Vec<crate::blame::Run>,
 ) -> Result<Vec<BlameRun>> {
+    let candidates = blame_candidates(conn, file_query, repo_path)?;
+    Ok(attribute_runs(&candidates, repo_path, runs))
+}
+
+/// The sessions that may have edited `file_query` in the repository at
+/// `repo_path`: those blame attributes lines among.
+pub fn blame_candidates(
+    conn: &rusqlite::Connection,
+    file_query: &str,
+    repo_path: &str,
+) -> Result<Vec<crate::blame::TouchingSession>> {
     use std::collections::HashMap;
-    let mut candidates = index::sessions_touching(conn, file_query)?;
+    let candidates = index::sessions_touching(conn, file_query)?;
     // The match is by path suffix, so it also finds sessions that edited a
     // file of the same name in another repository.
     let target = std::path::Path::new(repo_path).join(file_query);
@@ -1757,15 +1782,21 @@ pub fn blame_runs(
             kept.push(s);
         }
     }
-    candidates = kept;
-    let mut memo: HashMap<String, crate::blame::Attribution> = HashMap::new();
+    Ok(kept)
+}
+
+fn attribute_runs(
+    candidates: &[crate::blame::TouchingSession],
+    repo_path: &str,
+    runs: Vec<crate::blame::Run>,
+) -> Vec<BlameRun> {
+    let mut memo: std::collections::HashMap<String, crate::blame::Attribution> =
+        std::collections::HashMap::new();
     let mut out = Vec::new();
     for r in runs {
         let attr = memo
             .entry(r.commit.clone())
-            .or_insert_with(|| {
-                crate::blame::attribute_commit(r.author_time, repo_path, &candidates)
-            })
+            .or_insert_with(|| crate::blame::attribute_commit(r.author_time, repo_path, candidates))
             .clone();
         out.push(BlameRun {
             start: r.start,
@@ -1775,7 +1806,7 @@ pub fn blame_runs(
             attribution: attr,
         });
     }
-    Ok(out)
+    out
 }
 
 /// git blame for the AI era: attribute each line of a file to the AI session
@@ -1804,11 +1835,12 @@ pub fn blame(file: &str, range: Option<(usize, usize)>, json: bool, no_sync: boo
         .unwrap_or_else(|_| file.to_string());
     let runs = crate::blame::group_runs(&crate::blame::parse_line_porcelain(&raw));
     let repo_path = repo.to_string_lossy().into_owned();
-    let results = blame_runs(&conn, &rel, &repo_path, runs)?;
+    let candidates = blame_candidates(&conn, &rel, &repo_path)?;
+    let results = attribute_runs(&candidates, &repo_path, runs);
     if json {
         print_blame_json(&results)?;
     } else {
-        print_blame_human(file, &rel, &results, &conn)?;
+        print_blame_human(file, &rel, &results, &conn, &candidates)?;
     }
     Ok(())
 }
@@ -1863,6 +1895,7 @@ fn print_blame_human(
     rel: &str,
     runs: &[BlameRun],
     conn: &rusqlite::Connection,
+    candidates: &[crate::blame::TouchingSession],
 ) -> Result<()> {
     use crate::blame::Attribution;
     println!(
@@ -1904,7 +1937,7 @@ fn print_blame_human(
     }
     // File-level floor: the sessions that touched this file, always shown so
     // unattributed/ambiguous lines still have a way back.
-    let hits = index::sessions_for_file(conn, rel, 20)?;
+    let hits = blame_floor(conn, rel, candidates, 20)?;
     if !hits.is_empty() {
         println!(
             "\n{}",

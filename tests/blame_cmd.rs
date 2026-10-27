@@ -254,3 +254,59 @@ fn blame_finds_a_session_that_ran_in_a_subfolder() {
         other => panic!("expected the subfolder session, got {other:?}"),
     }
 }
+
+/// The file-level list under the blame names the same sessions the lines are
+/// attributed among: a session that edited another repository's `a.rs` is not
+/// one that touched this file.
+#[test]
+fn blame_lists_only_sessions_that_may_have_edited_this_file() {
+    let _g = LOCK.lock().unwrap();
+    let conn = fresh();
+    let dir = tempfile::tempdir().unwrap();
+    let parent = dir.path().canonicalize().unwrap();
+    let repo = parent.join("repo");
+    let other = parent.join("other");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("a.rs"), "y\n").unwrap();
+    git(&repo, &["init", "-q"], None);
+    std::fs::write(repo.join("a.rs"), "x\n").unwrap();
+    git(&repo, &["add", "a.rs"], None);
+    git(&repo, &["commit", "-q", "-m", "add"], None);
+    for (id, project) in [("here", &repo), ("there", &other)] {
+        conn.execute(
+            "INSERT INTO files(path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind)
+             VALUES (?1, 0, 0, ?2, 'codex', ?3, ?2, '2026-01-01T00:00:00Z', '2026-01-01T00:10:00Z', 1, 'main')",
+            params![format!("/store/{id}.jsonl"), id, project.to_string_lossy()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO touched(session_id, path) VALUES (?1, 'a.rs')",
+            params![id],
+        )
+        .unwrap();
+    }
+    // Newer sessions elsewhere must not crowd this one out of the list.
+    for i in 0..500 {
+        let id = format!("newer{i}");
+        conn.execute(
+            "INSERT INTO files(path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind)
+             VALUES (?1, 0, 0, ?2, 'codex', ?3, ?2, '2026-02-01T00:00:00Z', '2026-02-01T00:10:00Z', 1, 'main')",
+            params![format!("/store/{id}.jsonl"), id, other.to_string_lossy()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO touched(session_id, path) VALUES (?1, 'a.rs')",
+            params![id],
+        )
+        .unwrap();
+    }
+    let repo_path = repo.to_string_lossy();
+    let candidates = commands::blame_candidates(&conn, "a.rs", &repo_path).unwrap();
+    let ids: Vec<String> = commands::blame_floor(&conn, "a.rs", &candidates, 20)
+        .unwrap()
+        .into_iter()
+        .map(|(r, _)| r.session_id)
+        .collect();
+    assert_eq!(ids, ["here"]);
+}
