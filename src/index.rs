@@ -1921,8 +1921,8 @@ pub fn recent(
         args.push(t.to_string());
     }
     if let Some(p) = project {
-        sql.push_str(" AND project LIKE ?");
-        args.push(format!("%{}%", crate::util::nfc(p)));
+        sql.push_str(" AND project LIKE ? ESCAPE '\\'");
+        args.push(format!("%{}%", escape_like(&crate::util::nfc(p))));
     }
     if let Some(t) = tag {
         sql.push_str(
@@ -2211,8 +2211,8 @@ fn search_fts_terms(
         args.push(Box::new(t.to_string()));
     }
     if let Some(p) = filters.project {
-        sql.push_str(" AND f.project LIKE ?");
-        args.push(Box::new(format!("%{}%", crate::util::nfc(p))));
+        sql.push_str(" AND f.project LIKE ? ESCAPE '\\'");
+        args.push(Box::new(format!("%{}%", escape_like(&crate::util::nfc(p)))));
     }
     sql.push_str(&format!(
         " GROUP BY f.session_id ORDER BY best LIMIT {limit}"
@@ -2322,8 +2322,8 @@ fn search_like_terms(
         args.push(Box::new(t.to_string()));
     }
     if let Some(p) = filters.project {
-        sql.push_str(" AND f.project LIKE ?");
-        args.push(Box::new(format!("%{}%", crate::util::nfc(p))));
+        sql.push_str(" AND f.project LIKE ? ESCAPE '\\'");
+        args.push(Box::new(format!("%{}%", escape_like(&crate::util::nfc(p)))));
     }
     sql.push_str(&format!(
         " GROUP BY f.session_id ORDER BY max(x.mid) DESC LIMIT {limit}"

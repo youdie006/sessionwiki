@@ -568,3 +568,51 @@ fn reindexing_a_session_removes_its_old_external_content_rows() {
         1
     );
 }
+
+/// `--project` is a substring of the folder, taken literally: `_` in a name
+/// such as `my_app` is an underscore, not any character, and `%` is a percent
+/// sign rather than "every project".
+#[test]
+fn the_project_filter_matches_its_text_literally() {
+    let _g = LOCK.lock().unwrap();
+    let (conn, _dir) = fresh_index();
+    for (id, project) in [("under", "/w/my_app"), ("dash", "/w/my-app")] {
+        conn.execute(
+            "INSERT OR REPLACE INTO files
+             (path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind)
+             VALUES (?1, 0, 0, ?2, 'codex', ?3, ?2, '2026-06-10T10:00:00+00:00',
+                     '2026-06-10T10:00:00+00:00', 1, 'main')",
+            params![format!("/fake/{id}.jsonl"), id, project],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages(session_id, role, text) VALUES (?1, 'user', 'deploy ab')",
+            params![id],
+        )
+        .unwrap();
+        let mid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO msgs(rowid, text) VALUES (?1, 'deploy ab')",
+            params![mid],
+        )
+        .unwrap();
+    }
+    let recent = |p: &str| -> Vec<String> {
+        index::recent(&conn, 10, None, Some(p), None, false)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.session_id)
+            .collect()
+    };
+    let search = |q: &str, p: &str| -> Vec<String> {
+        index::search(&conn, q, 10, None, Some(p))
+            .unwrap()
+            .into_iter()
+            .map(|h| h.row.session_id)
+            .collect()
+    };
+    assert_eq!(recent("my_app"), ["under"]);
+    assert_eq!(recent("%"), Vec::<String>::new());
+    assert_eq!(search("deploy", "my_app"), ["under"], "full-text path");
+    assert_eq!(search("ab", "my_app"), ["under"], "short-term path");
+}
