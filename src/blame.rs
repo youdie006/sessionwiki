@@ -109,8 +109,8 @@ pub const LAG_WINDOW_SECS: i64 = 14 * 24 * 3600;
 /// is false only when every matching path - a relative one read against the
 /// session's directory - names another existing file outside this repository's
 /// history. A worktree or clone commits into the same history, so its copy
-/// counts (`same_history` is asked with the copy's directory), and a path that
-/// no longer exists may still have been this file.
+/// counts (`same_history` is asked with the copy's path), and a path that no
+/// longer exists may still have been this file.
 pub fn may_have_edited(
     target: &Path,
     project: &str,
@@ -129,10 +129,7 @@ pub fn may_have_edited(
                 Path::new(project).join(p)
             };
             match std::fs::metadata(&p) {
-                Ok(meta) => {
-                    same_file(&p, &meta, target, &target_meta)
-                        || p.parent().is_some_and(&mut *same_history)
-                }
+                Ok(meta) => same_file(&p, &meta, target, &target_meta) || same_history(&p),
                 Err(_) => true,
             }
         })

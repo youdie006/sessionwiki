@@ -197,3 +197,60 @@ fn blame_ignores_a_session_that_edited_another_repositorys_file() {
         other => panic!("a vanished path must not drop its session, got {other:?}"),
     }
 }
+
+/// A session started in a subfolder records its edits relative to that folder:
+/// Codex run from `repo/sub` patches `x.rs`, which is `sub/x.rs` to `blame`.
+#[test]
+fn blame_finds_a_session_that_ran_in_a_subfolder() {
+    let _g = LOCK.lock().unwrap();
+    let conn = fresh();
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("repo");
+    let other = dir.path().join("other");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    git(&root, &["init", "-q"], None);
+    std::fs::write(root.join("sub/x.rs"), "x\n").unwrap();
+    std::fs::write(root.join("x.rs"), "top\n").unwrap();
+    std::fs::write(other.join("x.rs"), "other\n").unwrap();
+    git(&root, &["add", "."], None);
+    let commit_epoch = 1_000_000_500i64;
+    git(
+        &root,
+        &["commit", "-q", "-m", "add"],
+        Some(&format!("@{commit_epoch} +0000")),
+    );
+    let started = chrono::DateTime::from_timestamp(commit_epoch - 300, 0)
+        .unwrap()
+        .to_rfc3339();
+    let ended = chrono::DateTime::from_timestamp(commit_epoch + 300, 0)
+        .unwrap()
+        .to_rfc3339();
+    let seed = |id: &str, project: &Path| {
+        conn.execute(
+            "INSERT INTO files(path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind)
+             VALUES (?1, 0, 0, ?2, 'codex', ?3, 'fix', ?4, ?5, 1, 'main')",
+            params![format!("/store/{id}.jsonl"), id, project.to_string_lossy(), started, ended],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO touched(session_id, path) VALUES (?1, 'x.rs')",
+            params![id],
+        )
+        .unwrap();
+    };
+    seed("sub", &root.join("sub"));
+    seed("top", &root);
+    seed("other", &other);
+
+    let file = root.join("sub/x.rs");
+    let repo = blame::repo_root(&file).unwrap();
+    let raw = blame::run_git_blame(&repo, &file, None).unwrap();
+    let runs = blame::group_runs(&blame::parse_line_porcelain(&raw));
+    let results = commands::blame_runs(&conn, "sub/x.rs", &repo.to_string_lossy(), runs).unwrap();
+    match &results[0].attribution {
+        blame::Attribution::Confident(s) => assert_eq!(s.session_id, "sub"),
+        other => panic!("expected the subfolder session, got {other:?}"),
+    }
+}

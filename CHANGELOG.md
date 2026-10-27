@@ -6,6 +6,16 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- `blame` now finds a session that was started in a subfolder of the
+  repository. Codex records an edit relative to the folder it ran in, so a
+  session run from `sub/` that edited `x.rs` never matched the blamed path
+  `sub/x.rs`, and its lines were left unattributed while `trace` listed it. A
+  path that ends the blamed path now counts when, read against the session's
+  folder, it is the blamed file; `x.rs` edited from the repository root is
+  another file and still does not count.
+
 ## [0.34.14] - 2026-10-27
 
 ### Fixed
