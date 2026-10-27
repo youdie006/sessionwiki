@@ -2927,6 +2927,9 @@ pub fn sessions_touching(
         "SELECT f.session_id, f.tool, f.title, f.project, f.started, f.ended, (f.archived_at IS NOT NULL)
          FROM touched t JOIN files f ON f.session_id = t.session_id
          WHERE t.path = ?1 OR t.path LIKE ?2 ESCAPE '\\'
+            OR (length(?1) > length(t.path)
+                AND substr(?1, -length(t.path)) = t.path
+                AND substr(?1, -length(t.path)-1, 1) = '/')
          GROUP BY f.session_id",
     )?;
     let rows = stmt.query_map(params![q, suffix], |r| {
@@ -2955,7 +2958,11 @@ pub fn touched_paths_matching(
     let suffix = format!("%/{}", escape_like(&q));
     let mut stmt = conn.prepare(
         "SELECT path FROM touched
-         WHERE session_id = ?1 AND (path = ?2 OR path LIKE ?3 ESCAPE '\\')",
+         WHERE session_id = ?1
+           AND (path = ?2 OR path LIKE ?3 ESCAPE '\\'
+                OR (length(?2) > length(path)
+                    AND substr(?2, -length(path)) = path
+                    AND substr(?2, -length(path)-1, 1) = '/'))",
     )?;
     let rows = stmt.query_map(params![session_id, q, suffix], |r| r.get(0))?;
     Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)

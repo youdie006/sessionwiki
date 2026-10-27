@@ -1741,12 +1741,16 @@ pub fn blame_runs(
     let target = std::path::Path::new(repo_path).join(file_query);
     let this_repo = crate::blame::RepoId::of(std::path::Path::new(repo_path));
     let mut same: HashMap<std::path::PathBuf, bool> = HashMap::new();
-    let mut same_history = |dir: &std::path::Path| {
-        crate::blame::repo_dir(dir).is_some_and(|repo| {
-            *same
+    // A copy counts only at the same place in a checkout of this repository:
+    // `x.rs` edited from `sub/` is `sub/x.rs`, but from the root it is another file.
+    let mut same_history = |copy: &std::path::Path| {
+        let Some(repo) = copy.parent().and_then(crate::blame::repo_dir) else {
+            return false;
+        };
+        copy.strip_prefix(&repo).ok() == Some(std::path::Path::new(file_query))
+            && *same
                 .entry(repo)
                 .or_insert_with_key(|repo| crate::blame::RepoId::of(repo).same_as(&this_repo))
-        })
     };
     let mut kept = Vec::with_capacity(candidates.len());
     for s in candidates {
