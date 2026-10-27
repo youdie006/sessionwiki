@@ -304,3 +304,39 @@ fn a_name_match_lists_only_paths_that_are_gone() {
     // A session that touched both is kept, and shown with the path that is gone.
     assert_eq!(hits, [("both".into(), old.clone()), ("gone".into(), old)]);
 }
+
+// A file chip on the web session page opens the history of the path it is
+// given; for every touched path, that history must include the session.
+#[test]
+fn a_file_chip_path_finds_its_own_session_and_edits() {
+    let _g = LOCK.lock().unwrap();
+    let conn = fresh("chips");
+    let t = chrono::DateTime::from_timestamp(1500, 0)
+        .unwrap()
+        .to_rfc3339();
+    seed(&conn, "s1", "codex", &t);
+    let touched = ["./src/a.rs", "README.md", "/elsewhere/b.rs"];
+    for p in touched {
+        conn.execute(
+            "INSERT INTO touched(session_id, path) VALUES ('s1', ?1)",
+            params![p],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO edits(session_id, path, kind, ts, snippet) VALUES ('s1', ?1, 'edit', ?2, 'x')",
+            params![p, t],
+        )
+        .unwrap();
+    }
+    let touched: Vec<String> = touched.iter().map(|s| s.to_string()).collect();
+    for chip in index::full_touched_paths("/proj/api", &touched) {
+        let hist = index::evidence_for(&conn, &chip, 100).unwrap();
+        let mine: Vec<_> = hist
+            .sessions
+            .iter()
+            .filter(|s| s.session.session_id == "s1")
+            .collect();
+        assert_eq!(mine.len(), 1, "{chip} lost its session");
+        assert_eq!(mine[0].edits.len(), 1, "{chip} lost its edit");
+    }
+}

@@ -279,6 +279,7 @@ fn api_session(conn: &Connection, id: &str) -> Result<Boxed> {
     let path = std::path::Path::new(&row.path);
     let session = commands::load_session(conn, row)?;
     let mut v = serde_json::to_value(&session)?;
+    v["touched"] = json!(index::full_touched_paths(&row.project, &session.touched));
     if row.archived {
         v["archived"] = json!(true);
     }
@@ -379,6 +380,28 @@ const INDEX_HTML: &str = include_str!("webui.html");
 #[cfg(test)]
 mod tests {
     use super::{host_matches, origin_ok, should_open_browser};
+    use crate::index::full_touched_paths;
+
+    #[test]
+    fn a_relative_touched_path_is_read_against_the_session_folder() {
+        let touched = vec![
+            "README.md".to_string(),
+            "./src/a.rs".to_string(),
+            "/abs/b.rs".to_string(),
+        ];
+        assert_eq!(
+            full_touched_paths("/proj/api", &touched),
+            ["/proj/api/README.md", "/proj/api/./src/a.rs", "/abs/b.rs"]
+        );
+        // No folder to read them against: left as recorded.
+        assert_eq!(full_touched_paths("", &touched), touched);
+        // The same file recorded both ways is one chip.
+        let twice = vec!["README.md".to_string(), "/proj/api/README.md".to_string()];
+        assert_eq!(
+            full_touched_paths("/proj/api", &twice),
+            ["/proj/api/README.md"]
+        );
+    }
 
     #[test]
     fn wsl_never_auto_opens_a_browser() {

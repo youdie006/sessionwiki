@@ -2863,6 +2863,30 @@ pub fn basename_fallback(query: &str) -> Option<String> {
     (!head.is_empty() && !name.is_empty()).then(|| name.to_string())
 }
 
+/// A touched path as a full path. A relative one is relative to the folder the
+/// session ran in, and the file chips query the file's history with it: as a
+/// bare `README.md` it matched every project's README. A file recorded both
+/// ways is listed once.
+pub fn full_touched_paths(project: &str, touched: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    touched
+        .iter()
+        .map(|p| {
+            let path = std::path::Path::new(p);
+            if project.is_empty() || path.is_absolute() {
+                p.clone()
+            } else {
+                // Joined as recorded: the index compares this exact spelling.
+                std::path::Path::new(project)
+                    .join(p)
+                    .to_string_lossy()
+                    .into_owned()
+            }
+        })
+        .filter(|p| seen.insert(p.clone()))
+        .collect()
+}
+
 /// `trace`'s fallback when no session recorded the path: sessions that touched
 /// a file of the same name at a path that is gone - where the file was before
 /// its folder moved. A same-named file that still exists is another file.
