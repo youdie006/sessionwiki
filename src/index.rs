@@ -3199,9 +3199,10 @@ pub fn related(conn: &Connection, session_id: &str, limit: usize) -> Result<Vec<
         // Compare files, not spellings: a relative path is read against its
         // session's folder (`src/auth.rs` from `/proj/api` is the full path
         // another tool recorded; from `/proj/web` it is another file), and
-        // case is ignored as `trace` ignores it.
-        let full = "CASE WHEN t.path LIKE '/%' OR s.project = '' THEN t.path
-                         ELSE rtrim(s.project, '/') || '/' || t.path END";
+        // case is ignored as `trace` ignores it. Only a Unix folder is joined:
+        // a Windows path (`C:\repo\src\a.rs`) is compared as recorded.
+        let full = "CASE WHEN s.project LIKE '/%' AND t.path NOT LIKE '/%'
+                         THEN rtrim(s.project, '/') || '/' || t.path ELSE t.path END";
         let sql = format!(
             "SELECT DISTINCT f.session_id, f.tool, f.path, f.project, f.title, f.started,
                     f.msg_count, f.kind, {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}, (f.archived_at IS NOT NULL)
