@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.17] - 2026-10-27
+
 ### Fixed
 
 - The "Sessions that touched this file" list under `blame` now names only the
