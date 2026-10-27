@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.15] - 2026-10-27
+
 ### Fixed
 
 - `blame` now finds a session that was started in a subfolder of the
