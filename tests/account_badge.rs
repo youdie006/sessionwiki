@@ -276,6 +276,22 @@ fn a_name_match_lists_only_paths_that_are_gone() {
         )
         .unwrap();
     }
+    for i in 0..500 {
+        let id = format!("newer{i}");
+        seed(
+            &conn,
+            &id,
+            "codex",
+            &chrono::DateTime::from_timestamp(9000, 0)
+                .unwrap()
+                .to_rfc3339(),
+        );
+        conn.execute(
+            "INSERT INTO touched(session_id, path) VALUES (?1, ?2)",
+            params![id, dir.path().join("live/x.cfg").to_string_lossy()],
+        )
+        .unwrap();
+    }
     let query = dir.path().join("new/x.cfg");
     let mut hits: Vec<(String, String)> =
         index::sessions_for_moved_file(&conn, &query.to_string_lossy(), 10)

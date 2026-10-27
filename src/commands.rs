@@ -1723,7 +1723,7 @@ pub fn blame_floor(
     candidates: &[crate::blame::TouchingSession],
     limit: usize,
 ) -> Result<Vec<(index::SessionRow, String)>> {
-    let mut hits = index::sessions_for_file(conn, file_query, 500)?;
+    let mut hits = index::sessions_for_file(conn, file_query, usize::MAX)?;
     hits.retain(|(r, _)| candidates.iter().any(|c| c.session_id == r.session_id));
     hits.truncate(limit);
     Ok(hits)

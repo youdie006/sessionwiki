@@ -286,6 +286,21 @@ fn blame_lists_only_sessions_that_may_have_edited_this_file() {
         )
         .unwrap();
     }
+    // Newer sessions elsewhere must not crowd this one out of the list.
+    for i in 0..500 {
+        let id = format!("newer{i}");
+        conn.execute(
+            "INSERT INTO files(path, mtime, size, session_id, tool, project, title, started, ended, msg_count, kind)
+             VALUES (?1, 0, 0, ?2, 'codex', ?3, ?2, '2026-02-01T00:00:00Z', '2026-02-01T00:10:00Z', 1, 'main')",
+            params![format!("/store/{id}.jsonl"), id, other.to_string_lossy()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO touched(session_id, path) VALUES (?1, 'a.rs')",
+            params![id],
+        )
+        .unwrap();
+    }
     let repo_path = repo.to_string_lossy();
     let candidates = commands::blame_candidates(&conn, "a.rs", &repo_path).unwrap();
     let ids: Vec<String> = commands::blame_floor(&conn, "a.rs", &candidates, 20)
