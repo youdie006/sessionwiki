@@ -15,6 +15,14 @@ semantic versioning once it reaches 1.0.
   path that ends the blamed path now counts when, read against the session's
   folder, it is the blamed file; `x.rs` edited from the repository root is
   another file and still does not count.
+- When several sessions fit a commit equally well, `blame` prefers the ones
+  that ran on the repository's path, and that check now compares folders, not
+  text. A session in `/w/deck` counted as running above the repository
+  `/w/deckweb` and could take a line from the session that wrote it, while a
+  session in one of the repository's own subfolders did not count and lost the
+  line to one started in a folder above. Now a subfolder counts, a name that
+  merely starts the same way does not, and a tie between a subfolder and a
+  folder above stays ambiguous.
 
 ## [0.34.14] - 2026-10-27
 
