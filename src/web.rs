@@ -279,7 +279,7 @@ fn api_session(conn: &Connection, id: &str) -> Result<Boxed> {
     let path = std::path::Path::new(&row.path);
     let session = commands::load_session(conn, row)?;
     let mut v = serde_json::to_value(&session)?;
-    v["touched"] = json!(full_touched_paths(&row.project, &session.touched));
+    v["touched"] = json!(index::full_touched_paths(&row.project, &session.touched));
     if row.archived {
         v["archived"] = json!(true);
     }
@@ -296,30 +296,6 @@ fn api_session(conn: &Connection, id: &str) -> Result<Boxed> {
         v["note"] = json!(note);
     }
     json_response(v)
-}
-
-/// A touched path as a full path. A relative one is relative to the folder the
-/// session ran in, and the file chips query the file's history with it: as a
-/// bare `README.md` it matched every project's README. A file recorded both
-/// ways is listed once.
-fn full_touched_paths(project: &str, touched: &[String]) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    touched
-        .iter()
-        .map(|p| {
-            let path = std::path::Path::new(p);
-            if project.is_empty() || path.is_absolute() {
-                p.clone()
-            } else {
-                let p = p.strip_prefix("./").unwrap_or(p);
-                std::path::Path::new(project)
-                    .join(p)
-                    .to_string_lossy()
-                    .into_owned()
-            }
-        })
-        .filter(|p| seen.insert(p.clone()))
-        .collect()
 }
 
 /// Delegate to SessionRow's Serialize derive so the web JSON and the CLI
@@ -403,7 +379,8 @@ const INDEX_HTML: &str = include_str!("webui.html");
 
 #[cfg(test)]
 mod tests {
-    use super::{full_touched_paths, host_matches, origin_ok, should_open_browser};
+    use super::{host_matches, origin_ok, should_open_browser};
+    use crate::index::full_touched_paths;
 
     #[test]
     fn a_relative_touched_path_is_read_against_the_session_folder() {
@@ -414,7 +391,7 @@ mod tests {
         ];
         assert_eq!(
             full_touched_paths("/proj/api", &touched),
-            ["/proj/api/README.md", "/proj/api/src/a.rs", "/abs/b.rs"]
+            ["/proj/api/README.md", "/proj/api/./src/a.rs", "/abs/b.rs"]
         );
         // No folder to read them against: left as recorded.
         assert_eq!(full_touched_paths("", &touched), touched);
