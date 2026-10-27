@@ -2781,12 +2781,12 @@ pub fn edits_for_session(
         "SELECT e.session_id, e.kind, e.ts, e.snippet, e.path
          FROM edits e LEFT JOIN files f ON f.session_id = e.session_id
          WHERE e.session_id = ?1
-           AND (e.path = ?2 OR e.path LIKE ?3 ESCAPE '\\'
+           AND (e.path = ?2 COLLATE NOCASE OR e.path LIKE ?3 ESCAPE '\\'
                 OR (length(?2) > length(e.path)
-                    AND substr(?2, -length(e.path)) = e.path
+                    AND substr(?2, -length(e.path)) = e.path COLLATE NOCASE
                     AND substr(?2, -length(e.path)-1, 1) = '/'
                     AND (substr(?2, 1, 1) <> '/'
-                         OR rtrim(f.project, '/') || '/' || e.path = ?2)))
+                         OR rtrim(f.project, '/') || '/' || e.path = ?2 COLLATE NOCASE)))
          ORDER BY e.ts DESC, e.rowid DESC LIMIT ?4",
     )?;
     let rows = stmt.query_map(params![session_id, q, suffix, sql_limit(limit)], |r| {
@@ -2840,10 +2840,6 @@ pub fn evidence_for(conn: &Connection, path: &str, limit: usize) -> Result<FileH
     })
 }
 
-/// Sessions that touched a file, newest first - the reverse provenance link.
-/// Matches either the exact stored path or any stored path ending in the
-/// query, so a relative `src/auth.rs` finds `/home/me/proj/src/auth.rs`. The
-/// matched stored path is returned alongside each session.
 /// The file name to retry with when a full path traces to nothing.
 ///
 /// Folders get renamed. A session recorded `~/Project/lunch/diag.py`; the folder
@@ -2914,6 +2910,10 @@ pub fn sessions_for_moved_file(
     Ok(out)
 }
 
+/// Sessions that touched a file, newest first - the reverse provenance link.
+/// Matches either the exact stored path or any stored path ending in the
+/// query, so a relative `src/auth.rs` finds `/home/me/proj/src/auth.rs`. The
+/// matched stored path is returned alongside each session.
 pub fn sessions_for_file(
     conn: &Connection,
     query: &str,
@@ -2928,15 +2928,18 @@ pub fn sessions_for_file(
         .replace('%', "\\%")
         .replace('_', "\\_");
     let suffix = format!("%/{esc}");
+    // Paths compare ignoring case, as LIKE already does: on a case-insensitive
+    // filesystem a tool records a path in whatever case it was typed.
     let mut stmt = conn.prepare(&format!(
         "SELECT f.session_id, f.tool, f.path, f.project, f.title, f.started, f.msg_count, f.kind,
                 {SUMMARY_SQL}, {TAGS_SQL}, t.path, (f.archived_at IS NOT NULL)
          FROM touched t JOIN files f ON f.session_id = t.session_id
-         WHERE t.path = ?1 OR t.path LIKE ?2 ESCAPE '\\'
+         WHERE t.path = ?1 COLLATE NOCASE OR t.path LIKE ?2 ESCAPE '\\'
             OR (length(?1) > length(t.path)
-                AND substr(?1, -length(t.path)) = t.path
+                AND substr(?1, -length(t.path)) = t.path COLLATE NOCASE
                 AND substr(?1, -length(t.path)-1, 1) = '/'
-                AND (substr(?1, 1, 1) <> '/' OR rtrim(f.project, '/') || '/' || t.path = ?1))
+                AND (substr(?1, 1, 1) <> '/'
+                     OR rtrim(f.project, '/') || '/' || t.path = ?1 COLLATE NOCASE))
          GROUP BY f.session_id
          ORDER BY f.started DESC, f.session_id LIMIT ?3"
     ))?;
