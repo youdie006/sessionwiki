@@ -6,6 +6,18 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- `trace` with a full path (and the `trace_file` MCP tool and the web file
+  history) now finds a session that recorded the path in another letter case.
+  On a case-insensitive filesystem (WSL's `/mnt/<drive>`, macOS by default) a
+  tool records a path as it was typed, so `APO/scripts/x.py` and the editor's
+  `APO/Scripts/x.py` are one file; a relative query already matched either
+  case, a full one did not and could report that no session touched the file.
+  On one machine 1488 of 10461 recorded paths differ from the on-disk case;
+  traced by their on-disk spelling, a sample of 60 was found 15 times before
+  and 59 times now (the other is past the 20-result cap).
+
 ## [0.34.18] - 2026-10-27
 
 ### Fixed
