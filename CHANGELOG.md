@@ -15,6 +15,9 @@ semantic versioning once it reaches 1.0.
   projects' files, and for `README.md` all 20 were too. Now a session that
   edited another existing file of that name is left out, as it already was
   from the line attribution.
+- `trace`'s file-name fallback looked at the newest 500 sessions with that
+  name and filtered them afterwards, so 500 newer sessions elsewhere could hide
+  a moved file's history. It now filters every match before taking 20.
 
 ## [0.34.16] - 2026-10-27
 
