@@ -6,6 +6,16 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- In the web UI, clicking a file a Codex session edited showed the history of
+  every file with that name. The session page listed the path as recorded,
+  relative to the session's folder (`README.md`), and the file history searched
+  for it as given: for one session, 100 sessions across unrelated projects
+  instead of the 4 that touched its README. The session page now lists each
+  path in full, read against the session's folder, and a file recorded both
+  ways appears once.
+
 ## [0.34.17] - 2026-10-27
 
 ### Fixed
