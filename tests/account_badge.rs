@@ -195,11 +195,87 @@ fn trace_matches_absolute_query_against_relative_stored_path() {
         [],
     )
     .unwrap();
-    let hit = index::sessions_for_file(&conn, "/home/dev/api/src/db-pool.ts", 10).unwrap();
+    let hit = index::sessions_for_file(&conn, "/proj/api/src/db-pool.ts", 10).unwrap();
     assert_eq!(hit.len(), 1, "absolute query reaches the relative path");
     // Boundary is honored: a different file with the same suffix chars only.
-    let miss = index::sessions_for_file(&conn, "/home/dev/api/srcx/db-pool.ts", 10).unwrap();
+    let miss = index::sessions_for_file(&conn, "/proj/api/srcx/db-pool.ts", 10).unwrap();
     assert!(miss.len() <= 1, "no metachar explosion");
     let none = index::sessions_for_file(&conn, "/home/dev/b-pool.ts", 10).unwrap();
     assert!(none.is_empty(), "substring-without-boundary must not match");
+}
+
+// A relative path is relative to the folder the session ran in, so an absolute
+// query reaches it only through that folder: `README.md` edited in another
+// project is another file.
+#[test]
+fn trace_reads_a_relative_stored_path_against_its_session_folder() {
+    let _g = LOCK.lock().unwrap();
+    let conn = fresh("anchored");
+    let t = chrono::DateTime::from_timestamp(1500, 0)
+        .unwrap()
+        .to_rfc3339();
+    seed(&conn, "here", "codex", &t);
+    seed(&conn, "there", "codex", &t);
+    conn.execute(
+        "UPDATE files SET project = '/proj/other' WHERE session_id = 'there'",
+        [],
+    )
+    .unwrap();
+    for id in ["here", "there"] {
+        conn.execute(
+            "INSERT INTO touched(session_id, path) VALUES (?1, 'README.md')",
+            params![id],
+        )
+        .unwrap();
+    }
+    let ids = |q: &str| -> Vec<String> {
+        index::sessions_for_file(&conn, q, 10)
+            .unwrap()
+            .into_iter()
+            .map(|(r, _)| r.session_id)
+            .collect()
+    };
+    assert_eq!(ids("/proj/api/README.md"), ["here"]);
+    assert_eq!(ids("/proj/other/README.md"), ["there"]);
+    assert_eq!(ids("/proj/README.md"), Vec::<String>::new());
+    let mut both = ids("README.md");
+    both.sort();
+    assert_eq!(
+        both,
+        ["here", "there"],
+        "a bare name still finds every spelling"
+    );
+    // A relative query has no folder to read the path against.
+    let mut tail = ids("api/README.md");
+    tail.sort();
+    assert_eq!(tail, ["here", "there"]);
+}
+
+// The name fallback stands for a folder that moved: the old path is gone. A
+// file of the same name that still exists elsewhere is another file.
+#[test]
+fn a_name_match_lists_only_paths_that_are_gone() {
+    let _g = LOCK.lock().unwrap();
+    let conn = fresh("moved");
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("live")).unwrap();
+    std::fs::write(dir.path().join("live/x.cfg"), "").unwrap();
+    let t = chrono::DateTime::from_timestamp(1500, 0)
+        .unwrap()
+        .to_rfc3339();
+    for (id, path) in [("live", "live/x.cfg"), ("gone", "old/x.cfg")] {
+        seed(&conn, id, "codex", &t);
+        conn.execute(
+            "INSERT INTO touched(session_id, path) VALUES (?1, ?2)",
+            params![id, dir.path().join(path).to_string_lossy()],
+        )
+        .unwrap();
+    }
+    let query = dir.path().join("new/x.cfg");
+    let ids: Vec<String> = index::sessions_for_moved_file(&conn, &query.to_string_lossy(), 10)
+        .unwrap()
+        .into_iter()
+        .map(|(r, _)| r.session_id)
+        .collect();
+    assert_eq!(ids, ["gone"]);
 }
