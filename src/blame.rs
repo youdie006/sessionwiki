@@ -242,14 +242,18 @@ fn origin_url(config: &str) -> Option<String> {
     None
 }
 
-fn project_is_ancestor(project: &str, repo_path: &str) -> bool {
-    !project.is_empty() && repo_path.starts_with(project)
+/// Whether a session ran on the repository's path: in it, in a folder above
+/// it, or in one of its subfolders. Compared by component, so `/w/deck` is not
+/// above `/w/deckweb`.
+fn project_on_repo_path(project: &str, repo_path: &str) -> bool {
+    let (project, repo) = (Path::new(project), Path::new(repo_path));
+    !project.as_os_str().is_empty() && (repo.starts_with(project) || project.starts_with(repo))
 }
 
 /// Map a commit's author-time to the session most likely behind it, among the
 /// sessions that touched the file. (a) sessions whose [started,ended] window
 /// contains author_time; (b) else the most recent session that ended at/before
-/// author_time within LAG_WINDOW_SECS; project-ancestor breaks ties. >=2 keep
+/// author_time within LAG_WINDOW_SECS; a project on the repo's path breaks ties. >=2 keep
 /// as ambiguous; none -> unattributed.
 pub fn attribute_commit(
     author_time: i64,
@@ -290,16 +294,16 @@ pub fn attribute_commit(
 }
 
 fn disambiguate(mut tied: Vec<&TouchingSession>, repo_path: &str) -> Attribution {
-    let ancestors: Vec<&TouchingSession> = tied
+    let on_path: Vec<&TouchingSession> = tied
         .iter()
         .copied()
-        .filter(|s| project_is_ancestor(&s.project, repo_path))
+        .filter(|s| project_on_repo_path(&s.project, repo_path))
         .collect();
-    if ancestors.len() == 1 {
-        return Attribution::Confident(ancestors[0].clone());
+    if on_path.len() == 1 {
+        return Attribution::Confident(on_path[0].clone());
     }
-    if !ancestors.is_empty() {
-        tied = ancestors;
+    if !on_path.is_empty() {
+        tied = on_path;
     }
     Attribution::Ambiguous(tied.into_iter().cloned().collect())
 }
@@ -486,6 +490,27 @@ mod tests {
         match attribute_commit(1000, "/repo/src", &[a, b]) {
             Attribution::Confident(s) => assert_eq!(s.session_id, "b"),
             other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_tie_is_broken_by_folders_on_the_repositorys_path() {
+        let deck = sess("deck", 100, 500, "/w/deck");
+        let web = sess("web", 100, 500, "/w/deckweb");
+        match attribute_commit(1000, "/w/deckweb", &[deck, web]) {
+            Attribution::Confident(s) => assert_eq!(s.session_id, "web"),
+            other => panic!("a name prefix is not a parent folder: {other:?}"),
+        }
+        let other = sess("other", 100, 500, "/other");
+        let sub = sess("sub", 100, 500, "/w/r/sub");
+        match attribute_commit(1000, "/w/r", &[other, sub.clone()]) {
+            Attribution::Confident(s) => assert_eq!(s.session_id, "sub"),
+            other => panic!("a subfolder is in the repository: {other:?}"),
+        }
+        let parent = sess("parent", 100, 500, "/w");
+        match attribute_commit(1000, "/w/r", &[parent, sub]) {
+            Attribution::Ambiguous(v) => assert_eq!(v.len(), 2),
+            other => panic!("both are on the repository's path: {other:?}"),
         }
     }
 
