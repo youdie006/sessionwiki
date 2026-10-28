@@ -6,6 +6,14 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- `--project` on `list` and `search` (and the MCP and web filters built on
+  them) takes its text literally. It was a `LIKE` pattern, so `_` in a name
+  matched any character and `%` matched everything: `--project harness_eg`
+  also listed folders named `...-harness-eg`, 65 of the first 200 rows on one
+  machine.
+
 ## [0.34.19] - 2026-10-27
 
 ### Fixed
