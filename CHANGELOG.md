@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.20] - 2026-10-28
+
 ### Fixed
 
 - `--project` on `list` and `search` (and the MCP and web filters built on
