@@ -100,7 +100,7 @@ fn safe_cwd(tool: &str, path: &Path, project: &str) -> (Option<PathBuf>, bool) {
         // No directory claim; resuming in the user's own shell cwd is fine.
         return (None, true);
     }
-    let Ok(canon) = std::fs::canonicalize(project).map(without_verbatim_prefix) else {
+    let Ok(canon) = crate::util::canonicalize_as_recorded(project) else {
         // Recorded directory does not resolve on this machine. Keep the claimed
         // path so the caller can show "run it where the project lives", but it
         // is not verified, so the caller must not auto-launch into it.
@@ -160,21 +160,6 @@ fn claude_cwd(canon: &Path, folder: &str) -> Option<PathBuf> {
     same_dir(&typed, canon).then_some(typed)
 }
 
-/// `canonicalize` on Windows answers `\\?\C:\...`, a spelling no tool records,
-/// so it would never match the folder a session is filed under.
-fn without_verbatim_prefix(path: PathBuf) -> PathBuf {
-    if cfg!(windows) {
-        let s = path.to_string_lossy();
-        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-            return PathBuf::from(format!(r"\\{rest}"));
-        }
-        if let Some(rest) = s.strip_prefix(r"\\?\") {
-            return PathBuf::from(rest);
-        }
-    }
-    path
-}
-
 #[cfg(unix)]
 fn same_dir(a: &Path, b: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
@@ -218,7 +203,7 @@ mod tests {
             Some(dir) => tempfile::tempdir_in(dir).unwrap(),
             None => tempfile::tempdir().unwrap(),
         };
-        let base = without_verbatim_prefix(std::fs::canonicalize(root.path()).unwrap());
+        let base = crate::util::canonicalize_as_recorded(root.path()).unwrap();
         let on_disk = base.join("Brain");
         std::fs::create_dir_all(&on_disk).unwrap();
         let typed = base.join("brain");
@@ -251,7 +236,8 @@ mod tests {
         let proj = base.join("realproj");
         std::fs::create_dir_all(&proj).unwrap();
         // As the tool records it: on Windows `C:\...`, not `\\?\C:\...`.
-        let canon = without_verbatim_prefix(std::fs::canonicalize(&proj).unwrap())
+        let canon = crate::util::canonicalize_as_recorded(&proj)
+            .unwrap()
             .to_string_lossy()
             .to_string();
 

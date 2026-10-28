@@ -17,12 +17,22 @@ semantic versioning once it reaches 1.0.
   conversation has that id, and printed the command instead of running it.
   The spelling is read back from the session's own folder name and used only
   when it reaches the same directory. On one machine this covered 6 sessions.
-- `resume` on Windows runs a Claude Code session in its project folder. Only
-  a path starting with `/` counted as a folder, so a session recorded in
-  `C:\Users\...` was launched from wherever the command was typed, and Claude
-  Code looks a session up by the folder it runs in. A Codex session on Windows now
-  names its folder too, and, as on Linux and macOS, `resume` prints its
-  command rather than launching it there unchecked.
+- On Windows, `resume`, the Claude Code SessionStart brief and `migrate` use
+  a project folder as tools record it. Each resolved the folder with
+  `canonicalize`, which on Windows answers `\\?\C:\...`, a spelling no tool
+  records, and `resume` counted only a path starting with `/` as a folder:
+  - `resume` launched a Claude Code session from wherever the command was
+    typed, and Claude Code looks a session up by the folder it runs in. A
+    Codex session now names its folder too, and, as on Linux and macOS,
+    `resume` prints its command rather than launching it there unchecked.
+  - The SessionStart brief was always empty. Now that it shows, a file
+    outside the project is named by its file name, as on Linux and macOS,
+    not by its full `C:\...` path.
+  - `migrate` copied a Claude Code session into a `----C--...` folder that
+    Claude Code never reads, and printed a `cd` into the `\\?\` path.
+- The SessionStart brief names a file in a sibling folder by its file name.
+  It cut the project's path off as text, so for project `app` a file in
+  `app-old` showed as `-old/notes.md`.
 
 ## [0.34.20] - 2026-10-28
 
