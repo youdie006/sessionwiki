@@ -6,6 +6,18 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- `resume` of a Claude Code session started in a folder typed with other
+  letter case than it has on disk (`cd /mnt/d/myproject/brain` for
+  `/mnt/d/MyProject/Brain`, on Windows, macOS or a Windows drive under WSL)
+  runs it from the folder as it was typed. Claude Code files a session under
+  the path as typed and finds it only from that spelling; sessionwiki started
+  it from the path as stored on disk, where Claude Code answered that no
+  conversation has that id, and printed the command instead of running it.
+  The spelling is read back from the session's own folder name and used only
+  when it reaches the same directory. On one machine this covered 6 sessions.
+
 ## [0.34.20] - 2026-10-28
 
 ### Fixed
