@@ -327,8 +327,10 @@ fn redact_home(p: &str) -> String {
         Some(home) => {
             let home = home.to_string_lossy();
             match p.strip_prefix(home.as_ref()) {
-                Some(rest) => format!("~{rest}"),
-                None => p.to_string(),
+                Some(rest) if rest.is_empty() || rest.starts_with(['/', '\\']) => {
+                    format!("~{rest}")
+                }
+                _ => p.to_string(),
             }
         }
         None => p.to_string(),
@@ -1416,6 +1418,17 @@ mod tests {
                 "username {banned} leaked from {input}: {out}"
             );
         }
+    }
+
+    /// A user whose name starts with this user's has a home of their own.
+    #[test]
+    fn redact_home_keeps_a_longer_name_out_of_this_home() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let other = format!("{}2/proj", home.to_string_lossy());
+        let out = redact_home(&other);
+        assert!(!out.starts_with("~2"), "{other} -> {out}");
     }
 
     #[test]
