@@ -30,6 +30,13 @@ semantic versioning once it reaches 1.0.
     not by its full `C:\...` path.
   - `migrate` copied a Claude Code session into a `----C--...` folder that
     Claude Code never reads, and printed a `cd` into the `\\?\` path.
+- On Windows, `trace`, `blame`, the edits behind a file and the MCP
+  `trace_file` find a file by a relative path or its name. Each matched a
+  relative path only after a `/`, while Windows tools record
+  `D:\p\src\a.rs`, so `trace src\a.rs`, `trace src/a.rs` and `trace a.rs`
+  found nothing and only the full path did; `blame` left every line
+  unattributed. On Windows `\` now reads as `/` on both sides. Elsewhere `\`
+  stays an ordinary character in a name, and nothing changes there.
 - The SessionStart brief names a file in a sibling folder by its file name.
   It cut the project's path off as text, so for project `app` a file in
   `app-old` showed as `-old/notes.md`.
