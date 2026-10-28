@@ -8,6 +8,20 @@ semantic versioning once it reaches 1.0.
 
 ### Fixed
 
+- `--project` on `list` and `search` (and the MCP and web filters built on
+  them) takes its text literally. It was a `LIKE` pattern, so `_` in a name
+  matched any character and `%` matched everything: `--project harness_eg`
+  also listed folders named `...-harness-eg`, 65 of the first 200 rows on one
+  machine.
+- `related` links sessions that edited the same file by the file, not by how
+  each tool spelled its path. Codex records `src/auth.rs` relative to its
+  folder and Claude Code records `/proj/api/src/auth.rs`; the two were never
+  linked, while two relative `notes.md` from unrelated folders were. A relative
+  path is now read against its session's folder, and case is ignored as
+  `trace` ignores it. On one machine, 12 of 300 sampled sessions lost 10 such
+  false links each (all throwaway runs under /tmp sharing `notes.md` or
+  `tmp_a.log`); no related list between real projects changed there, because
+  sessions of the same project usually fill the list first.
 - `migrate` of a Claude Code session to a folder whose path has a space, a
   `:`, `@` or a non-ASCII letter, or is longer than about 200 characters,
   wrote the copy where Claude Code does not look, so `claude --resume` could
