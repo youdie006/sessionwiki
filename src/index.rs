@@ -762,6 +762,7 @@ pub fn open() -> Result<Connection> {
     respell_projects(&conn)?;
     reclassify_codex_subagents(&conn)?;
     resolve_gemini_projects(&conn)?;
+    drop_empty_archives(&conn)?;
     reparse_codex_for_mcp_errors(&conn)?;
     reparse_large_for_provenance(&conn)?;
     reparse_after_reader_fixes(&conn)?;
@@ -770,10 +771,11 @@ pub fn open() -> Result<Connection> {
 
 /// Meta keys holding how far each index fix-up has checked `files`, by rowid.
 /// A rebuild of the cache restarts rowids, so `open` clears these with it.
-const FIXUP_MARKS: [&str; 3] = [
+const FIXUP_MARKS: [&str; 4] = [
     "codex_subagent_upto",
     "project_case_upto",
     "gemini_project_upto",
+    "empty_archive_upto",
 ];
 
 /// The `files` rowids a fix-up has not yet checked: above its mark, up to the
@@ -865,6 +867,42 @@ fn reclassify_codex_subagents(conn: &Connection) -> Result<()> {
                 "UPDATE files SET kind = 'sub' WHERE session_id = ?1 AND tool = 'codex'",
                 vec![session_id],
             ));
+        }
+    }
+    apply_without_waiting(conn, KEY, top, &updates)
+}
+
+/// Drop an archived session with no transcript, as `archive_or_prune` now does
+/// when one disappears. A version before that archived them all, and they
+/// stayed: every Claude Code workflow journal it took for a subagent, listed
+/// with its `wf_*` folder as a project. A session the user tagged, noted or
+/// summarized is kept.
+fn drop_empty_archives(conn: &Connection) -> Result<()> {
+    const KEY: &str = "empty_archive_upto";
+    let (mark, top) = unchecked_rowids(conn, KEY)?;
+    if top <= mark {
+        return Ok(());
+    }
+    let sids: Vec<String> = conn
+        .prepare(
+            "SELECT session_id FROM files f
+             WHERE rowid > ?1 AND rowid <= ?2 AND archived_at IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = f.session_id)
+               AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.session_id = f.session_id)
+               AND NOT EXISTS (SELECT 1 FROM notes n WHERE n.session_id = f.session_id)
+               AND NOT EXISTS (SELECT 1 FROM summaries s WHERE s.session_id = f.session_id)",
+        )?
+        .query_map(params![mark, top], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut updates = Vec::new();
+    for sid in sids {
+        for sql in [
+            "DELETE FROM files WHERE session_id = ?1",
+            "DELETE FROM archive WHERE session_id = ?1",
+            "DELETE FROM touched WHERE session_id = ?1",
+            "DELETE FROM edits WHERE session_id = ?1",
+        ] {
+            updates.push((sql, vec![sid.clone()]));
         }
     }
     apply_without_waiting(conn, KEY, top, &updates)
