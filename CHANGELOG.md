@@ -8,6 +8,11 @@ semantic versioning once it reaches 1.0.
 
 ### Fixed
 
+- `--project` on `list` and `search` (and the MCP and web filters built on
+  them) takes its text literally. It was a `LIKE` pattern, so `_` in a name
+  matched any character and `%` matched everything: `--project harness_eg`
+  also listed folders named `...-harness-eg`, 65 of the first 200 rows on one
+  machine.
 - `related` links sessions that edited the same file by the file, not by how
   each tool spelled its path. Codex records `src/auth.rs` relative to its
   folder and Claude Code records `/proj/api/src/auth.rs`; the two were never
