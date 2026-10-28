@@ -17,6 +17,12 @@ semantic versioning once it reaches 1.0.
   conversation has that id, and printed the command instead of running it.
   The spelling is read back from the session's own folder name and used only
   when it reaches the same directory. On one machine this covered 6 sessions.
+- `resume` on Windows runs a Claude Code session in its project folder. Only
+  a path starting with `/` counted as a folder, so a session recorded in
+  `C:\Users\...` was launched from wherever the command was typed, and Claude
+  Code looks a session up by the folder it runs in. A Codex session on Windows now
+  names its folder too, and, as on Linux and macOS, `resume` prints its
+  command rather than launching it there unchecked.
 
 ## [0.34.20] - 2026-10-28
 
