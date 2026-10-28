@@ -98,16 +98,17 @@ fn validated_input(stdin: &str) -> Option<(String, String)> {
 /// Strip the cwd prefix to keep paths relative (no absolute paths in
 /// agent-facing output); fall back to the basename for out-of-tree paths.
 pub fn relativize(path: &str, cwd: &str) -> String {
-    let cwd = cwd.trim_end_matches('/');
-    if let Some(rest) = path.strip_prefix(cwd) {
-        return rest.trim_start_matches('/').to_string();
+    let p = std::path::Path::new(path);
+    if let Ok(rest) = p.strip_prefix(cwd) {
+        return rest.to_string_lossy().into_owned();
     }
     // Already-relative paths (Codex stores these) are kept as-is; only an
     // absolute path outside the project is reduced to its basename (no leak).
-    if !path.starts_with('/') {
+    if !p.has_root() {
         return path.to_string();
     }
-    path.rsplit('/').next().unwrap_or(path).to_string()
+    p.file_name()
+        .map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned())
 }
 
 /// The SessionStart hook entry point. Reads CC's JSON from stdin (bounded),
@@ -122,7 +123,7 @@ pub fn session_start() {
         return;
     };
     // canonicalize the launch dir; only an existing absolute dir is briefed
-    let Ok(canon) = std::fs::canonicalize(&cwd) else {
+    let Ok(canon) = crate::util::canonicalize_as_recorded(&cwd) else {
         return;
     };
     let canon = canon.to_string_lossy().into_owned();
@@ -231,5 +232,14 @@ mod tests {
         );
         assert_eq!(relativize("src/auth.rs", "/home/me/app"), "src/auth.rs");
         assert_eq!(relativize("/other/x.rs", "/home/me/app"), "x.rs");
+        // a sibling folder is outside the project, not a longer name for it
+        assert_eq!(relativize("/home/me/app-old/x.rs", "/home/me/app"), "x.rs");
+        if cfg!(windows) {
+            assert_eq!(
+                relativize(r"C:\me\app\src\auth.rs", r"C:\me\app"),
+                r"src\auth.rs"
+            );
+            assert_eq!(relativize(r"D:\other\x.rs", r"C:\me\app"), "x.rs");
+        }
     }
 }

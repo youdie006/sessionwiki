@@ -317,6 +317,23 @@ pub fn short_id(s: &str) -> String {
 /// indexed text and the query to NFC makes them line up. Pure ASCII is already
 /// NFC, so this is a cheap near-no-op for English; the cost is per-message and
 /// negligible next to parsing and the SQLite write.
+/// `std::fs::canonicalize`, spelled as tools record a folder. On Windows it
+/// answers `\\?\C:\...`, a spelling no tool records, so it never matched a
+/// recorded project or the folder a session is filed under.
+pub fn canonicalize_as_recorded(path: impl AsRef<Path>) -> std::io::Result<std::path::PathBuf> {
+    let canon = std::fs::canonicalize(path)?;
+    if cfg!(windows) {
+        let s = canon.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+            return Ok(format!(r"\\{rest}").into());
+        }
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            return Ok(rest.into());
+        }
+    }
+    Ok(canon)
+}
+
 pub fn nfc(s: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
     s.nfc().collect()
@@ -479,6 +496,17 @@ pub fn green(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{decoded_lines_windowed, lines_keeping, session_lines_windowed, truncate};
+
+    #[test]
+    fn a_canonical_folder_is_spelled_as_tools_record_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let got = super::canonicalize_as_recorded(dir.path()).unwrap();
+        assert!(!got.to_string_lossy().starts_with(r"\\?\"), "{got:?}");
+        assert_eq!(
+            std::fs::canonicalize(&got).unwrap(),
+            std::fs::canonicalize(dir.path()).unwrap()
+        );
+    }
 
     #[test]
     fn truncate_strips_control_characters() {

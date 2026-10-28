@@ -96,11 +96,11 @@ pub fn for_session(tool: &str, path: &Path, project: &str) -> Option<ResumeInfo>
 /// actually lives in (the folder name encodes the cwd), which a planted file in
 /// some other folder cannot fake.
 fn safe_cwd(tool: &str, path: &Path, project: &str) -> (Option<PathBuf>, bool) {
-    if project.is_empty() || !project.starts_with('/') {
+    if project.is_empty() || !Path::new(project).is_absolute() {
         // No directory claim; resuming in the user's own shell cwd is fine.
         return (None, true);
     }
-    let Ok(canon) = std::fs::canonicalize(project) else {
+    let Ok(canon) = crate::util::canonicalize_as_recorded(project) else {
         // Recorded directory does not resolve on this machine. Keep the claimed
         // path so the caller can show "run it where the project lives", but it
         // is not verified, so the caller must not auto-launch into it.
@@ -203,7 +203,7 @@ mod tests {
             Some(dir) => tempfile::tempdir_in(dir).unwrap(),
             None => tempfile::tempdir().unwrap(),
         };
-        let base = std::fs::canonicalize(root.path()).unwrap();
+        let base = crate::util::canonicalize_as_recorded(root.path()).unwrap();
         let on_disk = base.join("Brain");
         std::fs::create_dir_all(&on_disk).unwrap();
         let typed = base.join("brain");
@@ -235,7 +235,8 @@ mod tests {
         let base = std::env::temp_dir().join(format!("sw-resume-{}", std::process::id()));
         let proj = base.join("realproj");
         std::fs::create_dir_all(&proj).unwrap();
-        let canon = std::fs::canonicalize(&proj)
+        // As the tool records it: on Windows `C:\...`, not `\\?\C:\...`.
+        let canon = crate::util::canonicalize_as_recorded(&proj)
             .unwrap()
             .to_string_lossy()
             .to_string();
@@ -244,11 +245,9 @@ mod tests {
         let good = base
             .join(crate::migrate::claude_project_folder(&canon))
             .join(ID);
-        assert!(
-            for_session("claude-code", &good, &canon)
-                .unwrap()
-                .verified_cwd
-        );
+        let info = for_session("claude-code", &good, &canon).unwrap();
+        assert!(info.verified_cwd);
+        assert_eq!(info.cwd.as_deref(), Some(Path::new(&canon)));
 
         // Same cwd claim, but the file lives under a different folder (a planted
         // session pointing at someone else's directory) -> not trusted.
@@ -262,11 +261,8 @@ mod tests {
         // A recorded directory that doesn't exist on this machine -> not trusted,
         // so resume won't auto-launch into it.
         let cdx = Path::new("/x/rollout-1-0a000000-0000-4000-8000-000000000001.jsonl");
-        assert!(
-            !for_session("codex", cdx, "/no/such/dir/here")
-                .unwrap()
-                .verified_cwd
-        );
+        let gone = base.join("no-such-dir").to_string_lossy().to_string();
+        assert!(!for_session("codex", cdx, &gone).unwrap().verified_cwd);
 
         // Codex/Gemini are never auto-trusted, even for an existing directory:
         // their cwd can't be tied to the session, so a planted one can't make

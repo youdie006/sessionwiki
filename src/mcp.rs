@@ -162,7 +162,7 @@ fn tools_list() -> Value {
                 "properties": {
                     "id": {"type": "string", "description": "The short session id from search_sessions or trace_file."},
                     "limit": {"type": "integer", "description": "Max results, 1-30 (default 8)."},
-                    "exclude_id": {"type": "string", "description": "Drop this session id/prefix from the results (e.g. your own)."}
+                    "exclude_id": {"type": "string", "description": "Drop this session from the results (e.g. your own), by its id or the tool's own session id; a prefix is enough."}
                 },
                 "required": ["id"]
             }
@@ -177,7 +177,7 @@ fn tools_list() -> Value {
                 "properties": {
                     "limit": {"type": "integer", "description": "Max results, 1-30 (default 10)."},
                     "tool": {"type": "string", "description": "Restrict to one tool, e.g. codex or claude-code."},
-                    "exclude_id": {"type": "string", "description": "Drop this session id/prefix from the results (e.g. your own)."}
+                    "exclude_id": {"type": "string", "description": "Drop this session from the results (e.g. your own), by its id or the tool's own session id; a prefix is enough."}
                 }
             }
         }
@@ -416,7 +416,7 @@ fn discovery_rows(rows: &[crate::index::SessionRow], exclude: Option<&str>, limi
     let out: Vec<Value> = rows
         .iter()
         .filter(|r| match exclude {
-            Some(e) if !e.is_empty() => !r.session_id.starts_with(e),
+            Some(e) if !e.is_empty() => !names_row(r, e),
             _ => true,
         })
         .take(limit)
@@ -427,6 +427,16 @@ fn discovery_rows(rows: &[crate::index::SessionRow], exclude: Option<&str>, limi
         })
         .collect();
     json_result(out)
+}
+
+/// Whether `id` names this row as `index::resolve` reads an id: a prefix of
+/// its short id, or of the tool's own (native) id - the one a running agent
+/// knows itself by.
+fn names_row(r: &crate::index::SessionRow, id: &str) -> bool {
+    r.session_id.starts_with(id)
+        || crate::index::looks_like_native_prefix(id)
+            && crate::index::native_id_of(&r.path)
+                .is_some_and(|n| n.starts_with(&id.to_ascii_lowercase()))
 }
 
 /// Discovery: sessions RELATED to one you already have an id for (shared
@@ -1125,6 +1135,31 @@ mod tests {
         )
         .unwrap();
         conn
+    }
+
+    /// A running agent knows its own session by the tool's id (Claude Code
+    /// puts it in CLAUDE_CODE_SESSION_ID), which every `id` argument accepts;
+    /// `exclude_id` drops the session by it too.
+    #[test]
+    fn exclude_id_drops_a_session_by_its_native_id() {
+        let _lock = LOCK.lock().unwrap();
+        std::env::set_var("SESSIONWIKI_TEST_NO_SYNC", "1");
+        let _c = seed_codex_native("sessionwiki-test-mcp-exclude-native");
+        let listed = |exclude: &str| {
+            let (_v, text) = tool("recent_sessions", json!({"exclude_id": exclude}));
+            text.contains("\"cx1\"")
+        };
+        for own in [
+            "cx1",
+            "019eb9b2-1466-7e93-8b85-5b596295e96b",
+            "019EB9B2-1466",
+            "019eb9b2",
+        ] {
+            assert!(!listed(own), "{own}");
+        }
+        for other in ["deadbeef", "019eb9b3", "019eb9b21466", "019"] {
+            assert!(listed(other), "{other}");
+        }
     }
 
     #[test]

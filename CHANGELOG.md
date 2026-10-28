@@ -8,6 +8,11 @@ semantic versioning once it reaches 1.0.
 
 ### Fixed
 
+- `exclude_id` on the MCP `recent_sessions` and `related_sessions` drops a
+  session named by the tool's own session id, as every MCP `id` argument
+  already accepts. A running agent knows itself by that id (Claude Code puts
+  it in `CLAUDE_CODE_SESSION_ID`), and passing it left the agent's own session
+  at the top of "who is around".
 - The MCP tools no longer read another user's home as yours when the name
   starts with yours: with home `/home/me`, a project in `/home/meow/x` was
   shown as `~ow/x`, keeping part of that user's name, and now shows as `~/x`
@@ -21,6 +26,29 @@ semantic versioning once it reaches 1.0.
   conversation has that id, and printed the command instead of running it.
   The spelling is read back from the session's own folder name and used only
   when it reaches the same directory. On one machine this covered 6 sessions.
+- On Windows, `resume`, the Claude Code SessionStart brief and `migrate` use
+  a project folder as tools record it. Each resolved the folder with
+  `canonicalize`, which on Windows answers `\\?\C:\...`, a spelling no tool
+  records, and `resume` counted only a path starting with `/` as a folder:
+  - `resume` launched a Claude Code session from wherever the command was
+    typed, and Claude Code looks a session up by the folder it runs in. A
+    Codex session now names its folder too, and, as on Linux and macOS,
+    `resume` prints its command rather than launching it there unchecked.
+  - The SessionStart brief was always empty. Now that it shows, a file
+    outside the project is named by its file name, as on Linux and macOS,
+    not by its full `C:\...` path.
+  - `migrate` copied a Claude Code session into a `----C--...` folder that
+    Claude Code never reads, and printed a `cd` into the `\\?\` path.
+- On Windows, `trace`, `blame`, the edits behind a file and the MCP
+  `trace_file` find a file by a relative path or its name. Each matched a
+  relative path only after a `/`, while Windows tools record
+  `D:\p\src\a.rs`, so `trace src\a.rs`, `trace src/a.rs` and `trace a.rs`
+  found nothing and only the full path did; `blame` left every line
+  unattributed. On Windows `\` now reads as `/` on both sides. Elsewhere `\`
+  stays an ordinary character in a name, and nothing changes there.
+- The SessionStart brief names a file in a sibling folder by its file name.
+  It cut the project's path off as text, so for project `app` a file in
+  `app-old` showed as `-old/notes.md`.
 
 ## [0.34.20] - 2026-10-28
 
