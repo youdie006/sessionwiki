@@ -8,6 +8,15 @@ semantic versioning once it reaches 1.0.
 
 ### Fixed
 
+- `exclude_id` on the MCP `recent_sessions` and `related_sessions` drops a
+  session named by the tool's own session id, as every MCP `id` argument
+  already accepts. A running agent knows itself by that id (Claude Code puts
+  it in `CLAUDE_CODE_SESSION_ID`), and passing it left the agent's own session
+  at the top of "who is around".
+- The MCP tools no longer read another user's home as yours when the name
+  starts with yours: with home `/home/me`, a project in `/home/meow/x` was
+  shown as `~ow/x`, keeping part of that user's name, and now shows as `~/x`
+  like any other home.
 - Claude Code workflow journals that a version before 0.34.2 indexed as empty
   subagent sessions, and archived once deleted, are dropped when the index
   opens. 0.34.2 stopped indexing them and stopped archiving an empty session,
