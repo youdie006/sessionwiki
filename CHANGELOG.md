@@ -22,6 +22,17 @@ semantic versioning once it reaches 1.0.
   false links each (all throwaway runs under /tmp sharing `notes.md` or
   `tmp_a.log`); no related list between real projects changed there, because
   sessions of the same project usually fill the list first.
+- `migrate` of a Claude Code session to a folder whose path has a space, a
+  `:`, `@` or a non-ASCII letter, or is longer than about 200 characters,
+  wrote the copy where Claude Code does not look, so `claude --resume` could
+  not find it. sessionwiki turned only `/`, `.` and `_` into `-`; Claude Code
+  turns every character but an ASCII letter or digit into `-`, and shortens a
+  long name with a hash. The same rule decides whether `resume` trusts a
+  session's folder, which failed for such folders too. On one machine the
+  folder sessionwiki computes now matches Claude Code's for 706 of 717 Claude
+  Code sessions, up from 693.
+- The `cd ... && claude --resume ...` line `migrate` prints quotes a folder
+  the shell would split, such as `My Folder`.
 
 ## [0.34.19] - 2026-10-27
 
