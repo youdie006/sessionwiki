@@ -3196,13 +3196,23 @@ pub fn related(conn: &Connection, session_id: &str, limit: usize) -> Result<Vec<
     //    signal that two sessions are about the same work, and one no other
     //    session viewer has, since it comes from the provenance link.
     if out.len() < limit {
+        // Compare files, not spellings: a relative path is read against its
+        // session's folder (`src/auth.rs` from `/proj/api` is the full path
+        // another tool recorded; from `/proj/web` it is another file), and
+        // case is ignored as `trace` ignores it. Only a Unix folder is joined:
+        // a Windows path (`C:\repo\src\a.rs`) is compared as recorded.
+        let full = "CASE WHEN s.project LIKE '/%' AND t.path NOT LIKE '/%'
+                         THEN rtrim(s.project, '/') || '/' || t.path ELSE t.path END";
         let sql = format!(
             "SELECT DISTINCT f.session_id, f.tool, f.path, f.project, f.title, f.started,
                     f.msg_count, f.kind, {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}, (f.archived_at IS NOT NULL)
-             FROM touched a
-             JOIN touched b ON a.path = b.path AND b.session_id != a.session_id
-             JOIN files f ON f.session_id = b.session_id
-             WHERE a.session_id = ?1 AND f.kind = 'main'
+             FROM touched t
+             JOIN files s ON s.session_id = t.session_id
+             JOIN files f ON f.session_id = t.session_id
+             WHERE t.session_id != ?1 AND f.kind = 'main'
+               AND ({full}) COLLATE NOCASE IN (
+                   SELECT {full} FROM touched t JOIN files s ON s.session_id = t.session_id
+                   WHERE t.session_id = ?1)
              ORDER BY f.started DESC LIMIT 50"
         );
         let mut stmt = conn.prepare(&sql)?;

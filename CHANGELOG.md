@@ -13,6 +13,15 @@ semantic versioning once it reaches 1.0.
   matched any character and `%` matched everything: `--project harness_eg`
   also listed folders named `...-harness-eg`, 65 of the first 200 rows on one
   machine.
+- `related` links sessions that edited the same file by the file, not by how
+  each tool spelled its path. Codex records `src/auth.rs` relative to its
+  folder and Claude Code records `/proj/api/src/auth.rs`; the two were never
+  linked, while two relative `notes.md` from unrelated folders were. A relative
+  path is now read against its session's folder, and case is ignored as
+  `trace` ignores it. On one machine, 12 of 300 sampled sessions lost 10 such
+  false links each (all throwaway runs under /tmp sharing `notes.md` or
+  `tmp_a.log`); no related list between real projects changed there, because
+  sessions of the same project usually fill the list first.
 
 ## [0.34.19] - 2026-10-27
 
