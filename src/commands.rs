@@ -600,7 +600,10 @@ pub fn migrate_cmd(
             std::fs::write(&dest, serde_json::to_string(&v)?)?;
             report_migrated(&row.path, &dest);
             println!("resume it there (Gemini resume is interactive):");
-            println!("  {}", cyan(&format!("cd {} && gemini", target.display())));
+            println!(
+                "  {}",
+                cyan(&format!("cd {} && gemini", shell_path(&target)))
+            );
             println!("  {}", cyan("then run /chat resume and pick it"));
         }
         other => bail!(
@@ -620,6 +623,24 @@ fn report_migrated(src: &str, dest: &std::path::Path) {
     );
 }
 
+/// A path as a shell word, for a command the user pastes: quoted when the
+/// shell would split it or read something in it (`My Folder`, `it's`).
+fn shell_path(path: &std::path::Path) -> String {
+    let p = path.to_string_lossy();
+    let plain = |c: char| {
+        c.is_ascii_alphanumeric() || "/._-+:@,=~".contains(c) || (cfg!(windows) && c == '\\')
+    };
+    if !p.is_empty() && p.chars().all(plain) {
+        return p.into_owned();
+    }
+    if cfg!(windows) {
+        // cmd has no single quotes, and a Windows path cannot contain '"'.
+        format!("\"{p}\"")
+    } else {
+        format!("'{}'", p.replace('\'', "'\\''"))
+    }
+}
+
 fn print_native_resume(tool: &str, path: &std::path::Path, target: &std::path::Path) {
     if let Some(info) = crate::resume::for_session(tool, path, &target.to_string_lossy()) {
         println!("resume it there:");
@@ -627,7 +648,7 @@ fn print_native_resume(tool: &str, path: &std::path::Path, target: &std::path::P
             "  {}",
             cyan(&format!(
                 "cd {} && {}",
-                target.display(),
+                shell_path(target),
                 info.command_line()
             ))
         );
@@ -2059,6 +2080,18 @@ fn project_label(p: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_printed_cd_quotes_a_folder_the_shell_would_split() {
+        assert_eq!(shell_path(std::path::Path::new("/w/app")), "/w/app");
+        assert_eq!(
+            shell_path(std::path::Path::new("/w/My Folder")),
+            "'/w/My Folder'"
+        );
+        assert_eq!(shell_path(std::path::Path::new("/w/it's")), "'/w/it'\\''s'");
+        assert_eq!(shell_path(std::path::Path::new("/w/a\\b")), "'/w/a\\b'");
+    }
 
     #[test]
     fn a_brief_does_not_carry_credentials_off_the_machine() {

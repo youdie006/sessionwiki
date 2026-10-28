@@ -5,11 +5,6 @@
 
 use sha2::{Digest, Sha256};
 
-/// Claude Code stores a session at `~/.claude/projects/<folder>/<uuid>.jsonl`,
-/// where `<folder>` is the absolute project path with every `/`, `.`, and `_`
-/// turned into `-` (the scheme observed across every project folder on disk).
-/// Resume is scoped to this folder, so migrating to a new directory means
-/// copying the transcript into that directory's folder.
 /// Which Claude store a transcript should be written into.
 ///
 /// A handoff copies a conversation so ANOTHER account can resume it, and with
@@ -35,14 +30,48 @@ pub fn claude_store_root(
     home.join(".claude")
 }
 
+/// The folder Claude Code keeps a project's sessions in, under `projects/`.
+/// Resume is scoped to it, so migrating to a new directory means copying the
+/// transcript into that directory's folder. It is the absolute path with every
+/// UTF-16 unit that is not an ASCII letter or digit turned into '-', and past
+/// 200 characters the first 200 plus '-' and a base-36 hash of the path
+/// (Claude Code 2.1's `replace(/[^a-zA-Z0-9]/g, "-")` and its 32-bit string
+/// hash).
 pub fn claude_project_folder(abs_path: &str) -> String {
-    abs_path
-        .chars()
-        .map(|c| match c {
-            '/' | '.' | '_' => '-',
-            other => other,
+    const MAX: usize = 200;
+    let units: Vec<u16> = abs_path.encode_utf16().collect();
+    let name: String = units
+        .iter()
+        .map(|&u| match u8::try_from(u) {
+            Ok(b) if b.is_ascii_alphanumeric() => char::from(b),
+            _ => '-',
         })
-        .collect()
+        .collect();
+    if name.len() <= MAX {
+        return name;
+    }
+    let hash = units.iter().fold(0i32, |h, &u| {
+        h.wrapping_shl(5).wrapping_sub(h).wrapping_add(i32::from(u))
+    });
+    format!(
+        "{}-{}",
+        &name[..MAX],
+        base36(u64::from(hash.unsigned_abs()))
+    )
+}
+
+fn base36(mut n: u64) -> String {
+    const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut out = Vec::new();
+    loop {
+        out.push(DIGITS[(n % 36) as usize]);
+        n /= 36;
+        if n == 0 {
+            break;
+        }
+    }
+    out.reverse();
+    String::from_utf8(out).unwrap_or_default()
 }
 
 /// Gemini CLI stores chats under `~/.gemini/tmp/<projectHash>/chats/`, where
@@ -63,9 +92,8 @@ mod tests {
 
     #[test]
     fn claude_folder_matches_the_observed_encoding() {
-        // Claude Code names the project folder by turning every '/', '.', and
-        // '_' in the absolute path into '-' (so '.' yields a doubled dash after
-        // the leading separator).
+        // Claude Code names the project folder after the absolute path, so '.'
+        // after a separator yields a doubled dash.
         assert_eq!(
             claude_project_folder("/home/dev/myproject"),
             "-home-dev-myproject"
@@ -81,6 +109,21 @@ mod tests {
         assert_eq!(
             claude_project_folder("/home/dev/a.b/c_d"),
             "-home-dev-a-b-c-d"
+        );
+        // Every character but an ASCII letter or digit becomes '-', one per
+        // UTF-16 unit, as Claude Code's `replace(/[^a-zA-Z0-9]/g, "-")` does.
+        assert_eq!(
+            claude_project_folder("/home/dev/My Folder"),
+            "-home-dev-My-Folder"
+        );
+        assert_eq!(claude_project_folder("/tmp/a:b@c"), "-tmp-a-b-c");
+        assert_eq!(claude_project_folder("/home/dev/한글"), "-home-dev---");
+        // Past 200 characters it keeps the first 200 and appends a hash of the
+        // path, so a deep folder still gets a name the filesystem accepts.
+        let deep = format!("/home/dev/{}app", "deep/".repeat(40));
+        assert_eq!(
+            claude_project_folder(&deep),
+            format!("{}-sguhne", &deep.replace('/', "-")[..200])
         );
     }
 
