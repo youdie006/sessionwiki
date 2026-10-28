@@ -36,6 +36,12 @@ fn live_codex_rows_are_reparsed_once_after_upgrading() {
         )
         .unwrap();
     }
+    // An archived session keeps its messages; one without any is dropped on open.
+    conn.execute(
+        "INSERT INTO messages(session_id, role, text) VALUES ('/s/codex-gone.jsonl', 'user', 'hi')",
+        [],
+    )
+    .unwrap();
     drop(conn);
 
     let conn = index::open().unwrap();

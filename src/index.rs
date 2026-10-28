@@ -762,6 +762,7 @@ pub fn open() -> Result<Connection> {
     respell_projects(&conn)?;
     reclassify_codex_subagents(&conn)?;
     resolve_gemini_projects(&conn)?;
+    drop_empty_archives(&conn)?;
     reparse_codex_for_mcp_errors(&conn)?;
     reparse_large_for_provenance(&conn)?;
     reparse_after_reader_fixes(&conn)?;
@@ -770,10 +771,11 @@ pub fn open() -> Result<Connection> {
 
 /// Meta keys holding how far each index fix-up has checked `files`, by rowid.
 /// A rebuild of the cache restarts rowids, so `open` clears these with it.
-const FIXUP_MARKS: [&str; 3] = [
+const FIXUP_MARKS: [&str; 4] = [
     "codex_subagent_upto",
     "project_case_upto",
     "gemini_project_upto",
+    "empty_archive_upto",
 ];
 
 /// The `files` rowids a fix-up has not yet checked: above its mark, up to the
@@ -868,6 +870,59 @@ fn reclassify_codex_subagents(conn: &Connection) -> Result<()> {
         }
     }
     apply_without_waiting(conn, KEY, top, &updates)
+}
+
+/// Drop an archived session with no transcript, as `archive_or_prune` now does
+/// when one disappears. A version before that archived them all, and they
+/// stayed: every Claude Code workflow journal it took for a subagent, listed
+/// with its `wf_*` folder as a project. A session the user tagged, noted or
+/// summarized is kept.
+fn drop_empty_archives(conn: &Connection) -> Result<()> {
+    const KEY: &str = "empty_archive_upto";
+    let (mark, top) = unchecked_rowids(conn, KEY)?;
+    if top <= mark {
+        return Ok(());
+    }
+    let sids = empty_archive_candidates(conn, mark, top)?;
+    drop_still_empty(conn, KEY, top, &sids)
+}
+
+fn empty_archive_candidates(conn: &Connection, mark: i64, top: i64) -> Result<Vec<String>> {
+    Ok(conn
+        .prepare(
+            "SELECT session_id FROM files f
+             WHERE rowid > ?1 AND rowid <= ?2 AND archived_at IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = f.session_id)
+               AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.session_id = f.session_id)
+               AND NOT EXISTS (SELECT 1 FROM notes n WHERE n.session_id = f.session_id)
+               AND NOT EXISTS (SELECT 1 FROM summaries s WHERE s.session_id = f.session_id)
+             ORDER BY rowid",
+        )?
+        .query_map(params![mark, top], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+/// Delete the candidates, each only if it is still an empty archive: the
+/// write lock is taken after the scan, and a sync may have restored one or the
+/// user tagged it since. `files` goes last, as the others check it.
+fn drop_still_empty(conn: &Connection, key: &str, top: i64, sids: &[String]) -> Result<()> {
+    let still_empty =
+        "EXISTS (SELECT 1 FROM files WHERE session_id = ?1 AND archived_at IS NOT NULL)
+         AND NOT EXISTS (SELECT 1 FROM messages WHERE session_id = ?1)
+         AND NOT EXISTS (SELECT 1 FROM tags WHERE session_id = ?1)
+         AND NOT EXISTS (SELECT 1 FROM notes WHERE session_id = ?1)
+         AND NOT EXISTS (SELECT 1 FROM summaries WHERE session_id = ?1)";
+    let deletes: Vec<String> = ["archive", "touched", "edits", "files"]
+        .iter()
+        .map(|table| format!("DELETE FROM {table} WHERE session_id = ?1 AND {still_empty}"))
+        .collect();
+    let mut updates = Vec::new();
+    for sid in sids {
+        for sql in &deletes {
+            updates.push((sql.as_str(), vec![sid.clone()]));
+        }
+    }
+    apply_without_waiting(conn, key, top, &updates)
 }
 
 /// Replace the store-dir slug that Gemini rows indexed by an older version
@@ -4680,5 +4735,59 @@ mod separator_tests {
                 [false, true, false, true, true]
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod empty_archive_tests {
+    use super::*;
+
+    /// The deletes run under the write lock after the scan; a session a sync
+    /// restored, or the user tagged, in between is kept.
+    #[test]
+    fn a_session_restored_or_tagged_after_the_scan_is_kept() {
+        let c = Connection::open_in_memory().unwrap();
+        create_meta_schema(&c).unwrap();
+        create_cache_schema(&c).unwrap();
+        for sid in ["empty", "restored", "tagged"] {
+            c.execute(
+                "INSERT INTO files(path, mtime, size, session_id, tool, project, title, msg_count,
+                                   kind, archived_at)
+                 VALUES (?1, 0, 0, ?1, 'claude-code', 'wf_1', 't', 0, 'sub', '2026-10-02')",
+                [sid],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO archive(session_id, path, mtime, size, tool, project, title,
+                                     msg_count, kind, transcript, touched, archived_at)
+                 VALUES (?1, ?1, 0, 0, 'claude-code', 'wf_1', 't', 0, 'sub', '[]', '[]',
+                         '2026-10-02')",
+                [sid],
+            )
+            .unwrap();
+        }
+        let sids = empty_archive_candidates(&c, 0, i64::MAX).unwrap();
+        assert_eq!(sids, ["empty", "restored", "tagged"]);
+
+        c.execute_batch(
+            "UPDATE files SET archived_at = NULL WHERE session_id = 'restored';
+             INSERT INTO messages(session_id, role, text) VALUES ('restored', 'user', 'hi');
+             INSERT INTO tags(session_id, tag) VALUES ('tagged', 'keep');",
+        )
+        .unwrap();
+        drop_still_empty(&c, "empty_archive_upto", i64::MAX, &sids).unwrap();
+
+        let left = |table: &str| -> Vec<String> {
+            c.prepare(&format!(
+                "SELECT session_id FROM {table} ORDER BY session_id"
+            ))
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+        };
+        assert_eq!(left("files"), ["restored", "tagged"]);
+        assert_eq!(left("archive"), ["restored", "tagged"]);
     }
 }

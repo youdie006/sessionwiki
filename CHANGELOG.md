@@ -17,6 +17,12 @@ semantic versioning once it reaches 1.0.
   starts with yours: with home `/home/me`, a project in `/home/meow/x` was
   shown as `~ow/x`, keeping part of that user's name, and now shows as `~/x`
   like any other home.
+- Claude Code workflow journals that a version before 0.34.2 indexed as empty
+  subagent sessions, and archived once deleted, are dropped when the index
+  opens. 0.34.2 stopped indexing them and stopped archiving an empty session,
+  but those already archived stayed, each listed with its `wf_*` folder as a
+  project: 81 on one machine. An archived session with no transcript goes
+  unless you tagged, noted or summarized it.
 - `resume` of a Claude Code session started in a folder typed with other
   letter case than it has on disk (`cd /mnt/d/myproject/brain` for
   `/mnt/d/MyProject/Brain`, on Windows, macOS or a Windows drive under WSL)

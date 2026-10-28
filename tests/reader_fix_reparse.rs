@@ -43,6 +43,12 @@ fn rows_of_a_fixed_reader_are_reparsed_once_after_upgrading() {
         )
         .unwrap();
     }
+    // An archived session keeps its messages; one without any is dropped on open.
+    conn.execute(
+        "INSERT INTO messages(session_id, role, text) VALUES ('/g/chats/session-gone.json', 'user', 'hi')",
+        [],
+    )
+    .unwrap();
     drop(conn);
 
     let conn = index::open().unwrap();
