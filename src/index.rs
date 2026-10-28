@@ -1874,7 +1874,7 @@ fn is_uuid_bytes(b: &[u8]) -> bool {
 /// UUID prefix longer than its first 8-hex group must carry a dash (position 8
 /// is always `-`), so a plain-hex string of 9+ chars can only be a short id and
 /// never triggers the native scan - which keeps short-id resolution unchanged.
-fn looks_like_native_prefix(q: &str) -> bool {
+pub(crate) fn looks_like_native_prefix(q: &str) -> bool {
     let len = q.len();
     if !(4..=36).contains(&len) {
         return false;

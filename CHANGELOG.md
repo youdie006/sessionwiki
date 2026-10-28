@@ -8,6 +8,11 @@ semantic versioning once it reaches 1.0.
 
 ### Fixed
 
+- `exclude_id` on the MCP `recent_sessions` and `related_sessions` drops a
+  session named by the tool's own session id, as every MCP `id` argument
+  already accepts. A running agent knows itself by that id (Claude Code puts
+  it in `CLAUDE_CODE_SESSION_ID`), and passing it left the agent's own session
+  at the top of "who is around".
 - `resume` of a Claude Code session started in a folder typed with other
   letter case than it has on disk (`cd /mnt/d/myproject/brain` for
   `/mnt/d/MyProject/Brain`, on Windows, macOS or a Windows drive under WSL)
