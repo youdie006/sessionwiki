@@ -8,6 +8,10 @@ semantic versioning once it reaches 1.0.
 
 ### Fixed
 
+- The MCP tools no longer read another user's home as yours when the name
+  starts with yours: with home `/home/me`, a project in `/home/meow/x` was
+  shown as `~ow/x`, keeping part of that user's name, and now shows as `~/x`
+  like any other home.
 - `resume` of a Claude Code session started in a folder typed with other
   letter case than it has on disk (`cd /mnt/d/myproject/brain` for
   `/mnt/d/MyProject/Brain`, on Windows, macOS or a Windows drive under WSL)
