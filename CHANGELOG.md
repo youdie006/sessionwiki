@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.21] - 2026-10-28
+
 ### Fixed
 
 - `exclude_id` on the MCP `recent_sessions` and `related_sessions` drops a
