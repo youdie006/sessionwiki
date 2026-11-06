@@ -6,6 +6,19 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- A sync no longer rewrites every message of a session that changed. It keeps
+  the stored messages that still match the session file and replaces only
+  those from the first difference on, so a session that gained one message
+  writes one `messages` row and one search-index row and deletes none. Before,
+  each sync deleted and reinserted the whole session, and with the trigram
+  tokenizer a delete costs about as much as an insert: a program that embeds
+  SessionWiki and syncs about 66 active sessions used about half a CPU core
+  continuously. A message that did not change now keeps its id. The search for
+  terms too short for the trigram index lists matches newest first by that id,
+  so it no longer moves a session to the top only because the session changed.
+
 ## [0.34.21] - 2026-10-28
 
 ### Fixed
