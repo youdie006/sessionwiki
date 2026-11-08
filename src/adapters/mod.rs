@@ -11,6 +11,8 @@ mod opencode;
 mod prodex;
 pub use claude_code::ClaudeCode;
 pub(crate) use codex::is_subagent_meta as codex_is_subagent_meta;
+#[cfg(test)]
+pub(crate) use codex::THREAD_SCANS;
 pub use codex::{Codex, CodexHistory};
 pub(crate) use gemini::project_root as gemini_project_root;
 pub use prodex::thread_url_for_task as prodex_thread_url;
