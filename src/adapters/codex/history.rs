@@ -139,6 +139,15 @@ fn thread_tokens(db: &Path) -> Result<Arc<Vec<(String, i64)>>> {
             }
         }
     }
+    // Judged before the scan: a long scan must not make a write that landed
+    // just before it look settled.
+    let settled = fingerprint.filter(|fingerprint| {
+        fingerprint.iter().flatten().all(|(_, modified)| {
+            modified
+                .elapsed()
+                .is_ok_and(|unchanged| unchanged >= SETTLED)
+        })
+    });
     #[cfg(test)]
     THREAD_SCANS.with(|n| n.set(n.get() + 1));
     let conn = open_ro(db)?;
@@ -155,13 +164,6 @@ fn thread_tokens(db: &Path) -> Result<Arc<Vec<(String, i64)>>> {
         }
     }
     let threads = Arc::new(threads);
-    let settled = fingerprint.filter(|fingerprint| {
-        fingerprint.iter().flatten().all(|(_, modified)| {
-            modified
-                .elapsed()
-                .is_ok_and(|unchanged| unchanged >= SETTLED)
-        })
-    });
     if let Some(fingerprint) = settled.filter(|_| complete) {
         scans
             .lock()
