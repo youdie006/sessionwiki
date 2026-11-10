@@ -22,9 +22,10 @@ jobs:
           # Both macOS targets build on the Apple Silicon runner: the macOS SDK
           # is universal, so it cross-compiles x86_64 reliably. The dedicated
           # Intel runner (macos-13) is being deprecated and queues for hours.
-          - os: macos-14
+          # macos-14 was retired from GitHub Actions on 2026-11-02.
+          - os: macos-15
             target: aarch64-apple-darwin
-          - os: macos-14
+          - os: macos-15
             target: x86_64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc

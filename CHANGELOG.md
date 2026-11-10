@@ -6,6 +6,15 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Maintenance
+
+- The release workflow builds the macOS binaries on the `macos-15` runner.
+  GitHub retired `macos-14` from Actions on 2026-11-02, so the macOS builds of
+  0.34.22 were cancelled before they started: that release has only the Linux
+  and Windows archives and was not published to npm, crates.io or Homebrew.
+  This release carries its changes. The signing identity is unchanged, so
+  macOS keeps folder-access grants across the update.
+
 ## [0.34.22] - 2026-11-10
 
 ### Fixed
