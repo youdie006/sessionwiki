@@ -48,7 +48,8 @@ SEMVER_RE = re.compile(
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\Z"
 )
 TITLE_RE = re.compile(
-    r"Bump (?P<name>[A-Za-z0-9][A-Za-z0-9_-]*) "
+    r"(?:Bump|chore\(deps(?:-dev)?\): bump) "
+    r"(?P<name>[A-Za-z0-9][A-Za-z0-9_-]*) "
     r"from (?P<old>\S+) to (?P<new>\S+)\Z"
 )
 REQUIREMENT_RE = re.compile(

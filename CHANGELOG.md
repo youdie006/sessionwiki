@@ -28,6 +28,14 @@ semantic versioning once it reaches 1.0.
   within 10 seconds of a write is not kept, because SQLite can still be
   completing that write.
 
+### Maintenance
+
+- Dependency auto-merge accepts the titles Dependabot gives its pull requests
+  here, `chore(deps): bump X from A to B` (and `chore(deps-dev):` for a
+  development dependency). It matched only `Bump X from A to B`, so it held
+  every update for review, including the patch update of rusqlite to 0.41.1
+  (#123). A title with any other prefix is still held.
+
 ## [0.34.21] - 2026-10-28
 
 ### Fixed

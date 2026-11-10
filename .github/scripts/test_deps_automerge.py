@@ -949,6 +949,9 @@ checksum = "3333333333333333333333333333333333333333333333333333333333333333"
     def test_version_gate_accepts_only_compatible_numeric_increments(self) -> None:
         compatible = [
             "Bump anyhow from 1.0.0 to 1.0.1",
+            # Dependabot's titles once a repository uses Conventional Commits.
+            "chore(deps): bump anyhow from 1.0.0 to 1.0.1",
+            "chore(deps-dev): bump anyhow from 1.0.0 to 1.0.1",
         ]
         for title in compatible:
             with self.subTest(title=title):
@@ -970,6 +973,10 @@ checksum = "3333333333333333333333333333333333333333333333333333333333333333"
             "Bump crate from one to two",
             "Bump dependencies in /crate",
             "Bump a from 1.0.0 to 1.0.1 and b from 2.0.0 to 2.0.1",
+            "chore(deps): bump crate from 0.2.3 to 0.3.0",
+            "fix(deps): bump anyhow from 1.0.0 to 1.0.1",
+            "chore(deps): Bump anyhow from 1.0.0 to 1.0.1",
+            "bump anyhow from 1.0.0 to 1.0.1",
         ]
         for title in rejected:
             with self.subTest(title=title):
