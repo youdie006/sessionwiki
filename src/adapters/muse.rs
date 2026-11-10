@@ -23,8 +23,9 @@ pub struct Muse {
 
 impl Default for Muse {
     fn default() -> Self {
+        let (_, data) = native_directories();
         Self {
-            sessions_root: dirs::data_dir().map(|data| data.join("muse/sessions")),
+            sessions_root: data.map(|data| data.join("muse/sessions")),
         }
     }
 }
@@ -35,12 +36,9 @@ impl Muse {
     /// their data under `<home>/.data/muse/sessions`.
     pub fn in_home(home: impl Into<PathBuf>) -> Self {
         let home = home.into();
+        let (config, data) = native_directories();
         Self {
-            sessions_root: sessions_root_at(
-                &home,
-                dirs::config_dir().as_deref(),
-                dirs::data_dir().as_deref(),
-            ),
+            sessions_root: sessions_root_at(&home, config.as_deref(), data.as_deref()),
         }
     }
 
@@ -50,6 +48,29 @@ impl Muse {
             sessions_root: Some(root.into()),
         }
     }
+}
+
+fn native_directories() -> (Option<PathBuf>, Option<PathBuf>) {
+    let home = dirs::home_dir();
+    let config = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+    let data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from);
+    native_directories_at(home.as_deref(), config.as_deref(), data.as_deref())
+}
+
+// Muse uses XDG directories on every platform, including macOS and Windows.
+// Relative/empty XDG values are invalid and use the home-relative defaults.
+fn native_directories_at(
+    home: Option<&Path>,
+    config: Option<&Path>,
+    data: Option<&Path>,
+) -> (Option<PathBuf>, Option<PathBuf>) {
+    let resolve = |override_path: Option<&Path>, fallback: &str| {
+        override_path
+            .filter(|path| path.is_absolute())
+            .map(Path::to_path_buf)
+            .or_else(|| home.map(|home| home.join(fallback)))
+    };
+    (resolve(config, ".config"), resolve(data, ".local/share"))
 }
 
 fn sessions_root_at(home: &Path, config: Option<&Path>, data: Option<&Path>) -> Option<PathBuf> {
@@ -148,10 +169,14 @@ impl Adapter for Muse {
         self.parse(Path::new(key))
     }
 
+    fn modified_at(&self, key: &str) -> Option<DateTime<Utc>> {
+        std::fs::metadata(key).ok()?.modified().ok().map(Into::into)
+    }
+
     fn parse(&self, path: &Path) -> Result<Session> {
         let metadata = std::fs::symlink_metadata(path)?;
         ensure!(metadata.is_file(), "Muse session is not a regular file");
-        let (lines, _windowed) = crate::util::session_lines(path)?;
+        let (lines, windowed) = crate::util::session_lines(path)?;
         // A retained permission frame may precede the first ordinary record.
         // Determine the outer stream first to exclude unrelated child streams.
         let stream = lines.iter().find_map(|line| {
@@ -163,22 +188,18 @@ impl Adapter for Muse {
         });
         let mut projection = Projection::default();
         for line in lines {
-            let Ok(value) = serde_json::from_str::<Value>(&line) else {
-                continue;
+            projection.line(&line, stream.as_deref());
+        }
+        if windowed {
+            // Read the whole log one line at a time for provenance. This pass
+            // keeps only edited paths and tool deduplication ids: conversation
+            // and structured tool messages remain confined to the window.
+            let mut provenance = Projection {
+                provenance_only: true,
+                ..Projection::default()
             };
-            let mut budget = FrameBudget {
-                bytes: 16 * 1024 * 1024,
-                records: 10_000,
-            };
-            flatten(&value, false, 0, &mut budget, &mut |record, retained| {
-                if supported_record(record)
-                    && stream.as_deref().is_none_or(|stream| {
-                        record.pointer("/stream/id").and_then(Value::as_str) == Some(stream)
-                    })
-                {
-                    projection.record(record, retained);
-                }
-            });
+            crate::util::for_each_line(path, |line| provenance.line(line, stream.as_deref()))?;
+            projection.touched = provenance.touched;
         }
         let title = projection
             .title
@@ -336,6 +357,7 @@ fn frame_children(
 
 #[derive(Default)]
 struct Projection {
+    provenance_only: bool,
     cwd: Option<String>,
     title: Option<String>,
     started: Option<DateTime<Utc>>,
@@ -350,7 +372,34 @@ struct Projection {
 }
 
 impl Projection {
+    fn line(&mut self, line: &str, stream: Option<&str>) {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            return;
+        };
+        let mut budget = FrameBudget {
+            bytes: 16 * 1024 * 1024,
+            records: 10_000,
+        };
+        flatten(&value, false, 0, &mut budget, &mut |record, retained| {
+            if supported_record(record)
+                && stream.is_none_or(|stream| {
+                    record.pointer("/stream/id").and_then(Value::as_str) == Some(stream)
+                })
+            {
+                self.record(record, retained);
+            }
+        });
+    }
+
     fn record(&mut self, value: &Value, retained: bool) {
+        if self.provenance_only
+            && !(value["payload_type"] == "runtime.session"
+                && value.pointer("/payload/kind").and_then(Value::as_str) == Some("run")
+                && value.pointer("/payload/event/kind").and_then(Value::as_str)
+                    == Some("assistant_tool_calls_committed"))
+        {
+            return;
+        }
         if !first_id(&mut self.records, value.get("id")) {
             return;
         }
@@ -451,6 +500,9 @@ impl Projection {
             .any(|verb| lower.contains(verb))
         {
             collect_paths(&args, &mut self.touched);
+        }
+        if self.provenance_only {
+            return;
         }
         self.messages.push(Message::tool_call(
             ts,
@@ -651,7 +703,7 @@ mod tests {
             Muse::in_home(private).root(),
             Some(private.join(".data/muse/sessions"))
         );
-        if let Some(config) = dirs::config_dir() {
+        if let Some(config) = native_directories().0 {
             assert_eq!(
                 Muse::in_home(config.join("muse")).root(),
                 Muse::default().root()
@@ -660,6 +712,45 @@ mod tests {
         assert_eq!(
             sessions_root_at(&config.join("muse"), Some(config), None),
             None
+        );
+    }
+
+    #[test]
+    fn native_directories_use_xdg_defaults_on_every_platform() {
+        // These are user homes, not platform application-data directories.
+        // The same path operations apply when built on macOS or Windows.
+        for home in [Path::new("/Users/alice"), Path::new(r"C:\Users\alice")] {
+            assert_eq!(
+                native_directories_at(Some(home), None, None),
+                (Some(home.join(".config")), Some(home.join(".local/share")))
+            );
+            assert_eq!(
+                native_directories_at(
+                    Some(home),
+                    Some(Path::new("relative/config")),
+                    Some(Path::new(""))
+                ),
+                (Some(home.join(".config")), Some(home.join(".local/share")))
+            );
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let config = directory.path().join("custom-config");
+        let data = directory.path().join("custom-data");
+        let (resolved_config, resolved_data) =
+            native_directories_at(None, Some(&config), Some(&data));
+        assert_eq!(resolved_config.as_deref(), Some(config.as_path()));
+        assert_eq!(resolved_data.as_deref(), Some(data.as_path()));
+        assert_eq!(
+            sessions_root_at(
+                &config.join("muse"),
+                resolved_config.as_deref(),
+                resolved_data.as_deref()
+            ),
+            Some(data.join("muse/sessions"))
+        );
+        assert_eq!(
+            native_directories_at(None, Some(Path::new("relative")), None),
+            (None, None)
         );
     }
 
@@ -763,6 +854,13 @@ mod tests {
         );
         assert_eq!(after.keys[0].1, before.keys[0].1 + 1);
         assert_eq!(before.keys[0].1 / 1000, after.keys[0].1 / 1000);
+        assert_eq!(
+            adapter
+                .modified_at(&after.keys[0].0)
+                .unwrap()
+                .timestamp_millis(),
+            after.keys[0].1
+        );
         assert_eq!(
             path.parent()
                 .unwrap()
@@ -1129,5 +1227,75 @@ mod tests {
             texts(&parsed.unwrap(), Role::User),
             ["first prompt", "latest prompt"]
         );
+    }
+
+    #[test]
+    fn windowed_sessions_keep_omitted_edit_provenance_without_growing_messages() {
+        let directory = tempfile::tempdir().unwrap();
+        let tool = |sequence, id: &str, path: &str| {
+            run(
+                sequence,
+                json!({
+                    "kind":"assistant_tool_calls_committed", "tool_calls":[{
+                        "call_id":id, "name":"edit_file", "args":{"path":path, "replacement":"updated"},
+                    }],
+                }),
+            )
+        };
+        let mut foreign = tool(6, "foreign-call", "foreign.rs");
+        foreign["stream"]["id"] = json!("child-session");
+        let records = vec![
+            intent(1, "first", "first prompt"),
+            frame(vec![tool(2, "retained-call", "head.rs")]),
+            run(3, json!({"kind":"padding", "text":"x".repeat(5000)})),
+            intent(4, "middle", "omitted middle conversation"),
+            frame(vec![tool(5, "omitted-call", "middle.rs"), foreign]),
+            run(
+                7,
+                json!({"kind":"tool_result_batch_committed", "results":[{
+                    "tool_call_id":"omitted-call", "text":"omitted output".repeat(100),
+                }]}),
+            ),
+            run(8, json!({"kind":"padding", "text":"x".repeat(5000)})),
+            run(
+                9,
+                json!({"kind":"assistant_message_committed", "message_id":"latest", "text":"latest answer"}),
+            ),
+            intent(10, "last", "latest prompt"),
+        ];
+        let path = write(directory.path(), "session-1/session.jsonl", &records);
+        let adapter = Muse::default();
+        let full = adapter.parse(&path).unwrap();
+        crate::util::TEST_WINDOW.with(|window| window.set(Some((2048, 2048, 2048))));
+        let window_lines = crate::util::session_lines(&path);
+        let parsed = adapter.parse(&path);
+        crate::util::TEST_WINDOW.with(|window| window.set(None));
+        let (window_lines, windowed) = window_lines.unwrap();
+        assert!(windowed);
+        assert!(!window_lines.iter().any(|line| line.contains("middle.rs")));
+        let parsed = parsed.unwrap();
+        assert_eq!(parsed.touched, full.touched);
+        assert_eq!(parsed.touched, ["head.rs", "middle.rs"]);
+        assert_eq!(parsed.messages.len(), 4);
+        assert!(parsed.messages.len() < full.messages.len());
+        assert_eq!(
+            texts(&parsed, Role::User),
+            ["first prompt", "latest prompt"]
+        );
+        assert_eq!(texts(&parsed, Role::Assistant), ["latest answer"]);
+        let calls: Vec<_> = parsed
+            .messages
+            .iter()
+            .filter_map(|message| match &message.tool {
+                Some(ToolEvent::Part(ToolPart::Call(call))) => Some(call),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            calls.len(),
+            1,
+            "the head's retained call is not duplicated by the provenance pass"
+        );
+        assert_eq!(calls[0].id.as_deref(), Some("retained-call"));
     }
 }
