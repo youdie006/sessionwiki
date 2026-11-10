@@ -6,7 +6,7 @@ use super::super::{
     title_from_messages, Store,
 };
 use crate::model::{EditEvent, EditKind, Message, Role, Session, ToolCall, ToolResult};
-use crate::util::{session_lines, short_id};
+use crate::util::{for_each_line, session_lines, short_id};
 use anyhow::{bail, ensure, Context, Result};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -162,7 +162,7 @@ fn change_token(path: &Path, meta: &Metadata) -> Result<i64> {
     Ok(((hash & ((1 << 62) - 1)) | (1 << 62)) as i64)
 }
 
-pub(super) fn parse(key: &str) -> Result<Session> {
+fn checked_directory(key: &str) -> Result<&Path> {
     let dir = Path::new(key);
     // Do not follow a project/session symlink, including when a formerly
     // discovered directory was replaced between enumeration and parsing.
@@ -172,6 +172,18 @@ pub(super) fn parse(key: &str) -> Result<Session> {
             "native session path is not a directory"
         );
     }
+    Ok(dir)
+}
+
+/// Actual backing-file activity time, independent of the opaque change token.
+pub(super) fn modified_at(key: &str) -> Option<DateTime<Utc>> {
+    let dir = checked_directory(key).ok()?;
+    let selected = select_generation(dir).ok()??;
+    Some(regular_file(&selected.path).ok()?.modified().ok()?.into())
+}
+
+pub(super) fn parse(key: &str) -> Result<Session> {
+    let dir = checked_directory(key)?;
     let selected = select_generation(dir)?.context("native session has no committed generation")?;
     ensure!(
         selected.version <= CURRENT_VERSION,
@@ -309,18 +321,23 @@ pub(super) fn parse(key: &str) -> Result<Session> {
         }
     }
 
+    let edits: Vec<_> = if windowed {
+        // The bounded conversation window omits most tool calls and results.
+        // Recover provenance one row at a time, retaining only edit evidence.
+        complete_edits(&selected.path)?
+    } else {
+        edits
+            .into_iter()
+            .filter(|(id, _)| !failed.contains(id))
+            .map(|(_, e)| e)
+            .collect()
+    };
     let after = select_generation(dir)?.context("native generation disappeared while reading")?;
     ensure!(
         after.path == selected.path
             && change_token(&after.path, &regular_file(&after.path)?)? == before,
         "native session changed while reading; retry on the next sync"
     );
-    let edits: Vec<_> = edits
-        .into_iter()
-        // An omitted middle result cannot establish a pending edit's success.
-        .filter(|(id, _)| !failed.contains(id) && (!windowed || results.contains(id)))
-        .map(|(_, e)| e)
-        .collect();
     let touched = dedup_paths(edits.iter().map(|edit| edit.path.clone()).collect());
     let title = title
         .or(human_title)
@@ -342,6 +359,86 @@ pub(super) fn parse(key: &str) -> Result<Session> {
         touched,
         edits,
     })
+}
+
+fn complete_edits(path: &Path) -> Result<Vec<EditEvent>> {
+    let mut edits = Vec::new();
+    let mut calls = HashSet::new();
+    let mut failed = HashSet::new();
+    let mut error = None;
+    for_each_line(path, |raw| {
+        if error.is_some() || raw.trim().is_empty() {
+            return;
+        }
+        let row = match serde_json::from_str::<Value>(raw) {
+            Ok(row) => row,
+            Err(e) => {
+                error =
+                    Some(anyhow::Error::new(e).context("invalid native session provenance event"));
+                return;
+            }
+        };
+        let data = &row["data"];
+        let kind = row["type"].as_str();
+        match kind {
+            Some("tool/call" | "tool/code-dispatch-start" | "tool/code-dispatch") => {
+                let id_field = if kind == Some("tool/call") {
+                    "callId"
+                } else {
+                    "subCallId"
+                };
+                if let (Some(id), Some(name)) = (data[id_field].as_str(), data["name"].as_str()) {
+                    if matches!(name, "write" | "edit" | "str_replace_editor")
+                        && !calls.contains(id)
+                    {
+                        let mut args = arguments(data);
+                        redact_values(&mut args);
+                        if let Some(edit) = edit_event(name, &args, timestamp(&row["time"])) {
+                            calls.insert(id.to_owned());
+                            edits.push((id.to_owned(), edit));
+                        }
+                    }
+                    if kind == Some("tool/code-dispatch")
+                        && data["isError"] == true
+                        && calls.contains(id)
+                    {
+                        failed.insert(id.to_owned());
+                    }
+                }
+            }
+            Some("tool/result") => {
+                if let Some(blocks) = data["message"]["content"].as_array() {
+                    for block in blocks.iter().filter(|b| b["type"] == "tool-result") {
+                        if block["isError"] == true
+                            || data.get("error").is_some_and(|v| !v.is_null())
+                        {
+                            if let Some(id) = block["toolCallId"]
+                                .as_str()
+                                .or_else(|| data["message"]["source"]["callId"].as_str())
+                                .filter(|id| calls.contains(*id))
+                            {
+                                failed.insert(id.to_owned());
+                            }
+                        }
+                    }
+                }
+            }
+            None => {
+                error = Some(anyhow::anyhow!(
+                    "native session provenance event has no type"
+                ))
+            }
+            _ => {}
+        }
+    })?;
+    if let Some(error) = error {
+        return Err(error);
+    }
+    Ok(edits
+        .into_iter()
+        .filter(|(id, _)| !failed.contains(id))
+        .map(|(_, edit)| edit)
+        .collect())
 }
 
 fn timestamp(value: &Value) -> Option<DateTime<Utc>> {
@@ -390,12 +487,7 @@ fn add_call(
     if !calls.insert(id.to_owned()) {
         return;
     }
-    let mut args = match &data["arguments"] {
-        Value::String(raw) => {
-            serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.clone()))
-        }
-        value => value.clone(),
-    };
+    let mut args = arguments(data);
     redact_values(&mut args);
     if let Some(edit) = edit_event(name, &args, ts) {
         edits.push((id.to_owned(), edit));
@@ -408,6 +500,15 @@ fn add_call(
             args,
         },
     ));
+}
+
+fn arguments(data: &Value) -> Value {
+    match &data["arguments"] {
+        Value::String(raw) => {
+            serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.clone()))
+        }
+        value => value.clone(),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -701,6 +802,39 @@ mod tests {
     }
 
     #[test]
+    fn modified_at_uses_the_selected_generation_instead_of_the_change_token() {
+        use std::fs::FileTimes;
+        use std::time::Duration;
+        let (_temp, dir, mut header) = fixture("activity");
+        header["version"] = json!(1);
+        let older = dir.join("session.v1.jsonl");
+        write_rows(&older, &[header.clone()]);
+        let old_time = UNIX_EPOCH + Duration::from_secs(1_700_000_002);
+        fs::File::options()
+            .write(true)
+            .open(&older)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(old_time))
+            .unwrap();
+        assert_eq!(modified_at(dir.to_str().unwrap()), Some(old_time.into()));
+        header["version"] = json!(2);
+        let latest = dir.join("session.v2.jsonl");
+        write_rows(&latest, &[header]);
+        // Generation order, rather than the newest mtime, selects the log.
+        let latest_time = UNIX_EPOCH + Duration::from_secs(1_700_000_001);
+        fs::File::options()
+            .write(true)
+            .open(&latest)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(latest_time))
+            .unwrap();
+        assert_eq!(modified_at(dir.to_str().unwrap()), Some(latest_time.into()));
+        fs::write(dir.join("session.v2.jsonl.zstd"), "ambiguous").unwrap();
+        assert_eq!(modified_at(dir.to_str().unwrap()), None);
+        assert_eq!(modified_at(dir.join("missing").to_str().unwrap()), None);
+    }
+
+    #[test]
     fn fallback_title_prefers_the_human_prompt_over_injected_context() {
         let (_temp, dir, header) = fixture("title-context");
         let mut injected = user(0, "Synthetic environment snapshot");
@@ -924,6 +1058,102 @@ mod tests {
         assert_eq!(session.messages.first().unwrap().text, "first prompt");
         assert_eq!(session.messages.last().unwrap().text, "last prompt");
         assert!(session.messages.len() < 10);
+    }
+
+    #[test]
+    fn windowed_reads_stream_complete_middle_edit_provenance_and_failures() {
+        use ruzstd::encoding::{compress_to_vec, CompressionLevel};
+        let (_temp, dir, header) = fixture("window-provenance");
+        let secret = format!("sk-{}", "A".repeat(100));
+        let mut rows = vec![
+            header,
+            user(0, "first prompt"),
+            call(
+                1,
+                "head-failed",
+                "write",
+                json!({"file_path": "/work/head-failed.rs", "content": "never applied"}),
+            ),
+        ];
+        rows.extend((2..30).map(|n| user(n, &format!("padding {} {n}", "x".repeat(100)))));
+        rows.extend([
+            call(
+                30,
+                "middle-ok",
+                "write",
+                json!({"file_path": "/work/middle.rs", "content": secret}),
+            ),
+            result(31, "middle-ok", "created", false),
+            call(
+                32,
+                "middle-failed",
+                "edit",
+                json!({"file_path": "/work/middle-failed.rs", "new_string": "refused"}),
+            ),
+            result(33, "middle-failed", "denied", true),
+            event(
+                "tool/code-dispatch-start",
+                34,
+                json!({"subCallId": "nested-ok", "name": "edit",
+                "arguments": {"file_path": "/work/nested.rs", "new_string": "nested fix"}}),
+            ),
+            event(
+                "tool/code-dispatch",
+                35,
+                json!({"subCallId": "nested-ok", "name": "edit",
+                "arguments": {"file_path": "/work/nested.rs", "new_string": "nested fix"},
+                "isError": false, "content": [{"type": "text", "text": "updated"}]}),
+            ),
+            call(
+                36,
+                "pending",
+                "write",
+                json!({"file_path": "/work/pending.rs", "content": "pending"}),
+            ),
+            result(37, "head-failed", "failed outside the head", true),
+        ]);
+        rows.extend((38..100).map(|n| user(n, &format!("padding {} {n}", "x".repeat(100)))));
+        rows.push(user(100, "last prompt"));
+        for compressed in [false, true] {
+            let path = dir.join(if compressed {
+                "session.v2.jsonl.zstd"
+            } else {
+                "session.v2.jsonl"
+            });
+            if compressed {
+                let frames: Vec<_> = rows
+                    .iter()
+                    .flat_map(|row| {
+                        compress_to_vec(format!("{row}\n").as_bytes(), CompressionLevel::Fastest)
+                    })
+                    .collect();
+                fs::write(&path, frames).unwrap();
+            } else {
+                write_rows(&path, &rows);
+            }
+            crate::util::TEST_WINDOW.with(|w| w.set(Some((500, 1200, 700))));
+            let session = parse(dir.to_str().unwrap());
+            crate::util::TEST_WINDOW.with(|w| w.set(None));
+            let session = session.unwrap();
+            assert_eq!(
+                session.touched,
+                ["/work/middle.rs", "/work/nested.rs", "/work/pending.rs"]
+            );
+            assert_eq!(session.edits.len(), 3);
+            assert!(session.edits[0].snippet.contains("[redacted:"));
+            assert!(!serde_json::to_string(&session).unwrap().contains(&secret));
+            assert_eq!(session.edits[1].snippet, "nested fix");
+            assert_eq!(
+                session.edits[1].ts.unwrap().timestamp_millis(),
+                1_700_000_000_035
+            );
+            assert!(session.title.starts_with("[large] first prompt"));
+            assert_eq!(session.messages.last().unwrap().text, "last prompt");
+            assert!(session.messages.len() < 10);
+            assert!(!session.messages.iter().any(|m| matches!(&m.tool,
+                Some(ToolEvent::Part(ToolPart::Call(call))) if call.id.as_deref() == Some("middle-ok"))));
+            fs::remove_file(&path).unwrap();
+        }
     }
 
     #[cfg(unix)]
