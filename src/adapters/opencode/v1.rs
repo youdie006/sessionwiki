@@ -380,7 +380,7 @@ mod tests {
         }
 
         let key = make_key(&db, "ses1");
-        let s = OpenCode.parse_key(&key).unwrap();
+        let s = OpenCode::default().parse_key(&key).unwrap();
 
         assert_eq!(s.tool, "opencode");
         assert_eq!(s.project, "/home/dev/app");

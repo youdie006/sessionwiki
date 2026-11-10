@@ -4,7 +4,9 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use walkdir::WalkDir;
 
 mod v1;
@@ -24,7 +26,12 @@ const V2_TOKEN_TAG: i64 = 1 << 62;
 ///     Mixed stores retain both generations and preserve the same session IDs.
 ///   - **Legacy JSON:** `storage/session|message|part/**.json`, one file each.
 ///     Still read on pre-1.2.0 installs that never migrated.
-pub struct OpenCode;
+#[derive(Default)]
+pub struct OpenCode {
+    // Replaced after every inventory, so time queries for that batch need no
+    // further database opens. Keeping it on the reader bounds its lifetime.
+    activity: Mutex<HashMap<String, Option<DateTime<Utc>>>>,
+}
 
 impl Adapter for OpenCode {
     fn name(&self) -> &'static str {
@@ -61,7 +68,7 @@ impl Adapter for OpenCode {
     }
 
     fn store(&self) -> Option<Store> {
-        store_in(db_paths())
+        self.store_in(db_paths())
     }
 
     fn parse_key(&self, key: &str) -> Result<Session> {
@@ -82,8 +89,16 @@ impl Adapter for OpenCode {
     }
 
     fn modified_at(&self, key: &str) -> Option<DateTime<Utc>> {
-        // A schema-tagged change token is not a date. Read only metadata,
-        // independently of transcript decoding, for bounded sync and scan.
+        if let Some(time) = self
+            .activity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+        {
+            return *time;
+        }
+        // A direct key query outside the current inventory reads only metadata.
+        // The normal sync/scan path uses the snapshot cached above.
         let (db, sid) = key.split_once(KEY_SEP)?;
         let conn = open_ro(Path::new(db)).ok()?;
         let tx = conn.unchecked_transaction().ok()?;
@@ -109,91 +124,106 @@ impl Adapter for OpenCode {
 // A partial SQL scan must never authorize deletion reconciliation. Keep
 // row errors as well as preparation/query errors, and prefer v2 for duplicate
 // native IDs while retaining v1-only sessions in a mixed database.
-fn store_in(paths: Vec<PathBuf>) -> Option<Store> {
-    let dbs: Vec<_> = paths.into_iter().filter(|path| path.is_file()).collect();
-    if dbs.is_empty() {
-        return None;
-    }
-    let mut keys = Vec::new();
-    let mut had_error = false;
-    for db in &dbs {
-        let conn = match open_ro(db) {
-            Ok(conn) => conn,
-            Err(_) => {
-                had_error = true;
-                continue;
-            }
-        };
-        // One read transaction per physical database prevents an inventory
-        // assembled across different stages of a concurrent schema migration.
-        let tx = match conn.unchecked_transaction() {
-            Ok(tx) => tx,
-            Err(_) => {
-                had_error = true;
-                continue;
-            }
-        };
-        let mut seen = std::collections::HashSet::new();
-        let mut has_schema = false;
-        for (table, sql, schema_tag) in [
-            (
-                "session_v2",
-                "SELECT id, time_updated, time_created FROM session_v2",
-                V2_TOKEN_TAG,
-            ),
-            (
-                "session",
-                "SELECT id, time_updated, time_created FROM session",
-                0,
-            ),
-        ] {
-            match table_exists(&tx, table) {
-                Ok(false) => continue,
-                Ok(true) => has_schema = true,
-                Err(_) => {
-                    had_error = true;
-                    continue;
-                }
-            }
-            let mut stmt = match tx.prepare(sql) {
-                Ok(stmt) => stmt,
+impl OpenCode {
+    fn store_in(&self, paths: Vec<PathBuf>) -> Option<Store> {
+        let dbs: Vec<_> = paths.into_iter().filter(|path| path.is_file()).collect();
+        if dbs.is_empty() {
+            self.activity
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
+            return None;
+        }
+        let mut activity = HashMap::new();
+        let mut keys = Vec::new();
+        let mut had_error = false;
+        for db in &dbs {
+            let conn = match open_ro(db) {
+                Ok(conn) => conn,
                 Err(_) => {
                     had_error = true;
                     continue;
                 }
             };
-            let rows = match stmt.query_map([], |row| {
-                let id: String = row.get(0)?;
-                let updated: Option<i64> = row.get(1)?;
-                let created: Option<i64> = row.get(2)?;
-                Ok((id, updated.or(created).unwrap_or(0)))
-            }) {
-                Ok(rows) => rows,
+            // One read transaction per physical database prevents an inventory
+            // assembled across different stages of a concurrent schema migration.
+            let tx = match conn.unchecked_transaction() {
+                Ok(tx) => tx,
                 Err(_) => {
                     had_error = true;
                     continue;
                 }
             };
-            for row in rows {
-                match row {
-                    Ok((id, token)) if seen.insert(id.clone()) => {
-                        keys.push((make_key(db, &id), token ^ schema_tag))
+            let mut seen = std::collections::HashSet::new();
+            let mut has_schema = false;
+            for (table, sql, schema_tag) in [
+                (
+                    "session_v2",
+                    "SELECT id, time_updated, time_created FROM session_v2",
+                    V2_TOKEN_TAG,
+                ),
+                (
+                    "session",
+                    "SELECT id, time_updated, time_created FROM session",
+                    0,
+                ),
+            ] {
+                match table_exists(&tx, table) {
+                    Ok(false) => continue,
+                    Ok(true) => has_schema = true,
+                    Err(_) => {
+                        had_error = true;
+                        continue;
                     }
-                    Ok(_) => {}
-                    Err(_) => had_error = true,
+                }
+                let mut stmt = match tx.prepare(sql) {
+                    Ok(stmt) => stmt,
+                    Err(_) => {
+                        had_error = true;
+                        continue;
+                    }
+                };
+                let rows = match stmt.query_map([], |row| {
+                    let id: String = row.get(0)?;
+                    let updated: Option<i64> = row.get(1)?;
+                    let created: Option<i64> = row.get(2)?;
+                    Ok((id, updated.or(created).unwrap_or(0)))
+                }) {
+                    Ok(rows) => rows,
+                    Err(_) => {
+                        had_error = true;
+                        continue;
+                    }
+                };
+                for row in rows {
+                    match row {
+                        Ok((id, token)) if seen.insert(id.clone()) => {
+                            let key = make_key(db, &id);
+                            activity.insert(
+                                key.clone(),
+                                (token > 0)
+                                    .then(|| DateTime::from_timestamp_millis(token))
+                                    .flatten(),
+                            );
+                            keys.push((key, token ^ schema_tag))
+                        }
+                        Ok(_) => {}
+                        Err(_) => had_error = true,
+                    }
                 }
             }
+            had_error |= !has_schema;
+            if tx.commit().is_err() {
+                had_error = true;
+            }
         }
-        had_error |= !has_schema;
-        if tx.commit().is_err() {
-            had_error = true;
-        }
+        *self.activity.lock().unwrap_or_else(|e| e.into_inner()) = activity;
+        Some(Store {
+            keys,
+            files: dbs,
+            had_error,
+        })
     }
-    Some(Store {
-        keys,
-        files: dbs,
-        had_error,
-    })
 }
 
 fn uses_v2(conn: &Connection, sid: &str) -> Result<bool> {

@@ -156,7 +156,7 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
         Box::new(Codex::archived()),
         Box::new(CodexHistory::default()),
         Box::new(gemini::Gemini),
-        Box::new(opencode::OpenCode),
+        Box::new(opencode::OpenCode::default()),
         Box::new(cline::Cline),
         Box::new(cline::RooCode),
         Box::new(cline::KiloCode),
