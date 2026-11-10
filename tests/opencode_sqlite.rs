@@ -80,3 +80,83 @@ fn partial_sql_discovery_preserves_live_sessions_and_clean_deletion_still_archiv
         );
     }
 }
+
+#[test]
+fn switching_schema_with_identical_timestamps_refreshes_content_and_preserves_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("data");
+    let db = home.join("opencode/opencode.db");
+    let cache = dir.path().join("cache");
+    std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(include_str!("fixtures/opencode/v1.sql"))
+        .unwrap();
+    sync(&home, &db, &cache);
+    let indexed = Connection::open(cache.join("index.db")).unwrap();
+    let original: String = indexed
+        .query_row(
+            "SELECT session_id FROM files WHERE tool='opencode'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    sessionwiki::index::set_note(&indexed, &original, "keep across migration").unwrap();
+    conn.execute_batch(include_str!("fixtures/opencode/v2_1_1.sql"))
+        .unwrap();
+    conn.execute_batch("INSERT INTO session_v2 SELECT id,parent_id,project_id,directory,'Migrated title',time_created,time_updated FROM session;").unwrap();
+    conn.execute(
+        "INSERT INTO session_message VALUES('migrated','ses_v1','user',1,1000,?1)",
+        [r#"{"text":"New schema transcript"}"#],
+    )
+    .unwrap();
+    sync(&home, &db, &cache);
+    let migrated: (String, String) = indexed
+        .query_row(
+            "SELECT session_id,title FROM files WHERE session_id=?1",
+            [&original],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(migrated, (original.clone(), "Migrated title".into()));
+    assert_eq!(
+        sessionwiki::index::search(
+            &indexed,
+            "New schema transcript",
+            10,
+            Some("opencode"),
+            None
+        )
+        .unwrap()
+        .len(),
+        1
+    );
+    conn.execute("DELETE FROM session_v2 WHERE id='ses_v1'", [])
+        .unwrap();
+    sync(&home, &db, &cache);
+    let title: String = indexed
+        .query_row(
+            "SELECT title FROM files WHERE session_id=?1",
+            [&original],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(title, "Legacy title");
+    assert_eq!(
+        sessionwiki::index::note_for(&indexed, &original)
+            .unwrap()
+            .as_deref(),
+        Some("keep across migration")
+    );
+    assert_eq!(
+        sessionwiki::index::search(
+            &indexed,
+            "New schema transcript",
+            10,
+            Some("opencode"),
+            None
+        )
+        .unwrap()
+        .len(),
+        0
+    );
+}
