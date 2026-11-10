@@ -1508,7 +1508,12 @@ pub fn sync_with(
                     Some(&(mtime, 0, true)) if mtime == *token => restore.push(key.clone()),
                     Some(&(mtime, 0, false)) if mtime == *token => {}
                     old if old.is_some_and(|row| row.2 || row.0 < 0 || row.1 < 0)
-                        || since.is_none_or(|s| *token >= s) =>
+                        || since.is_none_or(|s| {
+                            adapter
+                                .modified_at(key)
+                                .map_or(*token, |time| time.timestamp())
+                                >= s
+                        }) =>
                     {
                         pending.push(key.clone());
                     }
@@ -4096,6 +4101,9 @@ mod legacy_migration_tests {
 
 #[cfg(test)]
 mod codex_history_tests;
+
+#[cfg(test)]
+mod native_age_tests;
 
 #[cfg(test)]
 mod embedder_hook_tests {

@@ -131,6 +131,19 @@ impl Adapter for Dsh {
         self.parse(Path::new(key))
     }
 
+    fn modified_at(&self, key: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+        let path = Path::new(key);
+        if path.is_dir() {
+            native::modified_at(key)
+        } else {
+            std::fs::metadata(path)
+                .ok()?
+                .modified()
+                .ok()
+                .map(Into::into)
+        }
+    }
+
     fn reconcile_scope(&self) -> Option<String> {
         root_scope(self.root().as_deref())
     }

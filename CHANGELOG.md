@@ -13,6 +13,9 @@ semantic versioning once it reaches 1.0.
   results are searchable from the standalone CLI as well as library embedders.
   Each reader accepts an explicit profile home and limits deletion
   reconciliation to that home's sessions.
+- Shared-store adapters can report activity dates independently of opaque
+  change fingerprints through `Adapter::modified_at`, so bounded sync and
+  `scan` use real timestamps.
 
 ### Fixed
 

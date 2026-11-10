@@ -108,6 +108,14 @@ pub trait Adapter {
     fn parse_key(&self, _key: &str) -> Result<Session> {
         anyhow::bail!("this adapter is not a shared store")
     }
+    /// Actual last activity time for a shared-store key, independent of its
+    /// opaque change-token. Bounded sync compares this time to its cutoff and
+    /// `scan` uses it for the store's time span. Keep this metadata-only; it
+    /// must not parse the conversation. `None` preserves the legacy token
+    /// interpretation for adapters whose tokens already encode timestamps.
+    fn modified_at(&self, _key: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+        None
+    }
     /// Limit deletion reconciliation to part of this tool's indexed rows. When
     /// `Some(prefix)`, only indexed rows whose key starts with `prefix` are
     /// considered for archiving after this adapter runs. Use it when the
@@ -200,22 +208,23 @@ pub fn report(adapter: &dyn Adapter) -> Option<StoreReport> {
             .filter_map(|f| f.metadata().ok())
             .map(|m| m.len())
             .sum();
-        // Tokens are last-activity ms; drop the 0 sentinel (a missing timestamp)
-        // so it cannot backdate the span to 1970.
-        let oldest = store
+        // Prefer explicit activity dates. Legacy stores encode milliseconds
+        // in their tokens; zero means an unknown date.
+        let activity_times: Vec<_> = store
             .keys
             .iter()
-            .map(|(_, t)| *t)
-            .filter(|t| *t > 0)
-            .min()
-            .and_then(DateTime::from_timestamp_millis);
-        let newest = store
-            .keys
-            .iter()
-            .map(|(_, t)| *t)
-            .filter(|t| *t > 0)
-            .max()
-            .and_then(DateTime::from_timestamp_millis);
+            .filter_map(|(key, token)| {
+                adapter.modified_at(key).or_else(|| {
+                    if *token > 0 {
+                        DateTime::from_timestamp_millis(*token)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+        let oldest = activity_times.iter().min().copied();
+        let newest = activity_times.iter().max().copied();
         return Some(StoreReport {
             tool: adapter.name(),
             root,
