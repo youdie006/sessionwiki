@@ -28,7 +28,10 @@ fn v2_fixture_has_structured_tools_results_and_edit_evidence() {
     let (_dir, db) = database(V2);
     let store = store_in(vec![db.clone()]).unwrap();
     assert!(!store.had_error);
-    assert_eq!(store.keys, [(make_key(&db, SID), 1718630500000)]);
+    assert_eq!(
+        store.keys,
+        [(make_key(&db, SID), 1718630500000 ^ V2_TOKEN_TAG)]
+    );
     let session = OpenCode.parse_key(&store.keys[0].0).unwrap();
     let roles: Vec<_> = session.messages.iter().map(|m| m.role.label()).collect();
     assert_eq!(roles, ["user", "assistant", "tool", "tool", "assistant"]);
@@ -154,7 +157,18 @@ fn both_schema_scans_keep_sql_and_row_failures_visible() {
             }
             let store = store_in(vec![db.clone()]).unwrap();
             assert!(store.had_error, "{broken}/{fault}");
-            assert_eq!(store.keys, [(make_key(&db, "good"), 7)], "{broken}/{fault}");
+            assert_eq!(
+                store.keys,
+                [(
+                    make_key(&db, "good"),
+                    7 ^ if good == "session_v2" {
+                        V2_TOKEN_TAG
+                    } else {
+                        0
+                    }
+                )],
+                "{broken}/{fault}"
+            );
         }
     }
 }
@@ -176,8 +190,10 @@ fn v2_failed_tools_keep_the_error_without_claiming_an_edit() {
     let conn = Connection::open(&db).unwrap();
     let content = json!({"content":[
         {"type":"tool","name":"write","id":"ok","state":{"status":"completed","input":{"path":"ok.ts","content":"ok"},"content":[{"type":"text","text":"written"}]}},
-        {"type":"tool","name":"edit","id":"bad","state":{"status":"error","input":{"path":"bad.ts","newString":"bad"},"error":"permission denied"}},
-        {"type":"tool","name":"write","id":"failed","state":{"status":"failed","input":{"path":"failed.ts","content":"bad"}}}
+        {"type":"tool","name":"edit","id":"bad","state":{"status":"error","input":{"path":"bad.ts","newString":"bad"},"content":[],"error":{"message":"permission denied"}}},
+        {"type":"tool","name":"write","id":"failed","state":{"status":"failed","input":{"path":"failed.ts","content":"bad"}}},
+        {"type":"tool","name":"write","id":"pending","state":{"status":"pending","input":{"path":"pending.ts","content":"bad"}}},
+        {"type":"tool","name":"edit","id":"running","state":{"status":"running","input":{"path":"running.ts","newString":"bad"}}}
     ]});
     conn.execute(
         "UPDATE session_message SET data=?1 WHERE type='assistant'",
@@ -209,4 +225,85 @@ fn v2_message_sequence_controls_order_and_fallback_title() {
     assert!(session.subagent);
     assert_eq!(session.title, "First by sequence");
     assert_eq!(session.messages[0].text, "First by sequence");
+}
+
+#[test]
+fn v2_shell_commands_and_paged_output_survive_normalization() {
+    let (_dir, db) = database(V2);
+    let conn = Connection::open(&db).unwrap();
+    let data = json!({"shellID":"shell1", "command":"cargo check", "status":"exited", "exit":1,
+        "output":{"output":"missing dependency", "cursor":18,"size":18,"truncated":false}});
+    conn.execute(
+        "INSERT INTO session_message VALUES('shell-row',?1,'shell',3,1718630500000,?2)",
+        [SID, &data.to_string()],
+    )
+    .unwrap();
+    let session = crate::adapters::parse_session_key(&OpenCode, &make_key(&db, SID)).unwrap();
+    let shell = session
+        .messages
+        .iter()
+        .find_map(|message| match &message.tool {
+            Some(crate::model::ToolEvent::Summary(summary)) if summary.name == "shell" => {
+                Some(summary)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(shell.args["command"], "cargo check");
+    assert_eq!(shell.output.as_deref(), Some("missing dependency"));
+    assert_eq!(shell.is_error, Some(true));
+}
+
+#[test]
+fn schema_tokens_are_distinct_but_activity_dates_remain_real() {
+    struct Source(PathBuf);
+    impl Adapter for Source {
+        fn name(&self) -> &'static str {
+            "opencode"
+        }
+        fn root(&self) -> Option<PathBuf> {
+            self.0.parent().map(Path::to_path_buf)
+        }
+        fn discover(&self) -> Discovered {
+            Vec::new().into()
+        }
+        fn parse(&self, path: &Path) -> Result<Session> {
+            OpenCode.parse(path)
+        }
+        fn store(&self) -> Option<Store> {
+            store_in(vec![self.0.clone()])
+        }
+        fn modified_at(&self, key: &str) -> Option<DateTime<Utc>> {
+            OpenCode.modified_at(key)
+        }
+    }
+    let (_dir, db) = database(V2);
+    let key = make_key(&db, SID);
+    let store = store_in(vec![db.clone()]).unwrap();
+    assert_ne!(store.keys[0].1, 1718630500000);
+    assert_eq!(
+        OpenCode.modified_at(&key),
+        DateTime::from_timestamp_millis(1718630500000)
+    );
+    let report = crate::adapters::report(&Source(db)).unwrap();
+    assert_eq!(
+        report.oldest,
+        DateTime::from_timestamp_millis(1718630500000)
+    );
+    assert_eq!(report.newest, report.oldest);
+}
+
+#[test]
+fn v2_shell_timeout_is_an_error_even_without_output_or_exit_code() {
+    let (_dir, db) = database(V2);
+    let conn = Connection::open(&db).unwrap();
+    let data = json!({"shellID":"timeout1","command":"long command","status":"timeout"});
+    conn.execute(
+        "INSERT INTO session_message VALUES('timeout-row',?1,'shell',3,1718630500000,?2)",
+        [SID, &data.to_string()],
+    )
+    .unwrap();
+    let session = crate::adapters::parse_session_key(&OpenCode, &make_key(&db, SID)).unwrap();
+    assert!(session.messages.iter().any(|message| matches!(&message.tool,
+        Some(crate::model::ToolEvent::Summary(summary)) if summary.name == "shell" && summary.is_error == Some(true))));
 }

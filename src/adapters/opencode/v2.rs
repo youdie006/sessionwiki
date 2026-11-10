@@ -99,6 +99,49 @@ pub(super) fn parse(
                     }
                 }
             }
+            "shell" => {
+                if let Some(command) = data.get("command").and_then(Value::as_str) {
+                    let id = data
+                        .get("shellID")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    let mut args = serde_json::json!({"command":command});
+                    redact_json_strings(&mut args);
+                    messages.push(Message::tool_call(
+                        ts,
+                        ToolCall {
+                            id: id.clone(),
+                            name: "shell".into(),
+                            args,
+                        },
+                    ));
+                    let status = data.get("status").and_then(Value::as_str);
+                    if data.get("output").is_some()
+                        || matches!(status, Some("exited" | "timeout" | "killed"))
+                    {
+                        let text = data
+                            .get("output")
+                            .and_then(|output| {
+                                output
+                                    .as_str()
+                                    .or_else(|| output.get("output").and_then(Value::as_str))
+                            })
+                            .unwrap_or_default();
+                        messages.push(Message::tool_result(
+                            ts,
+                            ToolResult {
+                                call_id: id,
+                                text: bounded_redacted_output(text),
+                                is_error: data
+                                    .get("exit")
+                                    .and_then(Value::as_i64)
+                                    .is_some_and(|exit| exit != 0)
+                                    || matches!(status, Some("timeout" | "killed" | "error")),
+                            },
+                        ));
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -194,7 +237,9 @@ fn emit_tool_part_v2(
         .and_then(Value::as_str);
     let has_error = state.is_some_and(|value| value.get("error").is_some());
     let is_error = matches!(status, Some("error" | "failed")) || has_error;
-    if let Some(path) = edited_path_v2(&tool_lower, input).filter(|_| !is_error) {
+    if let Some(path) =
+        edited_path_v2(&tool_lower, input).filter(|_| status == Some("completed") && !is_error)
+    {
         if let Some(clean) = clean_path(&path) {
             touched.push(clean);
             if let Some(ev) = edit_event_v2(&tool_lower, input, ts) {
@@ -235,9 +280,17 @@ fn emit_tool_part_v2(
         if output_text.is_none() {
             if let Some(out) = s.get("output").and_then(Value::as_str) {
                 output_text = Some(out.to_string());
-            } else if let Some(err) = s.get("error").and_then(Value::as_str) {
-                output_text = Some(err.to_string());
             }
+        }
+        if let Some(error) = s.get("error").and_then(|value| {
+            value
+                .as_str()
+                .or_else(|| value.get("message").and_then(Value::as_str))
+        }) {
+            output_text = Some(match output_text {
+                Some(output) if !output.is_empty() => format!("{output}\n{error}"),
+                _ => error.to_owned(),
+            });
         }
     }
 

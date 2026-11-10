@@ -2,13 +2,15 @@ use super::{ok_or_flag, Adapter, Discovered, Store};
 use crate::model::{Message, Role, Session};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 mod v1;
 mod v2;
+
+const V2_TOKEN_TAG: i64 = 1 << 62;
 
 /// OpenCode (sst/opencode) keeps its data under `$XDG_DATA_HOME/opencode`
 /// (default `~/.local/share/opencode`, the same on macOS - it uses
@@ -67,15 +69,7 @@ impl Adapter for OpenCode {
         let conn = open_ro(Path::new(db)).with_context(|| format!("open {db}"))?;
         // Schema selection and decoding must see the same source snapshot.
         let tx = conn.unchecked_transaction()?;
-        let in_v2 = table_exists(&tx, "session_v2")
-            .with_context(|| format!("check OpenCode schema in {db}"))?
-            && tx
-                .query_row("SELECT 1 FROM session_v2 WHERE id=?1", params![sid], |_| {
-                    Ok(())
-                })
-                .optional()
-                .with_context(|| format!("check session_v2 in {db}"))?
-                .is_some();
+        let in_v2 = uses_v2(&tx, sid).with_context(|| format!("check OpenCode schema in {db}"))?;
         // Only absence permits v1 fallback. An existing v2 record's SQL/JSON
         // errors must remain visible, even when a legacy copy also exists.
         let session = if in_v2 {
@@ -85,6 +79,26 @@ impl Adapter for OpenCode {
         };
         tx.commit()?;
         Ok(session)
+    }
+
+    fn modified_at(&self, key: &str) -> Option<DateTime<Utc>> {
+        // A schema-tagged change token is not a date. Read only metadata,
+        // independently of transcript decoding, for bounded sync and scan.
+        let (db, sid) = key.split_once(KEY_SEP)?;
+        let conn = open_ro(Path::new(db)).ok()?;
+        let tx = conn.unchecked_transaction().ok()?;
+        let sql = if uses_v2(&tx, sid).ok()? {
+            "SELECT time_updated, time_created FROM session_v2 WHERE id=?1"
+        } else {
+            "SELECT time_updated, time_created FROM session WHERE id=?1"
+        };
+        let (updated, created): (Option<i64>, Option<i64>) = tx
+            .query_row(sql, [sid], |row| Ok((row.get(0)?, row.get(1)?)))
+            .ok()?;
+        updated
+            .or(created)
+            .filter(|time| *time > 0)
+            .and_then(DateTime::from_timestamp_millis)
     }
 
     fn parse(&self, path: &Path) -> Result<Session> {
@@ -121,14 +135,16 @@ fn store_in(paths: Vec<PathBuf>) -> Option<Store> {
         };
         let mut seen = std::collections::HashSet::new();
         let mut has_schema = false;
-        for (table, sql) in [
+        for (table, sql, schema_tag) in [
             (
                 "session_v2",
                 "SELECT id, time_updated, time_created FROM session_v2",
+                V2_TOKEN_TAG,
             ),
             (
                 "session",
                 "SELECT id, time_updated, time_created FROM session",
+                0,
             ),
         ] {
             match table_exists(&tx, table) {
@@ -161,7 +177,7 @@ fn store_in(paths: Vec<PathBuf>) -> Option<Store> {
             for row in rows {
                 match row {
                     Ok((id, token)) if seen.insert(id.clone()) => {
-                        keys.push((make_key(db, &id), token))
+                        keys.push((make_key(db, &id), token ^ schema_tag))
                     }
                     Ok(_) => {}
                     Err(_) => had_error = true,
@@ -178,6 +194,15 @@ fn store_in(paths: Vec<PathBuf>) -> Option<Store> {
         files: dbs,
         had_error,
     })
+}
+
+fn uses_v2(conn: &Connection, sid: &str) -> Result<bool> {
+    Ok(table_exists(conn, "session_v2")?
+        && conn
+            .query_row("SELECT 1 FROM session_v2 WHERE id=?1", [sid], |_| Ok(()))
+            .optional()
+            .context("check session_v2")?
+            .is_some())
 }
 
 fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
