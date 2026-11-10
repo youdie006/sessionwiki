@@ -123,7 +123,7 @@ impl Adapter for OpenCode {
 
 // A partial SQL scan must never authorize deletion reconciliation. Keep
 // row errors as well as preparation/query errors, and prefer v2 for duplicate
-// native IDs while retaining v1-only sessions in a mixed database.
+// native IDs while retaining unmigrated v1-only sessions in a mixed database.
 impl OpenCode {
     fn store_in(&self, paths: Vec<PathBuf>) -> Option<Store> {
         let dbs: Vec<_> = paths.into_iter().filter(|path| path.is_file()).collect();
@@ -152,6 +152,13 @@ impl OpenCode {
                 Err(_) => {
                     had_error = true;
                     continue;
+                }
+            };
+            let legacy = match LegacyPolicy::read(&tx) {
+                Ok(policy) => policy,
+                Err(_) => {
+                    had_error = true;
+                    LegacyPolicy::None
                 }
             };
             let mut seen = std::collections::HashSet::new();
@@ -197,7 +204,10 @@ impl OpenCode {
                 };
                 for row in rows {
                     match row {
-                        Ok((id, token)) if seen.insert(id.clone()) => {
+                        Ok((id, token))
+                            if (table != "session" || legacy.allows(&id))
+                                && seen.insert(id.clone()) =>
+                        {
                             let key = make_key(db, &id);
                             activity.insert(
                                 key.clone(),
@@ -226,13 +236,69 @@ impl OpenCode {
     }
 }
 
+// OpenCode migrates in descending ID order and advances its cursor in the
+// same transaction as each copy. Processed legacy rows remain in the source
+// table, including after a user deletes their corresponding v2 sessions.
+enum LegacyPolicy {
+    All,
+    Before(String),
+    None,
+}
+
+impl LegacyPolicy {
+    fn allows(&self, id: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Before(cursor) => id < cursor.as_str(),
+            Self::None => false,
+        }
+    }
+
+    fn read(conn: &Connection) -> Result<Self> {
+        if !table_exists(conn, "kv")? {
+            return Ok(Self::All);
+        }
+        let value: Option<String> = conn
+            .query_row(
+                "SELECT value FROM kv WHERE key='migration.v1-v2'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(value) = value else {
+            return Ok(Self::All);
+        };
+        let state: Value = serde_json::from_str(&value).context("read OpenCode migration state")?;
+        anyhow::ensure!(
+            table_exists(conn, "session_v2")?,
+            "OpenCode migration state without session_v2"
+        );
+        match state.get("phase").and_then(Value::as_str) {
+            Some("completed") => Ok(Self::None),
+            Some("sessions") => match state.get("cursor") {
+                None => Ok(Self::All),
+                Some(Value::String(cursor)) => Ok(Self::Before(cursor.clone())),
+                _ => anyhow::bail!("invalid OpenCode migration cursor"),
+            },
+            _ => anyhow::bail!("unknown OpenCode migration phase"),
+        }
+    }
+}
+
 fn uses_v2(conn: &Connection, sid: &str) -> Result<bool> {
-    Ok(table_exists(conn, "session_v2")?
+    let in_v2 = table_exists(conn, "session_v2")?
         && conn
             .query_row("SELECT 1 FROM session_v2 WHERE id=?1", [sid], |_| Ok(()))
             .optional()
             .context("check session_v2")?
-            .is_some())
+            .is_some();
+    if !in_v2 {
+        anyhow::ensure!(
+            LegacyPolicy::read(conn)?.allows(sid),
+            "OpenCode session {sid} is absent from v2 after migration; refusing its stale v1 copy"
+        );
+    }
+    Ok(in_v2)
 }
 
 fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<bool> {

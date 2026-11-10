@@ -14,3 +14,9 @@ can have a different layout; the fixtures do not claim to cover every beta.
 Tool-error and shell-message cases follow the v2.1.1 definitions in
 [`session-message.ts`](https://github.com/anomalyco/opencode/blob/v2.1.1/packages/schema/src/session-message.ts)
 and [`shell.ts`](https://github.com/anomalyco/opencode/blob/v2.1.1/packages/schema/src/shell.ts).
+
+Migration-policy tests also create the native `kv['migration.v1-v2']` marker:
+`{"phase":"sessions","cursor":"..."}` tracks descending-ID progress, while
+`{"phase":"completed"}` makes v2 authoritative. This keeps retained legacy
+copies of deleted migrated sessions from becoming live again. Unmarked or
+not-yet-processed v1 sessions remain readable.

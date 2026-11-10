@@ -160,3 +160,48 @@ fn switching_schema_with_identical_timestamps_refreshes_content_and_preserves_id
         0
     );
 }
+
+#[test]
+fn native_migration_state_allows_archival_of_deleted_v2_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("data");
+    let db = home.join("opencode/opencode.db");
+    let cache = dir.path().join("cache");
+    std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(include_str!("fixtures/opencode/v1.sql"))
+        .unwrap();
+    conn.execute_batch(include_str!("fixtures/opencode/v2_1_1.sql"))
+        .unwrap();
+    conn.execute_batch("INSERT INTO session_v2 SELECT id,parent_id,project_id,directory,'Migrated title',time_created,time_updated FROM session;
+        CREATE TABLE kv(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+        INSERT INTO kv VALUES('migration.v1-v2','{\"phase\":\"completed\"}');").unwrap();
+    conn.execute(
+        "INSERT INTO session_message VALUES('migrated','ses_v1','user',1,1000,?1)",
+        [r#"{"text":"preserve migrated transcript"}"#],
+    )
+    .unwrap();
+    sync(&home, &db, &cache);
+    assert!(rows(&cache).contains(&("Migrated title".into(), false)));
+    conn.execute("DELETE FROM session_v2 WHERE id='ses_v1'", [])
+        .unwrap();
+    sync(&home, &db, &cache);
+    assert_eq!(
+        rows(&cache),
+        [
+            ("Migrate authentication to JWT".into(), false),
+            ("Migrated title".into(), true)
+        ]
+    );
+    let indexed = Connection::open(cache.join("index.db")).unwrap();
+    let hits = sessionwiki::index::search(
+        &indexed,
+        "preserve migrated transcript",
+        10,
+        Some("opencode"),
+        None,
+    )
+    .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert!(hits[0].row.archived);
+}

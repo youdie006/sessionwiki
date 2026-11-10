@@ -360,3 +360,81 @@ fn activity_queries_reuse_the_inventory_snapshot_and_refresh_on_the_next_scan() 
         DateTime::from_timestamp_millis(1800000000000)
     );
 }
+
+fn migration_marker(conn: &Connection, state: Value) {
+    conn.execute_batch("CREATE TABLE kv(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        .unwrap();
+    conn.execute(
+        "INSERT INTO kv VALUES('migration.v1-v2',?1)",
+        [state.to_string()],
+    )
+    .unwrap();
+}
+
+#[test]
+fn completed_migration_does_not_resurrect_deleted_v2_sessions_from_legacy_rows() {
+    let (_dir, db) = database(V2);
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(V1).unwrap();
+    conn.execute("INSERT INTO session SELECT id,parent_id,project_id,directory,title,time_created,time_updated FROM session_v2", []).unwrap();
+    conn.execute("INSERT INTO session_v2 SELECT id,parent_id,project_id,directory,title,time_created,time_updated FROM session WHERE id='ses_v1'", []).unwrap();
+    migration_marker(&conn, json!({"phase":"completed"}));
+    conn.execute("DELETE FROM session_v2 WHERE id=?1", [SID])
+        .unwrap();
+    let store = OpenCode::default().store_in(vec![db.clone()]).unwrap();
+    assert!(!store.had_error);
+    assert_eq!(store.keys.len(), 1);
+    assert_eq!(store.keys[0].0, make_key(&db, "ses_v1"));
+    assert!(OpenCode::default().parse_key(&make_key(&db, SID)).is_err());
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM session WHERE id=?1", [SID], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn migration_cursor_preserves_unprocessed_v1_sessions_only() {
+    let (_dir, db) = database(V2);
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(V1).unwrap();
+    conn.execute("INSERT INTO session SELECT id,parent_id,project_id,directory,title,time_created,time_updated FROM session_v2", []).unwrap();
+    migration_marker(&conn, json!({"phase":"sessions", "cursor":SID}));
+    conn.execute("DELETE FROM session_v2", []).unwrap();
+    let store = OpenCode::default().store_in(vec![db.clone()]).unwrap();
+    assert!(!store.had_error);
+    assert_eq!(store.keys, [(make_key(&db, "ses_v1"), 2000)]);
+    assert_eq!(
+        OpenCode::default()
+            .parse_key(&make_key(&db, "ses_v1"))
+            .unwrap()
+            .title,
+        "Legacy title"
+    );
+    assert!(OpenCode::default().parse_key(&make_key(&db, SID)).is_err());
+}
+
+#[test]
+fn invalid_migration_state_keeps_discovery_partial_without_losing_valid_v2_rows() {
+    for value in [
+        "invalid json",
+        r#"{"phase":"future"}"#,
+        r#"{"phase":"sessions","cursor":42}"#,
+    ] {
+        let (_dir, db) = database(V2);
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(V1).unwrap();
+        conn.execute_batch("CREATE TABLE kv(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+            .unwrap();
+        conn.execute("INSERT INTO kv VALUES('migration.v1-v2',?1)", [value])
+            .unwrap();
+        let store = OpenCode::default().store_in(vec![db.clone()]).unwrap();
+        assert!(store.had_error);
+        assert_eq!(store.keys.len(), 1);
+        assert_eq!(store.keys[0].0, make_key(&db, SID));
+        assert!(OpenCode::default()
+            .parse_key(&make_key(&db, "ses_v1"))
+            .is_err());
+    }
+}

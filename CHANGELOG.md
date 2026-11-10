@@ -11,7 +11,8 @@ semantic versioning once it reaches 1.0.
 - Read OpenCode v2 SQLite sessions alongside v1 sessions in mixed databases,
   retaining session keys and IDs. Separate schema readers share one inventory
   per database; failed SQL scans skip deletion reconciliation and failed v2
-  reads do not silently fall back to legacy records.
+  reads do not silently fall back to legacy records. Native migration state
+  prevents stale v1 copies from resurrecting sessions deleted in v2.
 
 ## [0.34.23] - 2026-11-10
 
