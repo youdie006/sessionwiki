@@ -11,9 +11,47 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::SystemTime;
 
 pub struct KimiCode {
     home: Option<PathBuf>,
+    indexes: Mutex<HashMap<PathBuf, CachedIndex>>,
+    #[cfg(test)]
+    index_reads: std::sync::atomic::AtomicUsize,
+}
+
+#[derive(Default)]
+struct IndexSnapshot {
+    indexed: BTreeMap<String, (PathBuf, PathBuf)>,
+    recorded_cwds: HashMap<String, PathBuf>,
+    had_error: bool,
+}
+
+struct CachedIndex {
+    stamp: Option<IndexStamp>,
+    snapshot: Arc<IndexSnapshot>,
+}
+
+#[derive(PartialEq, Eq)]
+struct IndexStamp {
+    len: u64,
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    identity: (u64, u64, i64, i64),
+}
+
+impl IndexStamp {
+    fn of(meta: &fs::Metadata) -> Self {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Self {
+            len: meta.len(),
+            modified: meta.modified().ok(),
+            #[cfg(unix)]
+            identity: (meta.dev(), meta.ino(), meta.ctime(), meta.ctime_nsec()),
+        }
+    }
 }
 
 impl Default for KimiCode {
@@ -23,6 +61,9 @@ impl Default for KimiCode {
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from)
                 .or_else(|| dirs::home_dir().map(|p| p.join(".kimi-code"))),
+            indexes: Mutex::default(),
+            #[cfg(test)]
+            index_reads: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 }
@@ -31,6 +72,9 @@ impl KimiCode {
     pub fn in_home(home: impl Into<PathBuf>) -> Self {
         Self {
             home: Some(home.into()),
+            indexes: Mutex::default(),
+            #[cfg(test)]
+            index_reads: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -38,8 +82,7 @@ impl KimiCode {
         self.home.as_deref().map(absolute)
     }
 
-    fn indexed_cwd(&self, path: &Path) -> Option<PathBuf> {
-        let id = path.file_name()?.to_str()?;
+    fn session_home(&self, path: &Path) -> Option<PathBuf> {
         // `show` reparses paths using the default adapter even when discovery
         // used in_home. Infer only the two native layouts, never walk upwards
         // through arbitrary projects looking for another installation.
@@ -51,69 +94,109 @@ impl KimiCode {
                 .parent()
                 .filter(|p| p.file_name().is_some_and(|s| s == "sessions"))
         };
-        let home = sessions
+        sessions
             .and_then(Path::parent)
             .map(Path::to_path_buf)
-            .or_else(|| self.home())?;
-        let text = read_to_string_capped(&home.join("session_index.jsonl")).ok()?;
-        // A named directory remains readable even after its index tombstone.
-        // Recover the last recorded cwd rather than applying listing filters.
-        text.lines()
-            .rev()
-            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-            .filter(|record| record["sessionId"].as_str() == Some(id))
-            .filter_map(|record| record["workDir"].as_str().map(PathBuf::from))
-            .find(|cwd| cwd.is_absolute())
+            .or_else(|| self.home())
     }
 
-    fn index(&self, had_error: &mut bool) -> BTreeMap<String, (PathBuf, PathBuf)> {
-        let mut indexed = BTreeMap::new();
-        let Some(home) = self.home() else {
-            return indexed;
-        };
-        let path = home.join("session_index.jsonl");
-        let text = match read_to_string_capped(&path) {
-            Ok(text) => text,
-            Err(_) => {
-                if !matches!(path.try_exists(), Ok(false)) {
-                    *had_error = true;
-                }
-                return indexed;
-            }
-        };
-        for line in text.lines().filter(|l| !l.trim().is_empty()) {
-            let Ok(record) = serde_json::from_str::<Value>(line) else {
-                *had_error = true;
-                continue;
-            };
-            let Some(id) = record["sessionId"]
-                .as_str()
-                .filter(|id| valid_component(id))
-            else {
-                *had_error = true;
-                continue;
-            };
-            // The append-only index's last complete entry wins, including
-            // tombstones. Never resurrect an unindexed directory by walking it.
-            if record["deleted"].as_bool() == Some(true) {
-                indexed.remove(id);
-                continue;
-            }
-            let (Some(dir), Some(cwd)) =
-                (record["sessionDir"].as_str(), record["workDir"].as_str())
-            else {
-                *had_error = true;
-                continue;
-            };
-            let dir = PathBuf::from(dir);
-            if !dir.is_absolute() || dir.file_name().and_then(|s| s.to_str()) != Some(id) {
-                *had_error = true;
-                continue;
-            }
-            indexed.insert(id.to_owned(), (dir, PathBuf::from(cwd)));
-        }
-        indexed
+    fn indexed_cwd(&self, path: &Path) -> Option<PathBuf> {
+        let id = path.file_name()?.to_str()?;
+        let home = self.session_home(path)?;
+        self.index_snapshot(&home).recorded_cwds.get(id).cloned()
     }
+
+    /// Discovery and cwd fallback share one parsed snapshot per canonical
+    /// home. Check cheap file metadata on every lookup so appends and atomic
+    /// replacements refresh the snapshot without rescanning it per session.
+    fn index_snapshot(&self, home: &Path) -> Arc<IndexSnapshot> {
+        let path = absolute(home).join("session_index.jsonl");
+        let stamp = match fs::metadata(&path) {
+            Ok(meta) => Some(IndexStamp::of(&meta)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => {
+                return Arc::new(IndexSnapshot {
+                    had_error: true,
+                    ..Default::default()
+                })
+            }
+        };
+        let mut indexes = self.indexes.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(cached) = indexes.get(&path).filter(|cached| cached.stamp == stamp) {
+            return Arc::clone(&cached.snapshot);
+        }
+        let snapshot = if stamp.is_some() {
+            #[cfg(test)]
+            self.index_reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            match read_to_string_capped(&path) {
+                Ok(text) => Arc::new(parse_index(&text)),
+                // Do not cache read failures: permissions and transient I/O
+                // can recover without a corresponding metadata change.
+                Err(_) => {
+                    return Arc::new(IndexSnapshot {
+                        had_error: true,
+                        ..Default::default()
+                    })
+                }
+            }
+        } else {
+            Arc::new(IndexSnapshot::default())
+        };
+        indexes.insert(
+            path,
+            CachedIndex {
+                stamp,
+                snapshot: Arc::clone(&snapshot),
+            },
+        );
+        snapshot
+    }
+}
+
+fn parse_index(text: &str) -> IndexSnapshot {
+    let mut snapshot = IndexSnapshot::default();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            snapshot.had_error = true;
+            continue;
+        };
+        let Some(id) = record["sessionId"]
+            .as_str()
+            .filter(|id| valid_component(id))
+        else {
+            snapshot.had_error = true;
+            continue;
+        };
+        // Keep cwd evidence for named directories, including tombstoned ones.
+        if let Some(cwd) = record["workDir"]
+            .as_str()
+            .map(PathBuf::from)
+            .filter(|cwd| cwd.is_absolute())
+        {
+            snapshot.recorded_cwds.insert(id.to_owned(), cwd);
+        }
+        // The append-only index's last complete entry wins. Never resurrect
+        // an unindexed directory by walking it.
+        if record["deleted"].as_bool() == Some(true) {
+            snapshot.indexed.remove(id);
+            continue;
+        }
+        let (Some(dir), Some(cwd)) = (record["sessionDir"].as_str(), record["workDir"].as_str())
+        else {
+            snapshot.had_error = true;
+            continue;
+        };
+        let dir = PathBuf::from(dir);
+        if !dir.is_absolute() || dir.file_name().and_then(|s| s.to_str()) != Some(id) {
+            snapshot.had_error = true;
+            continue;
+        }
+        snapshot
+            .indexed
+            .insert(id.to_owned(), (dir, PathBuf::from(cwd)));
+    }
+    snapshot
 }
 
 impl Adapter for KimiCode {
@@ -127,6 +210,22 @@ impl Adapter for KimiCode {
 
     fn reconcile_scope(&self) -> Option<String> {
         root_scope(self.root().as_deref())
+    }
+
+    fn modified_at(&self, key: &str) -> Option<DateTime<Utc>> {
+        let path = Path::new(key);
+        let mut files = vec![path.join("state.json"), path.join("wire.jsonl")];
+        let mut had_error = false;
+        for agent in directories(&path.join("agents"), &mut had_error) {
+            files.push(agent.join("wire.jsonl"));
+        }
+        // Global index appends must not make every historical session recent.
+        // Semantic index changes still invalidate their session on full sync.
+        files
+            .iter()
+            .filter_map(|file| fs::metadata(file).ok()?.modified().ok())
+            .max()
+            .map(DateTime::<Utc>::from)
     }
 
     fn discover(&self) -> Discovered {
@@ -152,12 +251,13 @@ impl Adapter for KimiCode {
         };
         let index = home.join("session_index.jsonl");
         track_file(&index, &mut store.files, &mut store.had_error);
-        let indexed = self.index(&mut store.had_error);
+        let snapshot = self.index_snapshot(&home);
+        store.had_error |= snapshot.had_error;
         let Some(root) = self.root() else {
             return Some(store);
         };
-        for (_, (path, cwd)) in indexed {
-            let meta = match fs::symlink_metadata(&path) {
+        for (path, cwd) in snapshot.indexed.values() {
+            let meta = match fs::symlink_metadata(path) {
                 Ok(meta) => meta,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(_) => {
@@ -199,7 +299,7 @@ impl Adapter for KimiCode {
             }
             store.keys.push((
                 path.to_string_lossy().into_owned(),
-                change_token(&files, &path, &cwd),
+                change_token(&files, &path, cwd),
             ));
             store.files.extend(files);
         }
@@ -469,8 +569,8 @@ fn track_file(path: &Path, files: &mut Vec<PathBuf>, had_error: &mut bool) {
 
 /// Include every file's nanosecond mtime and size, rather than only the newest
 /// mtime: restoring a transcript must not hide a later metadata-only edit.
-/// Keep opaque tokens positive and above epoch seconds for `sync --since`;
-/// `scan` rejects these out-of-range values as wall-clock milliseconds.
+/// Keep opaque tokens separate from wall-clock time; `modified_at` supplies
+/// the real backing-file date for cutoff filtering and store reports.
 fn change_token(files: &[PathBuf], session_path: &Path, indexed_cwd: &Path) -> i64 {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in session_path
@@ -852,6 +952,181 @@ mod tests {
         .unwrap();
         assert_ne!(original, token(adapter.store().unwrap()));
         assert_eq!(adapter.parse(&path).unwrap().project, "/repo/changed-cwd");
+    }
+
+    #[test]
+    fn discovery_populates_one_index_snapshot_reused_across_many_parses_and_refreshed_on_append() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths: Vec<_> = (0..12)
+            .map(|n| fixture(tmp.path(), &format!("session-{n}"), json!({}), &[]))
+            .collect();
+        index(
+            tmp.path(),
+            &paths.iter().map(|path| entry(path)).collect::<Vec<_>>(),
+        );
+        let adapter = KimiCode::in_home(tmp.path());
+        assert_eq!(adapter.store().unwrap().keys.len(), paths.len());
+        for path in &paths {
+            assert_eq!(adapter.parse(path).unwrap().project, "/repo/from-index");
+        }
+        assert_eq!(
+            adapter
+                .index_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(adapter.store().unwrap().keys.len(), paths.len());
+        assert_eq!(
+            adapter
+                .index_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        let mut changed = entry(&paths[0]);
+        changed["workDir"] = json!("/new/cwd");
+        use std::io::Write;
+        writeln!(
+            fs::OpenOptions::new()
+                .append(true)
+                .open(tmp.path().join("session_index.jsonl"))
+                .unwrap(),
+            "\n{changed}"
+        )
+        .unwrap();
+        assert_eq!(adapter.parse(&paths[0]).unwrap().project, "/new/cwd");
+        for path in &paths[1..] {
+            adapter.parse(path).unwrap();
+        }
+        assert_eq!(
+            adapter
+                .index_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+    }
+
+    #[test]
+    fn alternate_home_snapshots_are_cached_independently_and_keep_deleted_cwd_evidence() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let paths = [first.path(), second.path()].map(|home| {
+            let path = fixture(home, "session-shared-id", json!({}), &[]);
+            let mut row = entry(&path);
+            row["workDir"] = json!(home);
+            index(
+                home,
+                &[row, json!({"sessionId":"session-shared-id","deleted":true})],
+            );
+            path
+        });
+        let adapter = KimiCode::in_home(first.path().join("unused-home"));
+        for _ in 0..3 {
+            for (path, home) in paths.iter().zip([first.path(), second.path()]) {
+                assert_eq!(adapter.parse(path).unwrap().project, home.to_string_lossy());
+            }
+        }
+        assert_eq!(
+            adapter
+                .index_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+        index(first.path(), &[entry(&paths[0])]);
+        assert_eq!(
+            adapter.parse(&paths[0]).unwrap().project,
+            "/repo/from-index"
+        );
+        assert_eq!(
+            adapter
+                .index_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            3
+        );
+        assert_eq!(
+            adapter.parse(&paths[1]).unwrap().project,
+            second.path().to_string_lossy()
+        );
+        assert_eq!(
+            adapter
+                .index_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            3
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_index_replacement_refreshes_even_with_preserved_length_and_mtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = fixture(tmp.path(), "session-one", json!({}), &[]);
+        index(tmp.path(), &[entry(&path)]);
+        let adapter = KimiCode::in_home(tmp.path());
+        assert_eq!(adapter.parse(&path).unwrap().project, "/repo/from-index");
+        let index_path = tmp.path().join("session_index.jsonl");
+        let original = fs::read_to_string(&index_path).unwrap();
+        let modified = fs::metadata(&index_path).unwrap().modified().unwrap();
+        let replacement = original.replace("/repo/from-index", "/repo/next-index");
+        assert_eq!(replacement.len(), original.len());
+        let replacement_path = tmp.path().join("replacement.jsonl");
+        fs::write(&replacement_path, replacement).unwrap();
+        fs::File::open(&replacement_path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        fs::rename(replacement_path, index_path).unwrap();
+        assert_eq!(adapter.parse(&path).unwrap().project, "/repo/next-index");
+        assert_eq!(
+            adapter
+                .index_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+    }
+
+    #[test]
+    fn modified_at_is_metadata_only_and_ignores_shared_index_activity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = fixture(tmp.path(), "session-one", json!({}), &[]);
+        index(tmp.path(), &[entry(&path)]);
+        let adapter = KimiCode::in_home(tmp.path());
+        let future = std::time::UNIX_EPOCH + std::time::Duration::from_secs(2000000000);
+        fs::File::open(path.join("agents/main/wire.jsonl"))
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(future))
+            .unwrap();
+        assert_eq!(
+            adapter.modified_at(&path.to_string_lossy()),
+            Some(DateTime::<Utc>::from(future))
+        );
+        assert_eq!(
+            adapter
+                .index_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        let later = future + std::time::Duration::from_secs(10);
+        fs::File::open(tmp.path().join("session_index.jsonl"))
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(later))
+            .unwrap();
+        assert_eq!(
+            adapter.modified_at(&path.to_string_lossy()),
+            Some(DateTime::<Utc>::from(future))
+        );
+        assert_eq!(
+            adapter
+                .index_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        fs::File::open(path.join("state.json"))
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(later))
+            .unwrap();
+        assert_eq!(
+            adapter.modified_at(&path.to_string_lossy()),
+            Some(DateTime::<Utc>::from(later))
+        );
     }
 
     #[test]

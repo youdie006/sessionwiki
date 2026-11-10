@@ -48,6 +48,27 @@ impl Adapter for GrokBuild {
         root_scope(self.root().as_deref())
     }
 
+    fn modified_at(&self, key: &str) -> Option<DateTime<Utc>> {
+        let path = Path::new(key);
+        let mut files = [
+            "chat_history.jsonl",
+            "history.jsonl",
+            "summary.json",
+            "events.jsonl",
+        ]
+        .into_iter()
+        .map(|name| path.join(name))
+        .collect::<Vec<_>>();
+        if let Some(parent) = path.parent() {
+            files.push(parent.join(".cwd"));
+        }
+        files
+            .iter()
+            .filter_map(|file| fs::metadata(file).ok()?.modified().ok())
+            .max()
+            .map(DateTime::<Utc>::from)
+    }
+
     fn discover(&self) -> Discovered {
         let store = self.store().expect("Grok is a shared store");
         Discovered {
@@ -354,8 +375,8 @@ fn track_file(path: &Path, files: &mut Vec<PathBuf>, had_error: &mut bool) {
 }
 
 /// Every backing file contributes, even when another file has a newer mtime.
-/// Positive out-of-range tokens are never excluded by `sync --since` and are
-/// not misrepresented as timestamps by `scan`.
+/// `modified_at` supplies the backing-file date independently of this opaque
+/// fingerprint, for cutoff filtering and store reports.
 fn change_token(files: &[PathBuf]) -> i64 {
     let mut hash = 0xcbf29ce484222325u64;
     for path in files {
@@ -680,6 +701,34 @@ mod tests {
         assert_ne!(third, adapter.store().unwrap().keys[0].1);
         assert_eq!(dir_mtime, fs::metadata(&path).unwrap().modified().unwrap());
         assert!(third > 2000000000);
+    }
+
+    #[test]
+    fn modified_at_uses_backing_file_metadata_without_parsing_history_or_summary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = fixture(tmp.path(), "repo-hash", "uuid", json!({}), &[]);
+        fs::write(path.join("summary.json"), "invalid JSON").unwrap();
+        fs::write(path.join("chat_history.jsonl"), "invalid JSONL").unwrap();
+        let adapter = GrokBuild::in_home(tmp.path());
+        let future = std::time::UNIX_EPOCH + std::time::Duration::from_secs(2000000000);
+        fs::File::open(path.join("chat_history.jsonl"))
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(future))
+            .unwrap();
+        assert_eq!(
+            adapter.modified_at(&path.to_string_lossy()),
+            Some(DateTime::<Utc>::from(future))
+        );
+        let later = future + std::time::Duration::from_secs(10);
+        fs::write(path.parent().unwrap().join(".cwd"), "/repo").unwrap();
+        fs::File::open(path.parent().unwrap().join(".cwd"))
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(later))
+            .unwrap();
+        assert_eq!(
+            adapter.modified_at(&path.to_string_lossy()),
+            Some(DateTime::<Utc>::from(later))
+        );
     }
 
     #[test]
