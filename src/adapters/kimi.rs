@@ -156,7 +156,7 @@ impl Adapter for KimiCode {
         let Some(root) = self.root() else {
             return Some(store);
         };
-        for (_, (path, _cwd)) in indexed {
+        for (_, (path, cwd)) in indexed {
             let meta = match fs::symlink_metadata(&path) {
                 Ok(meta) => meta,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
@@ -186,7 +186,10 @@ impl Adapter for KimiCode {
                     continue;
                 }
             }
-            let mut files = vec![index.clone()];
+            // The shared index is counted once above. Its mtime changes for
+            // unrelated sessions; only this entry's semantic metadata belongs
+            // in this session's token.
+            let mut files = Vec::new();
             track_file(&path.join("state.json"), &mut files, &mut store.had_error);
             track_file(&path.join("wire.jsonl"), &mut files, &mut store.had_error);
             // Subagents are not separate sessions, but their files are real
@@ -194,9 +197,10 @@ impl Adapter for KimiCode {
             for agent in directories(&path.join("agents"), &mut store.had_error) {
                 track_file(&agent.join("wire.jsonl"), &mut files, &mut store.had_error);
             }
-            store
-                .keys
-                .push((path.to_string_lossy().into_owned(), change_token(&files)));
+            store.keys.push((
+                path.to_string_lossy().into_owned(),
+                change_token(&files, &path, &cwd),
+            ));
             store.files.extend(files);
         }
         store.files.sort();
@@ -467,8 +471,16 @@ fn track_file(path: &Path, files: &mut Vec<PathBuf>, had_error: &mut bool) {
 /// mtime: restoring a transcript must not hide a later metadata-only edit.
 /// Keep opaque tokens positive and above epoch seconds for `sync --since`;
 /// `scan` rejects these out-of-range values as wall-clock milliseconds.
-fn change_token(files: &[PathBuf]) -> i64 {
+fn change_token(files: &[PathBuf], session_path: &Path, indexed_cwd: &Path) -> i64 {
     let mut hash = 0xcbf29ce484222325u64;
+    for byte in session_path
+        .to_string_lossy()
+        .bytes()
+        .chain([0])
+        .chain(indexed_cwd.to_string_lossy().bytes())
+    {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+    }
     for path in files {
         for byte in path.to_string_lossy().bytes() {
             hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
@@ -790,6 +802,56 @@ mod tests {
         fs::write(&wire, "changed").unwrap();
         assert_ne!(second, adapter.store().unwrap().keys[0].1);
         assert_eq!(dir_mtime, fs::metadata(&path).unwrap().modified().unwrap());
+    }
+
+    #[test]
+    fn unrelated_index_activity_does_not_reparse_existing_histories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = fixture(tmp.path(), "session-one", json!({}), &[]);
+        index(tmp.path(), &[entry(&path)]);
+        let adapter = KimiCode::in_home(tmp.path());
+        let token = |store: Store| {
+            store
+                .keys
+                .into_iter()
+                .find(|(key, _)| key == &*path.to_string_lossy())
+                .unwrap()
+                .1
+        };
+        let original = token(adapter.store().unwrap());
+        let unrelated = fixture(tmp.path(), "session-other", json!({}), &[]);
+        use std::io::Write;
+        writeln!(
+            fs::OpenOptions::new()
+                .append(true)
+                .open(tmp.path().join("session_index.jsonl"))
+                .unwrap(),
+            "\n{}",
+            entry(&unrelated)
+        )
+        .unwrap();
+        let store = adapter.store().unwrap();
+        assert_eq!(
+            store
+                .files
+                .iter()
+                .filter(|p| p.file_name().is_some_and(|s| s == "session_index.jsonl"))
+                .count(),
+            1
+        );
+        assert_eq!(original, token(store));
+        let mut changed = entry(&path);
+        changed["workDir"] = json!("/repo/changed-cwd");
+        writeln!(
+            fs::OpenOptions::new()
+                .append(true)
+                .open(tmp.path().join("session_index.jsonl"))
+                .unwrap(),
+            "{changed}"
+        )
+        .unwrap();
+        assert_ne!(original, token(adapter.store().unwrap()));
+        assert_eq!(adapter.parse(&path).unwrap().project, "/repo/changed-cwd");
     }
 
     #[test]
