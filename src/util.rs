@@ -52,8 +52,7 @@ fn lines_keeping(
     // A plain file's size is known before reading, so one over the cap is
     // windowed from its first line instead of being buffered up to the cap; a
     // compressed one is measured as it decodes.
-    let mut windowed = path.extension().is_none_or(|x| x != "zst")
-        && std::fs::metadata(path).is_ok_and(|m| m.len() > cap);
+    let mut windowed = !is_zstd(path) && std::fs::metadata(path).is_ok_and(|m| m.len() > cap);
     let mut head: Vec<String> = Vec::new();
     let mut middle: Vec<String> = Vec::new();
     let mut middle_used = 0u64;
@@ -130,9 +129,8 @@ fn session_lines_windowed(
 ) -> Result<(Vec<String>, bool)> {
     use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
-    if path.extension().is_some_and(|x| x == "zst") {
-        let decoder = ruzstd::decoding::StreamingDecoder::new(BufReader::new(f))
-            .map_err(|e| anyhow::anyhow!("decompress {}: {e}", path.display()))?;
+    if is_zstd(path) {
+        let decoder = ZstdFrames::new(BufReader::new(f));
         return decoded_lines_windowed(decoder, cap, head_bytes, tail_bytes)
             .with_context(|| format!("decompress {}", path.display()));
     }
@@ -230,9 +228,8 @@ fn window_lines(head: &[u8], tail: &[u8]) -> Vec<String> {
 pub fn for_each_line(path: &Path, mut f: impl FnMut(&str)) -> Result<()> {
     use std::io::{BufRead, BufReader};
     let file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let mut reader: Box<dyn BufRead> = if path.extension().is_some_and(|x| x == "zst") {
-        let decoder = ruzstd::decoding::StreamingDecoder::new(BufReader::new(file))
-            .map_err(|e| anyhow::anyhow!("decompress {}: {e}", path.display()))?;
+    let mut reader: Box<dyn BufRead> = if is_zstd(path) {
+        let decoder = ZstdFrames::new(BufReader::new(file));
         Box::new(BufReader::new(decoder))
     } else {
         Box::new(BufReader::new(file))
@@ -244,6 +241,55 @@ pub fn for_each_line(path: &Path, mut f: impl FnMut(&str)) -> Result<()> {
             return Ok(());
         }
         f(&String::from_utf8_lossy(&line));
+    }
+}
+
+fn is_zstd(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext == "zst" || ext == "zstd")
+}
+
+/// Zstandard permits concatenated frames. DeepSeek appends one frame per
+/// batch; stopping at the first frame would read only its metadata header.
+/// Keep the buffered source between frames so read-ahead bytes survive.
+struct ZstdFrames<R: std::io::BufRead> {
+    source: Option<R>,
+    decoder: Option<ruzstd::decoding::StreamingDecoder<R, ruzstd::decoding::FrameDecoder>>,
+}
+
+impl<R: std::io::BufRead> ZstdFrames<R> {
+    fn new(source: R) -> Self {
+        Self {
+            source: Some(source),
+            decoder: None,
+        }
+    }
+}
+
+impl<R: std::io::BufRead> std::io::Read for ZstdFrames<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if let Some(decoder) = &mut self.decoder {
+                let n = decoder.read(buf)?;
+                if n != 0 {
+                    return Ok(n);
+                }
+                self.source = self.decoder.take().map(|decoder| decoder.into_inner());
+            }
+            let Some(mut source) = self.source.take() else {
+                return Err(std::io::Error::other("zstd decoder has no source"));
+            };
+            if source.fill_buf()?.is_empty() {
+                self.source = Some(source);
+                return Ok(0);
+            }
+            self.decoder = Some(
+                ruzstd::decoding::StreamingDecoder::new(source).map_err(std::io::Error::other)?,
+            );
+        }
     }
 }
 
@@ -637,6 +683,35 @@ mod tests {
             !win.iter().any(|l| l == "line05"),
             "middle dropped: {win:?}"
         );
+    }
+
+    #[test]
+    fn concatenated_zstd_frames_preserve_lines_across_batch_boundaries() {
+        use ruzstd::encoding::{compress_to_vec, CompressionLevel};
+        let directory = tempfile::tempdir().unwrap();
+        // A record may cross a frame boundary. Empty frames must not signal EOF.
+        let frames: Vec<u8> = ["first\nsec", "", "ond\nthird\n"]
+            .into_iter()
+            .flat_map(|text| compress_to_vec(text.as_bytes(), CompressionLevel::Fastest))
+            .collect();
+        for suffix in ["zst", "zstd"] {
+            let path = directory.path().join(format!("session.jsonl.{suffix}"));
+            std::fs::write(&path, &frames).unwrap();
+            let (lines, windowed) = super::session_lines(&path).unwrap();
+            assert!(!windowed);
+            assert_eq!(lines, ["first", "second", "third"]);
+            let mut lines = Vec::new();
+            super::for_each_line(&path, |line| lines.push(line.to_owned())).unwrap();
+            assert_eq!(lines, ["first\n", "second\n", "third\n"]);
+            let (lines, _) = super::session_lines_keeping(&path, |_| true).unwrap();
+            assert_eq!(lines, ["first", "second", "third"]);
+
+            let mut torn = frames.clone();
+            torn.extend_from_slice(&[0x28, 0xb5]);
+            std::fs::write(&path, torn).unwrap();
+            assert!(super::session_lines(&path).is_err());
+            assert!(super::for_each_line(&path, |_| {}).is_err());
+        }
     }
 }
 
