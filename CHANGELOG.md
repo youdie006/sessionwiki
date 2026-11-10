@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.22] - 2026-11-10
+
 ### Fixed
 
 - A sync no longer rewrites every message of a session that changed. It keeps
@@ -35,6 +37,12 @@ semantic versioning once it reaches 1.0.
   development dependency). It matched only `Bump X from A to B`, so it held
   every update for review, including the patch update of rusqlite to 0.41.1
   (#123). A title with any other prefix is still held.
+- Update rusqlite from 0.40.2 to 0.41.1, which moves the bundled SQLite from
+  3.53.2 to 3.54.1. The real-session check for the first sync change above
+  ran on this SQLite: the index synced in steps matched a fresh one row for
+  row and passed the FTS integrity check. The fixes in 0.41.1 (PRAGMA names
+  with SQLCipher, a deterministic function without arguments) touch nothing
+  sessionwiki uses.
 
 ## [0.34.21] - 2026-10-28
 
