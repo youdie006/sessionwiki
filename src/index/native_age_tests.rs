@@ -169,32 +169,52 @@ fn native_stores_bound_initial_sync_by_date_and_report_real_time_spans() {
 /// reconcile deletions under that spelling rather than create canonical twins.
 #[cfg(unix)]
 #[test]
-fn aliased_grok_and_muse_homes_reuse_legacy_rows_and_reconcile_deletions() {
+fn aliased_profile_key_policies_reuse_existing_rows_and_reconcile_deletions() {
     let directory = tempfile::tempdir().unwrap();
-    for tool in ["grok-build", "muse"] {
-        let home = directory.path().join(tool);
+    for (tool, configured) in [
+        ("grok-build", false),
+        ("grok-build", true),
+        ("muse", false),
+        ("muse", true),
+    ] {
+        let home = directory.path().join(format!("{tool}-{configured}"));
         fixtures(&home, tool);
-        let alias = directory.path().join(format!("{tool}-alias"));
+        let alias = directory.path().join(format!("{tool}-{configured}-alias"));
         std::os::unix::fs::symlink(&home, &alias).unwrap();
         let root = alias.join("sessions");
         let adapter: Box<dyn Adapter> = if tool == "muse" {
-            Box::new(Muse::in_sessions_root(&root))
+            let reader = Muse::in_sessions_root(&root);
+            Box::new(if configured {
+                reader.keep_configured_paths()
+            } else {
+                reader
+            })
         } else {
-            Box::new(GrokBuild::in_home(&alias))
+            let reader = GrokBuild::in_home(&alias);
+            Box::new(if configured {
+                reader.keep_configured_paths()
+            } else {
+                reader
+            })
         };
         let legacy_keys: Vec<_> = ["old", "recent"]
             .into_iter()
             .map(|id| {
-                if tool == "muse" {
+                let key = if tool == "muse" {
                     root.join("2026/11/10").join(id).join("session.jsonl")
                 } else {
                     root.join("%2Fwork").join(id)
+                };
+                if configured {
+                    key
+                } else {
+                    key.canonicalize().unwrap()
                 }
             })
             .collect();
         let mut connection = Connection::open_in_memory().unwrap();
         create_cache_schema(&connection).unwrap();
-        // Seed the exact key and ID derivation used before the extraction.
+        // Seed either the older embedding keys or the canonical SW 0.34.24 keys.
         let transaction = connection.transaction().unwrap();
         for key in &legacy_keys {
             let key_text = key.to_string_lossy();
@@ -228,6 +248,10 @@ fn aliased_grok_and_muse_homes_reuse_legacy_rows_and_reconcile_deletions() {
             let parsed = adapters[0].parse_key(&hit.row.path).unwrap();
             assert_eq!(parsed.path.to_string_lossy(), hit.row.path);
             assert_eq!(parsed.id, hit.row.session_id);
+            let default_reader = crate::adapters::by_name(tool).unwrap();
+            let reparsed = default_reader.parse_key(&hit.row.path).unwrap();
+            assert_eq!(reparsed.path.to_string_lossy(), hit.row.path);
+            assert_eq!(reparsed.id, hit.row.session_id);
         }
         if legacy_keys[0].is_dir() {
             std::fs::remove_dir_all(&legacy_keys[0]).unwrap();

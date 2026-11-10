@@ -379,7 +379,10 @@ Embedders can select individual installations with `KimiCode::in_home`,
 `GrokBuild::in_home`, `Muse::in_home`, and `Dsh::in_home`. Muse's home is its
 configuration directory: a private home keeps sessions in `.data/muse/sessions`;
 the standard Muse home uses the XDG data directory. These readers index native
-conversation history and tool calls without requiring Mjolnir. Support here
+conversation history and tool calls without requiring Mjolnir. Grok and Muse
+use canonical keys by default; embedders replacing readers that retained
+configured profile paths can select `.keep_configured_paths()` to preserve
+those existing keys, including symlinked homes. Support here
 means discovery, indexing and reading; it does not add native `resume` commands
 for these tools.
 

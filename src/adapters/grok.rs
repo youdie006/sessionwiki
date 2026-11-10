@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 pub struct GrokBuild {
     home: Option<PathBuf>,
+    configured_paths: bool,
 }
 
 impl Default for GrokBuild {
@@ -23,6 +24,7 @@ impl Default for GrokBuild {
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from)
                 .or_else(|| dirs::home_dir().map(|p| p.join(".grok"))),
+            configured_paths: false,
         }
     }
 }
@@ -31,7 +33,17 @@ impl GrokBuild {
     pub fn in_home(home: impl Into<PathBuf>) -> Self {
         Self {
             home: Some(home.into()),
+            configured_paths: false,
         }
+    }
+
+    /// Retain the configured home spelling in persistent keys and scopes.
+    /// Embedders replacing readers that kept symlinked paths can preserve
+    /// those identities; the default retains existing canonical SW keys.
+    /// Parsing an existing key always preserves the supplied spelling.
+    pub fn keep_configured_paths(mut self) -> Self {
+        self.configured_paths = true;
+        self
     }
 }
 
@@ -41,7 +53,12 @@ impl Adapter for GrokBuild {
     }
 
     fn root(&self) -> Option<PathBuf> {
-        self.home.as_deref().map(|p| absolute(&p.join("sessions")))
+        let root = absolute(&self.home.as_ref()?.join("sessions"));
+        Some(if self.configured_paths {
+            root
+        } else {
+            root.canonicalize().unwrap_or(root)
+        })
     }
 
     fn reconcile_scope(&self) -> Option<String> {
@@ -489,7 +506,7 @@ mod tests {
                 .join("\n"),
         )
         .unwrap();
-        path
+        path.canonicalize().unwrap()
     }
 
     #[test]
@@ -757,7 +774,11 @@ mod tests {
             let alias_root = tempfile::tempdir().unwrap();
             let alias = alias_root.path().join("alias");
             std::os::unix::fs::symlink(tmp.path(), &alias).unwrap();
-            let alias_adapter = GrokBuild::in_home(&alias);
+            assert_eq!(
+                GrokBuild::in_home(&alias).reconcile_scope(),
+                Some(scope.clone())
+            );
+            let alias_adapter = GrokBuild::in_home(&alias).keep_configured_paths();
             let alias_scope = root_scope(Some(&alias.join("sessions"))).unwrap();
             assert_ne!(alias_scope, scope);
             assert_eq!(alias_adapter.reconcile_scope(), Some(alias_scope.clone()));

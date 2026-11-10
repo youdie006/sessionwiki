@@ -19,9 +19,10 @@ semantic versioning once it reaches 1.0.
 
 ### Fixed
 
-- Grok and Muse readers preserve the configured profile path in session keys,
-  including symlinked homes, so existing indexed rows are updated rather than
-  duplicated and deleted sessions reconcile under the original path spelling.
+- Grok and Muse readers expose `keep_configured_paths()` for embedders whose
+  existing keys retain symlinked profile-home spelling. The default keeps
+  canonical keys compatible with earlier SessionWiki indexes. Both policies
+  preserve stored IDs and reconcile deleted sessions in their own namespace.
 - Read all concatenated Zstandard frames in compressed session logs and accept
   the `.zstd` extension used by DeepSeek Harness. Previously only the first
   frame was decoded, which can contain just the session metadata.

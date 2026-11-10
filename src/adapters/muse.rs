@@ -19,6 +19,7 @@ use walkdir::WalkDir;
 /// An adapter for native Muse data or one isolated Muse configuration home.
 pub struct Muse {
     sessions_root: Option<PathBuf>,
+    configured_paths: bool,
 }
 
 impl Default for Muse {
@@ -26,6 +27,7 @@ impl Default for Muse {
         let (_, data) = native_directories();
         Self {
             sessions_root: data.map(|data| data.join("muse/sessions")),
+            configured_paths: false,
         }
     }
 }
@@ -33,10 +35,15 @@ impl Default for Muse {
 impl Muse {
     fn key_root(&self) -> Option<PathBuf> {
         let root = self.sessions_root.as_ref()?;
-        Some(if root.is_absolute() {
+        let root = if root.is_absolute() {
             root.clone()
         } else {
             std::env::current_dir().ok()?.join(root)
+        };
+        Some(if self.configured_paths {
+            root
+        } else {
+            crate::util::canonicalize_as_recorded(&root).unwrap_or(root)
         })
     }
 
@@ -48,6 +55,7 @@ impl Muse {
         let (config, data) = native_directories();
         Self {
             sessions_root: sessions_root_at(&home, config.as_deref(), data.as_deref()),
+            configured_paths: false,
         }
     }
 
@@ -55,7 +63,17 @@ impl Muse {
     pub fn in_sessions_root(root: impl Into<PathBuf>) -> Self {
         Self {
             sessions_root: Some(root.into()),
+            configured_paths: false,
         }
+    }
+
+    /// Retain configured path spelling in persistent keys and scopes when
+    /// replacing a reader that kept symlinked profile paths. The default
+    /// preserves canonical keys already written by SessionWiki. Scanning
+    /// uses a real root with either policy; parsing preserves existing keys.
+    pub fn keep_configured_paths(mut self) -> Self {
+        self.configured_paths = true;
+        self
     }
 }
 
@@ -790,6 +808,7 @@ mod tests {
             write(root, relative, &[]);
         }
         let adapter = Muse::in_sessions_root(root);
+        let path = crate::util::canonicalize_as_recorded(&path).unwrap();
         let found = adapter.discover();
         assert!(!found.had_error);
         assert_eq!(found.files, vec![path.clone()]);
@@ -925,7 +944,13 @@ mod tests {
         symlink(&escaped, linked_file.join("session.jsonl")).unwrap();
         symlink(&root, directory.path().join("alias")).unwrap();
         let original = Muse::in_sessions_root(&root);
-        let alias = Muse::in_sessions_root(directory.path().join("alias"));
+        let canonical_alias = Muse::in_sessions_root(directory.path().join("alias"));
+        assert_eq!(
+            original.reconcile_scope(),
+            canonical_alias.reconcile_scope()
+        );
+        assert_eq!(canonical_alias.discover().files, original.discover().files);
+        let alias = Muse::in_sessions_root(directory.path().join("alias")).keep_configured_paths();
         assert_eq!(original.root(), alias.root());
         assert_ne!(original.reconcile_scope(), alias.reconcile_scope());
         let alias_path = directory
@@ -955,7 +980,10 @@ mod tests {
         let denied = fs::read_dir(&blocked).is_err();
         let store = Muse::in_sessions_root(directory.path()).store().unwrap();
         fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).unwrap();
-        assert_eq!(store.files, vec![path]);
+        assert_eq!(
+            store.files,
+            vec![crate::util::canonicalize_as_recorded(&path).unwrap()]
+        );
         if denied {
             assert!(store.had_error);
         }
