@@ -12,6 +12,8 @@ use walkdir::WalkDir;
 
 mod history;
 pub use history::CodexHistory;
+#[cfg(test)]
+pub(crate) use history::THREAD_SCANS;
 
 /// Codex CLI stores one JSONL rollout per session under
 /// `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`, and compresses

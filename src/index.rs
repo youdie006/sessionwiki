@@ -1,7 +1,7 @@
 use crate::adapters::{self, Adapter};
 use crate::model::Role;
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, types::ValueRef, Connection, OptionalExtension};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
@@ -1234,7 +1234,6 @@ fn index_one(
     size: i64,
     output_mode: ToolOutputMode,
 ) -> Result<()> {
-    delete_session_msgs(tx, &session.id)?;
     delete_session_provenance(tx, &session.id)?;
     // A path that was archived (the tool deleted it, now it is back) is live
     // again: this INSERT clears archived_at, and the durable copy is dropped.
@@ -1263,20 +1262,14 @@ fn index_one(
         ],
     )?;
     fold_moved_copy(tx, session, key)?;
-    // Contract: messages are inserted in transcript order within one
-    // transaction, so the autoincrement messages.id is a monotonic proxy for
-    // order (preview + the web transcript rely on it). Keep this sequential.
-    {
-        let mut ins_row = tx.prepare_cached(
-            "INSERT INTO messages(session_id, role, text, full_text)
-             VALUES (?1,?2,?3,?4)",
-        )?;
-        let mut ins_fts = tx.prepare_cached("INSERT INTO msgs(rowid, text) VALUES (?1,?2)")?;
-        for m in &session.messages {
-            // Normalize once and reuse for the plain row and external-content
-            // FTS row: they MUST be byte-identical or FTS delete/rebuild corrupts.
-            // Strip secrets before they enter the index, which outlives the
-            // original session in archive mode.
+    // Normalize once and reuse for the plain row and external-content FTS row:
+    // they MUST be byte-identical or FTS delete/rebuild corrupts. Strip secrets
+    // before they enter the index, which outlives the original session in
+    // archive mode.
+    let rows: Vec<MessageRow> = session
+        .messages
+        .iter()
+        .map(|m| {
             let text = crate::redact::redact(&crate::util::nfc(&m.text)).into_owned();
             let full_text = if output_mode == ToolOutputMode::Full {
                 match &m.tool {
@@ -1290,7 +1283,30 @@ fn index_one(
             } else {
                 None
             };
-            ins_row.execute(params![session.id, m.role.label(), text, full_text])?;
+            (m.role.label(), text, full_text)
+        })
+        .collect();
+    // A live session usually changed by appending, so most of its stored rows
+    // are already right. Rewriting them all would make each sync cost the
+    // whole session in FTS work (a trigram delete tokenizes the old text
+    // again), so keep the rows that match the new parse and replace only those
+    // after the first difference.
+    let (kept, stale_from) = stored_prefix(tx, &session.id, &rows)?;
+    if let Some(first_id) = stale_from {
+        delete_session_msgs_from(tx, &session.id, first_id)?;
+    }
+    // Contract: messages are inserted in transcript order within one
+    // transaction, so the autoincrement messages.id is a monotonic proxy for
+    // order (preview + the web transcript rely on it). Keep this sequential.
+    // The kept rows still exist, so every new id is larger than theirs.
+    {
+        let mut ins_row = tx.prepare_cached(
+            "INSERT INTO messages(session_id, role, text, full_text)
+             VALUES (?1,?2,?3,?4)",
+        )?;
+        let mut ins_fts = tx.prepare_cached("INSERT INTO msgs(rowid, text) VALUES (?1,?2)")?;
+        for (role, text, full_text) in &rows[kept..] {
+            ins_row.execute(params![session.id, role, text, full_text])?;
             ins_fts.execute(params![tx.last_insert_rowid(), text])?;
         }
         let mut ins_touched =
@@ -1661,16 +1677,61 @@ pub fn sync_with(
     Ok(())
 }
 
+/// One `messages` row as `index_one` stores it: role, text, full_text.
+type MessageRow = (&'static str, String, Option<String>);
+
+/// How many leading `rows` are already stored for `session_id`, in order, and
+/// the id of the first stored row after them. That id is `None` when every
+/// stored row matched, so the new rows only need appending.
+fn stored_prefix(
+    conn: &Connection,
+    session_id: &str,
+    rows: &[MessageRow],
+) -> Result<(usize, Option<i64>)> {
+    fn same_text(stored: ValueRef<'_>, new: Option<&str>) -> bool {
+        match (stored, new) {
+            (ValueRef::Null, None) => true,
+            (ValueRef::Text(stored), Some(new)) => stored == new.as_bytes(),
+            _ => false,
+        }
+    }
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, role, text, full_text FROM messages WHERE session_id = ?1 ORDER BY id",
+    )?;
+    let mut stored = stmt.query(params![session_id])?;
+    let mut kept = 0;
+    while let Some(row) = stored.next()? {
+        let same = match rows.get(kept) {
+            Some((role, text, full_text)) => {
+                same_text(row.get_ref(1)?, Some(role))
+                    && same_text(row.get_ref(2)?, Some(text))
+                    && same_text(row.get_ref(3)?, full_text.as_deref())
+            }
+            None => false,
+        };
+        if !same {
+            return Ok((kept, Some(row.get(0)?)));
+        }
+        kept += 1;
+    }
+    Ok((kept, None))
+}
+
 /// External-content FTS5 requires handing back the old rows on delete.
 fn delete_session_msgs(conn: &Connection, session_id: &str) -> Result<()> {
+    delete_session_msgs_from(conn, session_id, i64::MIN)
+}
+
+/// Delete the session's messages whose id is `first_id` or larger.
+fn delete_session_msgs_from(conn: &Connection, session_id: &str, first_id: i64) -> Result<()> {
     conn.execute(
         "INSERT INTO msgs(msgs, rowid, text)
-         SELECT 'delete', id, text FROM messages WHERE session_id = ?1",
-        params![session_id],
+         SELECT 'delete', id, text FROM messages WHERE session_id = ?1 AND id >= ?2",
+        params![session_id, first_id],
     )?;
     conn.execute(
-        "DELETE FROM messages WHERE session_id = ?1",
-        params![session_id],
+        "DELETE FROM messages WHERE session_id = ?1 AND id >= ?2",
+        params![session_id, first_id],
     )?;
     Ok(())
 }
@@ -4272,6 +4333,230 @@ mod embedder_hook_tests {
             1,
             "changed archived files must be reparsed"
         );
+    }
+
+    /// A Codex rollout holding one user message per entry of `texts`.
+    fn write_rollout(path: &Path, texts: &[&str]) {
+        let mut body =
+            String::from("{\"type\":\"session_meta\",\"payload\":{\"cwd\":\"/repo\"}}\n");
+        for text in texts {
+            body.push_str(&format!(
+                "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"{text}\"}}}}\n"
+            ));
+        }
+        std::fs::write(path, body).unwrap();
+    }
+
+    /// The (id, text) rows of the session indexed from `path`, in order.
+    fn stored_rows(conn: &Connection, path: &Path) -> Vec<(i64, String)> {
+        conn.prepare(
+            "SELECT m.id, m.text FROM messages m JOIN files f ON f.session_id = m.session_id
+             WHERE f.path = ?1 ORDER BY m.id",
+        )
+        .unwrap()
+        .query_map([path.to_string_lossy()], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+    }
+
+    fn fts_matches(conn: &Connection, phrase: &str) -> i64 {
+        conn.query_row(
+            "SELECT count(*) FROM msgs WHERE msgs MATCH ?1",
+            [format!("\"{phrase}\"")],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// Index a Codex session holding `texts`, then a second session after it,
+    /// so the first one's rows are not the last in the table: reindexing it in
+    /// full would give it new ids. Returns the home, the first session's path,
+    /// the adapters and the index.
+    fn index_two_rollouts(
+        texts: &[&str],
+    ) -> (
+        tempfile::TempDir,
+        PathBuf,
+        Vec<Box<dyn Adapter>>,
+        Connection,
+    ) {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join("sessions/2026/01/01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rollout-2026-01-01T10-00-00-aaa.jsonl");
+        write_rollout(&path, texts);
+        let adapters: Vec<Box<dyn Adapter>> =
+            vec![Box::new(crate::adapters::Codex::in_home(home.path()))];
+        let mut conn = Connection::open_in_memory().unwrap();
+        create_cache_schema(&conn).unwrap();
+        sync_with(&mut conn, &adapters, None).unwrap();
+        write_rollout(
+            &dir.join("rollout-2026-01-01T11-00-00-bbb.jsonl"),
+            &["other session"],
+        );
+        sync_with(&mut conn, &adapters, None).unwrap();
+        (home, path, adapters, conn)
+    }
+
+    /// A live session grows on almost every sync. Rewriting all its rows made
+    /// each sync cost the whole session in FTS deletes and inserts.
+    #[test]
+    fn a_sync_after_an_append_writes_only_the_new_message() {
+        let (_home, path, adapters, mut conn) = index_two_rollouts(&["alpha", "bravo"]);
+        let before = stored_rows(&conn, &path);
+        // FTS5 writes one `msgs_docsize` row for each document it adds and
+        // deletes one for each document it removes.
+        conn.execute_batch(
+            "CREATE TEMP TABLE writes(kind TEXT);
+             CREATE TEMP TRIGGER message_insert AFTER INSERT ON main.messages
+                 BEGIN INSERT INTO writes VALUES('message insert'); END;
+             CREATE TEMP TRIGGER message_delete AFTER DELETE ON main.messages
+                 BEGIN INSERT INTO writes VALUES('message delete'); END;
+             CREATE TEMP TRIGGER fts_insert AFTER INSERT ON main.msgs_docsize
+                 BEGIN INSERT INTO writes VALUES('fts insert'); END;
+             CREATE TEMP TRIGGER fts_delete AFTER DELETE ON main.msgs_docsize
+                 BEGIN INSERT INTO writes VALUES('fts delete'); END;",
+        )
+        .unwrap();
+
+        write_rollout(&path, &["alpha", "bravo", "charlie"]);
+        sync_with(&mut conn, &adapters, None).unwrap();
+
+        let after = stored_rows(&conn, &path);
+        assert_eq!(after[..2], before[..], "stored rows keep their ids");
+        assert_eq!(after[2].1, "charlie");
+        assert!(after[2].0 > before[1].0);
+        let writes: Vec<String> = conn
+            .prepare("SELECT kind FROM writes ORDER BY rowid")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(writes, ["message insert", "fts insert"]);
+        let msg_count: i64 = conn
+            .query_row(
+                "SELECT msg_count FROM files WHERE path = ?1",
+                [path.to_string_lossy()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(msg_count, 3);
+        assert_eq!(fts_matches(&conn, "charlie"), 1);
+    }
+
+    #[test]
+    fn a_changed_message_replaces_the_rows_from_it_on() {
+        let (_home, path, adapters, mut conn) =
+            index_two_rollouts(&["alpha head", "bravo old", "charlie tail"]);
+        let first = stored_rows(&conn, &path)[0].clone();
+
+        write_rollout(&path, &["alpha head", "bravo edited", "charlie tail"]);
+        sync_with(&mut conn, &adapters, None).unwrap();
+        let rows = stored_rows(&conn, &path);
+        assert_eq!(rows[0], first, "rows before the change keep their ids");
+        let texts: Vec<&str> = rows.iter().map(|(_, text)| text.as_str()).collect();
+        assert_eq!(texts, ["alpha head", "bravo edited", "charlie tail"]);
+        assert_eq!(fts_matches(&conn, "bravo old"), 0);
+        assert_eq!(fts_matches(&conn, "bravo edited"), 1);
+
+        write_rollout(&path, &["alpha head", "bravo edited"]);
+        sync_with(&mut conn, &adapters, None).unwrap();
+        let texts: Vec<String> = stored_rows(&conn, &path)
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect();
+        assert_eq!(texts, ["alpha head", "bravo edited"]);
+        assert_eq!(fts_matches(&conn, "charlie tail"), 0);
+
+        // The index now holds what a fresh index of the same files holds.
+        let mut fresh = Connection::open_in_memory().unwrap();
+        create_cache_schema(&fresh).unwrap();
+        sync_with(&mut fresh, &adapters, None).unwrap();
+        type Row = (String, String, String, Option<String>);
+        let transcripts = |conn: &Connection| -> Vec<Row> {
+            conn.prepare(
+                "SELECT f.path, m.role, m.text, m.full_text
+                 FROM messages m JOIN files f ON f.session_id = m.session_id
+                 ORDER BY f.path, m.id",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+        };
+        assert_eq!(transcripts(&conn), transcripts(&fresh));
+        let hits = |conn: &Connection, query: &str| -> Vec<(String, String, String)> {
+            search(conn, query, 10, None, None)
+                .unwrap()
+                .into_iter()
+                .map(|h| (h.row.session_id, h.role, h.snippet))
+                .collect()
+        };
+        for query in ["alpha", "bravo", "charlie", "session"] {
+            assert_eq!(hits(&conn, query), hits(&fresh, query), "{query}");
+        }
+        conn.execute(
+            "INSERT INTO msgs(msgs, rank) VALUES('integrity-check', 1)",
+            [],
+        )
+        .unwrap();
+    }
+
+    /// `full_text` is not in the FTS index, but a row whose full output changed
+    /// is still not an unchanged row.
+    #[test]
+    fn a_change_to_full_output_alone_replaces_the_row() {
+        use crate::model::{ToolEvent, ToolSummary};
+        let mut conn = Connection::open_in_memory().unwrap();
+        create_cache_schema(&conn).unwrap();
+        let session = |output: &str| Session {
+            id: "full-change".into(),
+            tool: "codex",
+            path: "/full-change.jsonl".into(),
+            project: "/repo".into(),
+            started: None,
+            ended: None,
+            title: "full output change".into(),
+            subagent: false,
+            messages: vec![Message {
+                role: Role::Tool,
+                text: "stable tool summary".into(),
+                ts: None,
+                tool: Some(ToolEvent::Summary(ToolSummary {
+                    name: "Bash".into(),
+                    args: serde_json::json!({}),
+                    output: Some(output.into()),
+                    is_error: Some(false),
+                    lines: Some(1),
+                })),
+            }],
+            touched: Vec::new(),
+            edits: Vec::new(),
+        };
+        for output in ["old full output", "new full output"] {
+            let tx = conn.transaction().unwrap();
+            index_one(
+                &tx,
+                &session(output),
+                "/full-change.jsonl",
+                1,
+                1,
+                ToolOutputMode::Full,
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        let full_text: Option<String> = conn
+            .query_row(
+                "SELECT full_text FROM messages WHERE session_id = 'full-change'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(full_text.as_deref(), Some("new full output"));
     }
 
     /// "Recent" is about activity. Ordering by when a session STARTED put one

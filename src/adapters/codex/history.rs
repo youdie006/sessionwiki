@@ -8,8 +8,10 @@ use anyhow::{Context, Result};
 use chrono::DateTime;
 use rusqlite::{params, Connection, OpenFlags};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::time::{Duration, SystemTime};
 use walkdir::WalkDir;
 
 /// Codex keeps paginated thread history in `thread_history_<n>.sqlite`
@@ -95,6 +97,88 @@ fn open_ro(db: &Path) -> Result<Connection> {
     Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(Into::into)
 }
 
+/// Size and modification time of the history db and of its `-wal` file, or
+/// `None` for a WAL file that does not exist. Codex writes through the WAL,
+/// so the main file can stay unchanged while threads change.
+type Fingerprint = [Option<(u64, SystemTime)>; 2];
+
+fn fingerprint(db: &Path) -> std::io::Result<Fingerprint> {
+    fn stamp(path: &Path) -> std::io::Result<Option<(u64, SystemTime)>> {
+        match std::fs::metadata(path) {
+            Ok(meta) => Ok(Some((meta.len(), meta.modified()?))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+    let mut wal = db.as_os_str().to_owned();
+    wal.push("-wal");
+    Ok([stamp(db)?, stamp(Path::new(&wal))?])
+}
+
+/// How long the history files must be unchanged before a scan of them is
+/// kept. SQLite writes a commit's WAL frames before it publishes the commit
+/// in shared memory, which changes no file, so a scan right after a write can
+/// miss that commit while the fingerprint already shows it. Waiting also
+/// covers file systems that store modification times in whole seconds.
+const SETTLED: Duration = Duration::from_secs(10);
+
+/// Every thread in the history db with its change-token (its newest item
+/// time). Finding the newest item reads every row of `thread_items`, and the
+/// db can hold gigabytes, so the result is kept for the life of the process
+/// and read again only when the db or its WAL file changed.
+fn thread_tokens(db: &Path) -> Result<Arc<Vec<(String, i64)>>> {
+    type Scans = Mutex<HashMap<PathBuf, (Fingerprint, Arc<Vec<(String, i64)>>)>>;
+    static SCANS: OnceLock<Scans> = OnceLock::new();
+    let scans = SCANS.get_or_init(Default::default);
+    let fingerprint = fingerprint(db).ok();
+    if let Some(fingerprint) = &fingerprint {
+        let scans = scans.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((seen, threads)) = scans.get(db) {
+            if seen == fingerprint {
+                return Ok(Arc::clone(threads));
+            }
+        }
+    }
+    // Judged before the scan: a long scan must not make a write that landed
+    // just before it look settled.
+    let settled = fingerprint.filter(|fingerprint| {
+        fingerprint.iter().flatten().all(|(_, modified)| {
+            modified
+                .elapsed()
+                .is_ok_and(|unchanged| unchanged >= SETTLED)
+        })
+    });
+    #[cfg(test)]
+    THREAD_SCANS.with(|n| n.set(n.get() + 1));
+    let conn = open_ro(db)?;
+    let mut stmt = conn.prepare(
+        "SELECT thread_id, MAX(MAX(created_at_ms, COALESCE(completed_at_ms, 0)))
+         FROM thread_items GROUP BY thread_id",
+    )?;
+    let mut complete = true;
+    let mut threads = Vec::new();
+    for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+        match row {
+            Ok(thread) => threads.push(thread),
+            Err(_) => complete = false,
+        }
+    }
+    let threads = Arc::new(threads);
+    if let Some(fingerprint) = settled.filter(|_| complete) {
+        scans
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(db.to_path_buf(), (fingerprint, Arc::clone(&threads)));
+    }
+    Ok(threads)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread read `thread_items` to list threads.
+    pub(crate) static THREAD_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl Adapter for CodexHistory {
     fn name(&self) -> &'static str {
         "codex"
@@ -122,21 +206,14 @@ impl Adapter for CodexHistory {
         let db = self.db().filter(|db| db.is_file())?;
         let mut had_error = false;
         let on_disk = self.rollout_ids(&home, &mut had_error);
-        let mut keys = Vec::new();
-        let read = open_ro(&db).and_then(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT thread_id, MAX(MAX(created_at_ms, COALESCE(completed_at_ms, 0)))
-                 FROM thread_items GROUP BY thread_id",
-            )?;
-            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
-            for (id, token) in rows.flatten() {
-                if !on_disk.contains(&id.to_ascii_lowercase()) {
-                    keys.push((format!("{}{KEY_SEP}{id}", db.display()), token));
-                }
-            }
-            Ok(())
-        });
-        had_error |= read.is_err();
+        let threads = thread_tokens(&db);
+        had_error |= threads.is_err();
+        let keys = threads
+            .iter()
+            .flat_map(|threads| threads.iter())
+            .filter(|(id, _)| !on_disk.contains(&id.to_ascii_lowercase()))
+            .map(|(id, token)| (format!("{}{KEY_SEP}{id}", db.display()), *token))
+            .collect();
         Some(Store {
             keys,
             files: vec![db],

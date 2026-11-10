@@ -537,3 +537,122 @@ fn two_live_copies_of_a_rollout_are_not_folded() {
     sync_with(&mut c, &adapters(home.path()), None).unwrap();
     assert_eq!(codex_rows(&c).len(), 2, "{:?}", codex_rows(&c));
 }
+
+const NEW: &str = "019a0000-0000-7000-8000-000000000003";
+
+/// Register thread `id` and write its one user message through `db`.
+fn add_thread(home: &Path, db: &Connection, id: &str, text: &str) {
+    Connection::open(home.join("state_5.sqlite"))
+        .unwrap()
+        .execute(
+            "INSERT INTO threads(id, rollout_path, cwd, title, source)
+             VALUES (?1, '', '/repo', 'registry title', 'cli')",
+            [id],
+        )
+        .unwrap();
+    db.execute(
+        "INSERT INTO thread_items(thread_id, turn_id, item_id, rollout_ordinal,
+            created_at_ms, item_json, item_type)
+         VALUES (?1, 't1', 'i0', 0, 1790000100000, ?2, 'userMessage')",
+        params![id, user(text).to_string()],
+    )
+    .unwrap();
+}
+
+/// Date the history db and its WAL file back a minute, as if Codex last
+/// wrote them then. A scan of files written moments ago is not kept.
+fn settle(home: &Path) {
+    let minute_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    for name in ["thread_history_1.sqlite", "thread_history_1.sqlite-wal"] {
+        if let Ok(file) = std::fs::File::options().write(true).open(home.join(name)) {
+            file.set_modified(minute_ago).unwrap();
+        }
+    }
+}
+
+fn thread_scans() -> usize {
+    crate::adapters::THREAD_SCANS.with(std::cell::Cell::get)
+}
+
+/// Listing the threads reads every row of `thread_items`, and the db can hold
+/// gigabytes. A sync while the db is unchanged reuses the last list.
+#[test]
+fn an_unchanged_history_db_is_not_read_again() {
+    let home = tempfile::tempdir().unwrap();
+    history(
+        home.path(),
+        &[(GONE, "user", &[user("prune restic snapshots")])],
+    );
+    settle(home.path());
+    let mut c = index();
+    sync_with(&mut c, &adapters(home.path()), None).unwrap();
+    let scans = thread_scans();
+    assert!(scans > 0);
+
+    sync_with(&mut c, &adapters(home.path()), None).unwrap();
+    assert_eq!(thread_scans(), scans, "the unchanged db is not read");
+    let rows = codex_rows(&c);
+    assert_eq!(rows.len(), 1);
+    assert!(!rows[0].1, "the reused thread list keeps the thread live");
+
+    let db = Connection::open(home.path().join("thread_history_1.sqlite")).unwrap();
+    add_thread(home.path(), &db, NEW, "rotate the backup key");
+    drop(db);
+    sync_with(&mut c, &adapters(home.path()), None).unwrap();
+    assert!(thread_scans() > scans, "a changed db is read again");
+    assert_eq!(messages_matching(&c, "rotate the backup key"), 1);
+}
+
+/// Codex writes through the WAL, so a new thread can leave the main db file
+/// exactly as it was.
+#[test]
+fn a_thread_written_only_to_the_wal_is_found() {
+    let home = tempfile::tempdir().unwrap();
+    history(
+        home.path(),
+        &[(GONE, "user", &[user("prune restic snapshots")])],
+    );
+    let path = home.path().join("thread_history_1.sqlite");
+    let writer = Connection::open(&path).unwrap();
+    let mode: String = writer
+        .query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(mode, "wal");
+    writer.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    settle(home.path());
+    let mut c = index();
+    sync_with(&mut c, &adapters(home.path()), None).unwrap();
+    let scans = thread_scans();
+    let main_file = |path: &Path| {
+        let meta = std::fs::metadata(path).unwrap();
+        (meta.len(), meta.modified().unwrap())
+    };
+    let before = main_file(&path);
+
+    add_thread(home.path(), &writer, NEW, "rotate the backup key");
+    assert_eq!(
+        main_file(&path),
+        before,
+        "the new thread is only in the WAL"
+    );
+    sync_with(&mut c, &adapters(home.path()), None).unwrap();
+    assert!(thread_scans() > scans, "a changed WAL is read again");
+    assert_eq!(messages_matching(&c, "rotate the backup key"), 1);
+}
+
+/// A scan right after a write can miss a commit SQLite has written but not
+/// yet published, so it is not kept until the files have been unchanged a
+/// while.
+#[test]
+fn a_history_db_written_moments_ago_is_read_on_every_sync() {
+    let home = tempfile::tempdir().unwrap();
+    history(
+        home.path(),
+        &[(GONE, "user", &[user("prune restic snapshots")])],
+    );
+    let mut c = index();
+    sync_with(&mut c, &adapters(home.path()), None).unwrap();
+    let scans = thread_scans();
+    sync_with(&mut c, &adapters(home.path()), None).unwrap();
+    assert!(thread_scans() > scans);
+}
