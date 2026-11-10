@@ -26,7 +26,9 @@ semantic versioning once it reaches 1.0.
 - Shared Grok and Muse indexes reuse the first indexed key and ID when the CLI
   and an embedder read the same store through different path aliases. Notes
   and tags remain attached, unchanged sessions do not churn, and reconciliation
-  protects other homes. Filesystem adapters opt in with `path_key_depth()`.
+  protects other homes and concurrent updates. Filesystem scans and parsing
+  leave the database available to other writers; root aliases coordinate in
+  short transactions. Adapters opt in with `path_key_depth()`.
 - Read all concatenated Zstandard frames in compressed session logs and accept
   the `.zstd` extension used by DeepSeek Harness. Previously only the first
   frame was decoded, which can contain just the session metadata.

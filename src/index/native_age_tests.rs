@@ -535,15 +535,15 @@ fn existing_duplicate_alias_owner_does_not_change_when_files_rows_are_replaced()
 
 #[cfg(unix)]
 #[test]
-fn concurrent_alias_writers_lock_before_enumeration_and_choose_one_identity() {
+fn concurrent_alias_writers_choose_one_identity_without_locking_filesystem_reads() {
     use crate::adapters::{Discovered, Store};
     use crate::model::Session;
     use std::sync::{Arc, Barrier};
-    struct LockedStore {
+    struct UnlockedStore {
         inner: Box<dyn Adapter>,
         database: PathBuf,
     }
-    impl Adapter for LockedStore {
+    impl Adapter for UnlockedStore {
         fn name(&self) -> &'static str {
             self.inner.name()
         }
@@ -557,6 +557,15 @@ fn concurrent_alias_writers_lock_before_enumeration_and_choose_one_identity() {
             self.inner.parse(path)
         }
         fn parse_key(&self, key: &str) -> Result<Session> {
+            let mut probe = Connection::open(&self.database).unwrap();
+            probe
+                .busy_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            probe
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .expect("parsing must not hold a writer lock")
+                .commit()
+                .unwrap();
             self.inner.parse_key(key)
         }
         fn modified_at(&self, key: &str) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -570,13 +579,14 @@ fn concurrent_alias_writers_lock_before_enumeration_and_choose_one_identity() {
         }
         fn store(&self) -> Option<Store> {
             let mut probe = Connection::open(&self.database).unwrap();
-            probe.busy_timeout(std::time::Duration::ZERO).unwrap();
-            let attempt = probe.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate);
-            assert!(
-                matches!(attempt, Err(rusqlite::Error::SqliteFailure(ref error, _))
-                if error.code == rusqlite::ErrorCode::DatabaseBusy),
-                "writer lock must precede inventory collection"
-            );
+            probe
+                .busy_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            probe
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .expect("inventory must not hold a writer lock")
+                .commit()
+                .unwrap();
             self.inner.store()
         }
     }
@@ -602,7 +612,7 @@ fn concurrent_alias_writers_lock_before_enumeration_and_choose_one_identity() {
                     let mut conn = Connection::open(&database).unwrap();
                     conn.busy_timeout(std::time::Duration::from_secs(10))
                         .unwrap();
-                    let reader = LockedStore {
+                    let reader = UnlockedStore {
                         inner: alias_reader(tool, &alias, configured),
                         database,
                     };
@@ -623,4 +633,92 @@ fn concurrent_alias_writers_lock_before_enumeration_and_choose_one_identity() {
         );
         assert!(hits.iter().all(|hit| !hit.row.archived));
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn stale_alias_inventory_preserves_concurrent_inserts_and_updates() {
+    use std::io::Write;
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path().join("home");
+    fixtures(&home, "grok-build");
+    let alias = directory.path().join("alias");
+    std::os::unix::fs::symlink(&home, &alias).unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
+    create_cache_schema(&conn).unwrap();
+    sync_with(&mut conn, &[alias_reader("grok-build", &alias, true)], None).unwrap();
+    let reader = alias_reader("grok-build", &alias, true);
+    // Two old inventories: one missed 'old', another already parsed it.
+    let mut deletion = path_keys::PathKeys::new(&conn, reader.as_ref())
+        .unwrap()
+        .unwrap();
+    let mut parsing = path_keys::PathKeys::new(&conn, reader.as_ref())
+        .unwrap()
+        .unwrap();
+    let store = reader.store().unwrap();
+    let old = store
+        .keys
+        .iter()
+        .find(|(key, _)| key.ends_with("/old"))
+        .unwrap()
+        .0
+        .clone();
+    let recent = store
+        .keys
+        .iter()
+        .find(|(key, _)| key.ends_with("/recent"))
+        .unwrap()
+        .0
+        .clone();
+    deletion.observe(&recent);
+    parsing.observe(&old);
+    let source = home.join("sessions/%2Fwork/old/chat_history.jsonl");
+    writeln!(
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&source)
+            .unwrap(),
+        "{}",
+        json!({"type":"assistant", "content":"concurrent fresh update"})
+    )
+    .unwrap();
+    let new = home.join("sessions/%2Fwork/new/chat_history.jsonl");
+    std::fs::create_dir_all(new.parent().unwrap()).unwrap();
+    std::fs::copy(&source, new).unwrap();
+    // The other spelling publishes an update and a new row after the snapshots.
+    sync_with(
+        &mut conn,
+        &[alias_reader("grok-build", &alias, false)],
+        None,
+    )
+    .unwrap();
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    let current = parsing.claim(&tx, &old).unwrap().unwrap();
+    assert!(
+        !parsing.unchanged_since_snapshot(&old, &current),
+        "a stale parse must not overwrite the competing writer's content"
+    );
+    assert_eq!(
+        deletion.reconcile(&tx, true).unwrap(),
+        0,
+        "an older inventory must not archive concurrent inserts or updates"
+    );
+    tx.commit().unwrap();
+    let hits = search(&conn, "fixture", 10, Some("grok-build"), None).unwrap();
+    assert_eq!(hits.len(), 3);
+    assert!(hits.iter().all(|hit| !hit.row.archived));
+    assert_eq!(
+        search(
+            &conn,
+            "concurrent fresh update",
+            10,
+            Some("grok-build"),
+            None
+        )
+        .unwrap()
+        .len(),
+        2
+    );
 }

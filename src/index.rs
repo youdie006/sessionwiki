@@ -1349,8 +1349,8 @@ fn restore_unchanged(conn: &Connection, keys: &[String]) -> Result<()> {
     if keys.is_empty() {
         return Ok(());
     }
-    // Alias-aware stores already hold their writer transaction. Reuse it so
-    // restoration, reconciliation and identity selection commit together.
+    // Alias-aware stores already hold a short writer transaction. Reuse it
+    // so restoration and identity selection commit together.
     let tx = if conn.is_autocommit() {
         Some(conn.unchecked_transaction()?)
     } else {
