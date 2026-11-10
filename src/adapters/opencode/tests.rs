@@ -15,10 +15,10 @@ fn database(sql: &str) -> (tempfile::TempDir, PathBuf) {
 #[test]
 fn v1_discovery_and_decoding_remain_supported() {
     let (_dir, db) = database(V1);
-    let store = store_in(vec![db.clone()]).unwrap();
+    let store = OpenCode::default().store_in(vec![db.clone()]).unwrap();
     assert!(!store.had_error);
     assert_eq!(store.keys, [(make_key(&db, "ses_v1"), 2000)]);
-    let session = OpenCode.parse_key(&store.keys[0].0).unwrap();
+    let session = OpenCode::default().parse_key(&store.keys[0].0).unwrap();
     assert_eq!(session.title, "Legacy title");
     assert_eq!(session.messages[0].text, "legacy search marker");
 }
@@ -26,13 +26,13 @@ fn v1_discovery_and_decoding_remain_supported() {
 #[test]
 fn v2_fixture_has_structured_tools_results_and_edit_evidence() {
     let (_dir, db) = database(V2);
-    let store = store_in(vec![db.clone()]).unwrap();
+    let store = OpenCode::default().store_in(vec![db.clone()]).unwrap();
     assert!(!store.had_error);
     assert_eq!(
         store.keys,
         [(make_key(&db, SID), 1718630500000 ^ V2_TOKEN_TAG)]
     );
-    let session = OpenCode.parse_key(&store.keys[0].0).unwrap();
+    let session = OpenCode::default().parse_key(&store.keys[0].0).unwrap();
     let roles: Vec<_> = session.messages.iter().map(|m| m.role.label()).collect();
     assert_eq!(roles, ["user", "assistant", "tool", "tool", "assistant"]);
     assert_eq!(session.touched, ["src/auth.ts"]);
@@ -52,7 +52,7 @@ fn mixed_inventory_prefers_v2_and_keeps_v1_only_sessions() {
         [SID],
     )
     .unwrap();
-    let store = store_in(vec![db.clone()]).unwrap();
+    let store = OpenCode::default().store_in(vec![db.clone()]).unwrap();
     assert!(!store.had_error);
     assert_eq!(store.keys.len(), 2);
     assert_eq!(
@@ -64,17 +64,26 @@ fn mixed_inventory_prefers_v2_and_keeps_v1_only_sessions() {
         1
     );
     assert_eq!(
-        OpenCode.parse_key(&make_key(&db, SID)).unwrap().title,
+        OpenCode::default()
+            .parse_key(&make_key(&db, SID))
+            .unwrap()
+            .title,
         "Migrate authentication to JWT"
     );
     assert_eq!(
-        OpenCode.parse_key(&make_key(&db, "ses_v1")).unwrap().title,
+        OpenCode::default()
+            .parse_key(&make_key(&db, "ses_v1"))
+            .unwrap()
+            .title,
         "Legacy title"
     );
     // An empty v2 table must still permit a genuinely v1-only session.
     conn.execute("DELETE FROM session_v2", []).unwrap();
     assert_eq!(
-        OpenCode.parse_key(&make_key(&db, SID)).unwrap().title,
+        OpenCode::default()
+            .parse_key(&make_key(&db, SID))
+            .unwrap()
+            .title,
         "Stale legacy title"
     );
 }
@@ -83,13 +92,15 @@ fn mixed_inventory_prefers_v2_and_keeps_v1_only_sessions() {
 fn native_ids_in_different_databases_remain_distinct() {
     let (_a, first) = database(V2);
     let (_b, second) = database(V2);
-    let store = store_in(vec![first.clone(), second.clone()]).unwrap();
+    let store = OpenCode::default()
+        .store_in(vec![first.clone(), second.clone()])
+        .unwrap();
     assert!(!store.had_error);
     assert_eq!(store.keys.len(), 2);
     assert_ne!(store.keys[0].0, store.keys[1].0);
     assert_ne!(
-        OpenCode.parse_key(&store.keys[0].0).unwrap().id,
-        OpenCode.parse_key(&store.keys[1].0).unwrap().id
+        OpenCode::default().parse_key(&store.keys[0].0).unwrap().id,
+        OpenCode::default().parse_key(&store.keys[1].0).unwrap().id
     );
 }
 
@@ -104,7 +115,9 @@ fn v2_json_and_row_errors_do_not_fall_back_to_a_valid_v1_copy() {
             "UPDATE session_message SET data={data} WHERE type='user'"
         ))
         .unwrap();
-        let error = OpenCode.parse_key(&make_key(&db, SID)).unwrap_err();
+        let error = OpenCode::default()
+            .parse_key(&make_key(&db, SID))
+            .unwrap_err();
         let detail = format!("{error:#}");
         assert!(
             detail.contains("malformed message json") || detail.contains("data"),
@@ -124,7 +137,9 @@ fn v2_schema_and_message_query_errors_do_not_trigger_v1_fallback() {
         conn.execute_batch(V1).unwrap();
         conn.execute("UPDATE session SET id=?1", [SID]).unwrap();
         conn.execute_batch(ddl).unwrap();
-        let error = OpenCode.parse_key(&make_key(&db, SID)).unwrap_err();
+        let error = OpenCode::default()
+            .parse_key(&make_key(&db, SID))
+            .unwrap_err();
         let detail = format!("{error:#}");
         assert!(
             detail.contains("session_v2") || detail.contains("session_message"),
@@ -155,7 +170,7 @@ fn both_schema_scans_keep_sql_and_row_failures_visible() {
                 conn.execute_batch(&format!("ALTER TABLE {broken} DROP COLUMN time_updated"))
                     .unwrap();
             }
-            let store = store_in(vec![db.clone()]).unwrap();
+            let store = OpenCode::default().store_in(vec![db.clone()]).unwrap();
             assert!(store.had_error, "{broken}/{fault}");
             assert_eq!(
                 store.keys,
@@ -176,12 +191,22 @@ fn both_schema_scans_keep_sql_and_row_failures_visible() {
 #[test]
 fn unknown_and_corrupt_databases_are_partial_stores_not_json_fallbacks() {
     let (_dir, db) = database("CREATE TABLE unrelated(id TEXT)");
-    assert!(store_in(vec![db.clone()]).unwrap().had_error);
+    assert!(
+        OpenCode::default()
+            .store_in(vec![db.clone()])
+            .unwrap()
+            .had_error
+    );
     std::fs::write(&db, b"not a SQLite database").unwrap();
-    assert!(store_in(vec![db.clone()]).unwrap().had_error);
-    assert!(OpenCode.parse_key(&make_key(&db, SID)).is_err());
+    assert!(
+        OpenCode::default()
+            .store_in(vec![db.clone()])
+            .unwrap()
+            .had_error
+    );
+    assert!(OpenCode::default().parse_key(&make_key(&db, SID)).is_err());
     std::fs::remove_file(&db).unwrap();
-    assert!(store_in(vec![db]).is_none());
+    assert!(OpenCode::default().store_in(vec![db]).is_none());
 }
 
 #[test]
@@ -200,7 +225,7 @@ fn v2_failed_tools_keep_the_error_without_claiming_an_edit() {
         [content.to_string()],
     )
     .unwrap();
-    let session = OpenCode.parse_key(&make_key(&db, SID)).unwrap();
+    let session = OpenCode::default().parse_key(&make_key(&db, SID)).unwrap();
     assert_eq!(session.touched, ["ok.ts"]);
     assert_eq!(session.edits.len(), 1);
     assert!(session.messages.iter().any(|message| matches!(
@@ -221,7 +246,7 @@ fn v2_message_sequence_controls_order_and_fallback_title() {
         [SID, r#"{"text":"First by sequence"}"#],
     )
     .unwrap();
-    let session = OpenCode.parse_key(&make_key(&db, SID)).unwrap();
+    let session = OpenCode::default().parse_key(&make_key(&db, SID)).unwrap();
     assert!(session.subagent);
     assert_eq!(session.title, "First by sequence");
     assert_eq!(session.messages[0].text, "First by sequence");
@@ -238,7 +263,8 @@ fn v2_shell_commands_and_paged_output_survive_normalization() {
         [SID, &data.to_string()],
     )
     .unwrap();
-    let session = crate::adapters::parse_session_key(&OpenCode, &make_key(&db, SID)).unwrap();
+    let session =
+        crate::adapters::parse_session_key(&OpenCode::default(), &make_key(&db, SID)).unwrap();
     let shell = session
         .messages
         .iter()
@@ -256,7 +282,7 @@ fn v2_shell_commands_and_paged_output_survive_normalization() {
 
 #[test]
 fn schema_tokens_are_distinct_but_activity_dates_remain_real() {
-    struct Source(PathBuf);
+    struct Source(PathBuf, OpenCode);
     impl Adapter for Source {
         fn name(&self) -> &'static str {
             "opencode"
@@ -268,24 +294,24 @@ fn schema_tokens_are_distinct_but_activity_dates_remain_real() {
             Vec::new().into()
         }
         fn parse(&self, path: &Path) -> Result<Session> {
-            OpenCode.parse(path)
+            OpenCode::default().parse(path)
         }
         fn store(&self) -> Option<Store> {
-            store_in(vec![self.0.clone()])
+            self.1.store_in(vec![self.0.clone()])
         }
         fn modified_at(&self, key: &str) -> Option<DateTime<Utc>> {
-            OpenCode.modified_at(key)
+            self.1.modified_at(key)
         }
     }
     let (_dir, db) = database(V2);
     let key = make_key(&db, SID);
-    let store = store_in(vec![db.clone()]).unwrap();
+    let store = OpenCode::default().store_in(vec![db.clone()]).unwrap();
     assert_ne!(store.keys[0].1, 1718630500000);
     assert_eq!(
-        OpenCode.modified_at(&key),
+        OpenCode::default().modified_at(&key),
         DateTime::from_timestamp_millis(1718630500000)
     );
-    let report = crate::adapters::report(&Source(db)).unwrap();
+    let report = crate::adapters::report(&Source(db, OpenCode::default())).unwrap();
     assert_eq!(
         report.oldest,
         DateTime::from_timestamp_millis(1718630500000)
@@ -303,7 +329,34 @@ fn v2_shell_timeout_is_an_error_even_without_output_or_exit_code() {
         [SID, &data.to_string()],
     )
     .unwrap();
-    let session = crate::adapters::parse_session_key(&OpenCode, &make_key(&db, SID)).unwrap();
+    let session =
+        crate::adapters::parse_session_key(&OpenCode::default(), &make_key(&db, SID)).unwrap();
     assert!(session.messages.iter().any(|message| matches!(&message.tool,
         Some(crate::model::ToolEvent::Summary(summary)) if summary.name == "shell" && summary.is_error == Some(true))));
+}
+
+#[test]
+fn activity_queries_reuse_the_inventory_snapshot_and_refresh_on_the_next_scan() {
+    let (_dir, db) = database(V2);
+    let reader = OpenCode::default();
+    let store = reader.store_in(vec![db.clone()]).unwrap();
+    let key = &store.keys[0].0;
+    // No connection or query per key: all metadata remains available from
+    // the inventory even if the source disappears before its dates are read.
+    std::fs::remove_file(&db).unwrap();
+    assert_eq!(
+        reader.modified_at(key),
+        DateTime::from_timestamp_millis(1718630500000)
+    );
+    assert!(reader.store_in(vec![db.clone()]).is_none());
+    assert_eq!(reader.modified_at(key), None);
+    Connection::open(&db).unwrap().execute_batch(V2).unwrap();
+    let conn = Connection::open(&db).unwrap();
+    conn.execute("UPDATE session_v2 SET time_updated=1800000000000", [])
+        .unwrap();
+    reader.store_in(vec![db]).unwrap();
+    assert_eq!(
+        reader.modified_at(key),
+        DateTime::from_timestamp_millis(1800000000000)
+    );
 }
