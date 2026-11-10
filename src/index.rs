@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
+mod path_keys;
+
 /// Where a legacy index would sit, given where this one is going.
 ///
 /// Beside the destination, not under `dirs::data_dir()`. The migration used to
@@ -1500,12 +1502,20 @@ pub fn sync_with(
         // file-per-session path. The token is stored in the `mtime` column
         // (size 0), so the same change comparison works.
         if let Some(store) = adapter.store() {
+            let mut aliases = path_keys::PathKeys::new(conn, adapter.as_ref())?;
+            let mut resolved = HashMap::new();
             let mut seen: Vec<String> = Vec::with_capacity(store.keys.len());
             let mut pending: Vec<String> = Vec::new();
             let mut restore: Vec<String> = Vec::new();
             for (key, token) in &store.keys {
-                match known.get(key) {
-                    Some(&(mtime, 0, true)) if mtime == *token => restore.push(key.clone()),
+                let matched = aliases.as_mut().and_then(|aliases| aliases.resolve(key));
+                let indexed_key = matched
+                    .as_ref()
+                    .map_or(key.as_str(), |group| group.existing.key.as_str());
+                match known.get(indexed_key) {
+                    Some(&(mtime, 0, true)) if mtime == *token => {
+                        restore.push(indexed_key.to_owned())
+                    }
                     Some(&(mtime, 0, false)) if mtime == *token => {}
                     old if old.is_some_and(|row| row.2 || row.0 < 0 || row.1 < 0)
                         || since.is_none_or(|s| {
@@ -1519,7 +1529,12 @@ pub fn sync_with(
                     }
                     _ => {}
                 }
-                seen.push(key.clone());
+                if let Some(group) = matched {
+                    seen.extend(group.aliases);
+                    resolved.insert(key.as_str(), group.existing);
+                } else {
+                    seen.push(key.clone());
+                }
             }
             restore_unchanged(conn, &restore)?;
             // Reconcile deletions only when the whole store was read this run.
@@ -1537,12 +1552,20 @@ pub fn sync_with(
                      skipping deletion reconciliation this run"
                 );
             } else {
+                let scope = adapter.reconcile_scope();
+                if let Some(aliases) = &aliases {
+                    aliases.protect_other_homes(&mut seen);
+                }
                 archived_total += archive_or_prune(
                     conn,
                     tool,
                     &seen,
                     store_present,
-                    adapter.reconcile_scope().as_deref(),
+                    if aliases.is_some() {
+                        None
+                    } else {
+                        scope.as_deref()
+                    },
                 )?;
             }
 
@@ -1559,7 +1582,7 @@ pub fn sync_with(
                     }
                     // A failed parse is warned, not silently dropped: the user
                     // must know a session is missing from the corpus.
-                    let session = match adapters::parse_session_key(adapter.as_ref(), key) {
+                    let mut session = match adapters::parse_session_key(adapter.as_ref(), key) {
                         Ok(s) => s,
                         Err(e) => {
                             failed += 1;
@@ -1567,8 +1590,16 @@ pub fn sync_with(
                             continue;
                         }
                     };
+                    let indexed_key = if let Some(existing) = resolved.get(key.as_str()) {
+                        session.id.clone_from(&existing.session_id);
+                        session.path = PathBuf::from(&existing.key);
+                        &existing.key
+                    } else {
+                        key
+                    };
                     let token = token_of.get(key.as_str()).copied().unwrap_or(0);
-                    index_one(&tx, &session, key, token, 0, output_mode)?;
+                    index_one(&tx, &session, indexed_key, token, 0, output_mode)?;
+                    known.insert(indexed_key.clone(), (token, 0, false));
                 }
                 tx.commit()?;
                 report_indexed(tool, total, failed);

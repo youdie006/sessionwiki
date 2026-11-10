@@ -382,7 +382,9 @@ the standard Muse home uses the XDG data directory. These readers index native
 conversation history and tool calls without requiring Mjolnir. Grok and Muse
 use canonical keys by default; embedders replacing readers that retained
 configured profile paths can select `.keep_configured_paths()` to preserve
-those existing keys, including symlinked homes. Support here
+those existing keys, including symlinked homes. When both writers share an
+index, sync reuses the existing key and ID for the same physical session, so
+notes and tags stay attached through either spelling. Support here
 means discovery, indexing and reading; it does not add native `resume` commands
 for these tools.
 

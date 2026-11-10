@@ -270,3 +270,154 @@ fn aliased_profile_key_policies_reuse_existing_rows_and_reconcile_deletions() {
             .any(|hit| hit.row.path == legacy_keys[1].to_string_lossy() && !hit.row.archived));
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn standalone_and_embedded_writers_share_alias_identity_without_churn_or_lost_notes() {
+    fn reader(tool: &str, home: &Path, configured: bool) -> Box<dyn Adapter> {
+        if tool == "muse" {
+            let reader = Muse::in_sessions_root(home.join("sessions"));
+            Box::new(if configured {
+                reader.keep_configured_paths()
+            } else {
+                reader
+            })
+        } else {
+            let reader = GrokBuild::in_home(home);
+            Box::new(if configured {
+                reader.keep_configured_paths()
+            } else {
+                reader
+            })
+        }
+    }
+    fn rows(conn: &Connection) -> Vec<(String, String)> {
+        conn.prepare("SELECT path, session_id FROM files ORDER BY path")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+    for tool in ["grok-build", "muse"] {
+        for first_configured in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let home = directory.path().join("home");
+            let other = directory.path().join("other");
+            fixtures(&home, tool);
+            fixtures(&other, tool); // same native IDs, different physical home
+            let other_physical = crate::util::canonicalize_as_recorded(&other).unwrap();
+            let alias = directory.path().join("alias");
+            std::os::unix::fs::symlink(&home, &alias).unwrap();
+            let mut conn = Connection::open_in_memory().unwrap();
+            create_cache_schema(&conn).unwrap();
+            // Cover both writer orders, including a shared sync call whose
+            // known-file snapshot initially contains neither spelling.
+            sync_with(
+                &mut conn,
+                &[
+                    reader(tool, &alias, first_configured),
+                    reader(tool, &alias, !first_configured),
+                    reader(tool, &other, false),
+                ],
+                None,
+            )
+            .unwrap();
+            let original = rows(&conn);
+            assert_eq!(original.len(), 4, "{tool}: aliases must not add rows");
+            let owned = |path: &str| !Path::new(path).starts_with(&other_physical);
+            let recent = original
+                .iter()
+                .find(|(path, _)| owned(path) && path.contains("recent"))
+                .unwrap()
+                .clone();
+            conn.execute(
+                "INSERT INTO notes VALUES(?1, 'keep this note', 'now')",
+                [&recent.1],
+            )
+            .unwrap();
+            conn.execute("INSERT INTO tags VALUES(?1, 'keep-tag')", [&recent.1])
+                .unwrap();
+            let changes = conn.total_changes();
+            for mode in [!first_configured, first_configured, !first_configured] {
+                sync_with(&mut conn, &[reader(tool, &alias, mode)], None).unwrap();
+            }
+            assert_eq!(rows(&conn), original);
+            assert_eq!(
+                conn.total_changes(),
+                changes,
+                "{tool}: switching writer must not reparse/archive unchanged rows"
+            );
+            let source = if tool == "muse" {
+                home.join("sessions/2026/11/10/recent/session.jsonl")
+            } else {
+                home.join("sessions/%2Fwork/recent/chat_history.jsonl")
+            };
+            let reply = if tool == "muse" {
+                json!({"schema_version":1,"id":"reply","stream":{"kind":"session","id":"recent"},
+                    "sequence":2,"recorded_at":1_700_000_000_000_001i64,"record_type":"event","durability":"durable",
+                    "payload_type":"runtime.session","payload_schema_version":1,
+                    "payload":{"kind":"run","event":{"kind":"assistant_message_committed","message_id":"reply","text":"shared alias update"}}})
+            } else {
+                json!({"type":"assistant","content":"shared alias update"})
+            };
+            use std::io::Write;
+            writeln!(
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&source)
+                    .unwrap(),
+                "{reply}"
+            )
+            .unwrap();
+            sync_with(&mut conn, &[reader(tool, &alias, !first_configured)], None).unwrap();
+            let hits = search(&conn, "shared alias update", 10, Some(tool), None).unwrap();
+            assert_eq!(hits.len(), 1);
+            assert_eq!(
+                (&hits[0].row.path, &hits[0].row.session_id),
+                (&recent.0, &recent.1)
+            );
+            assert_eq!(
+                note_for(&conn, &recent.1).unwrap().as_deref(),
+                Some("keep this note")
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT tag FROM tags WHERE session_id=?1",
+                    [&recent.1],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+                "keep-tag"
+            );
+            assert_eq!(rows(&conn), original);
+            let old_source = if tool == "muse" {
+                home.join("sessions/2026/11/10/old/session.jsonl")
+            } else {
+                home.join("sessions/%2Fwork/old/chat_history.jsonl")
+            };
+            let old_body = std::fs::read(&old_source).unwrap();
+            if tool == "muse" {
+                std::fs::remove_file(&old_source).unwrap();
+            } else {
+                std::fs::remove_dir_all(old_source.parent().unwrap()).unwrap();
+            }
+            sync_with(&mut conn, &[reader(tool, &alias, !first_configured)], None).unwrap();
+            let hits = search(&conn, "fixture", 10, Some(tool), None).unwrap();
+            assert_eq!(hits.len(), 4);
+            assert_eq!(hits.iter().filter(|hit| hit.row.archived).count(), 1);
+            assert!(hits
+                .iter()
+                .all(|hit| !Path::new(&hit.row.path).starts_with(&other_physical)
+                    || !hit.row.archived));
+            std::fs::create_dir_all(old_source.parent().unwrap()).unwrap();
+            std::fs::write(&old_source, old_body).unwrap();
+            sync_with(&mut conn, &[reader(tool, &alias, first_configured)], None).unwrap();
+            assert_eq!(rows(&conn), original);
+            assert!(search(&conn, "fixture", 10, Some(tool), None)
+                .unwrap()
+                .iter()
+                .all(|hit| !hit.row.archived));
+        }
+    }
+}

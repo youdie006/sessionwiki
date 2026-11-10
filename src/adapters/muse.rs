@@ -124,6 +124,10 @@ impl Adapter for Muse {
         super::root_scope(self.key_root().as_deref())
     }
 
+    fn path_key_depth(&self) -> Option<usize> {
+        Some(5)
+    }
+
     fn discover(&self) -> Discovered {
         let Some(root) = self.root() else {
             return Vec::new().into();

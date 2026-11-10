@@ -65,6 +65,10 @@ impl Adapter for GrokBuild {
         root_scope(self.root().as_deref())
     }
 
+    fn path_key_depth(&self) -> Option<usize> {
+        Some(2)
+    }
+
     fn modified_at(&self, key: &str) -> Option<DateTime<Utc>> {
         let path = Path::new(key);
         let mut files = [
@@ -398,7 +402,14 @@ fn track_file(path: &Path, files: &mut Vec<PathBuf>, had_error: &mut bool) {
 fn change_token(files: &[PathBuf]) -> i64 {
     let mut hash = 0xcbf29ce484222325u64;
     for path in files {
-        for byte in path.to_string_lossy().bytes() {
+        // Alias spellings of one store must have the same token, otherwise
+        // alternating CLI and embedded syncs continually reparse each other.
+        for byte in path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .bytes()
+        {
             hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
         }
         if let Ok(meta) = fs::metadata(path) {

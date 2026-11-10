@@ -116,6 +116,14 @@ pub trait Adapter {
     fn modified_at(&self, _key: &str) -> Option<chrono::DateTime<chrono::Utc>> {
         None
     }
+    /// Opt a filesystem shared store into alias-aware indexing. The depth is
+    /// the fixed number of path components below its store root in each key
+    /// (Grok: project/session = 2; Muse: year/month/day/session/file = 5).
+    /// Sync identifies aliased roots without requiring session files to exist,
+    /// and retains the existing indexed key and ID across different writers.
+    fn path_key_depth(&self) -> Option<usize> {
+        None
+    }
     /// Limit deletion reconciliation to part of this tool's indexed rows. When
     /// `Some(prefix)`, only indexed rows whose key starts with `prefix` are
     /// considered for archiving after this adapter runs. Use it when the

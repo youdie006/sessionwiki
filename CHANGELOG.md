@@ -23,6 +23,10 @@ semantic versioning once it reaches 1.0.
   existing keys retain symlinked profile-home spelling. The default keeps
   canonical keys compatible with earlier SessionWiki indexes. Both policies
   preserve stored IDs and reconcile deleted sessions in their own namespace.
+- Shared Grok and Muse indexes reuse the first indexed key and ID when the CLI
+  and an embedder read the same store through different path aliases. Notes
+  and tags remain attached, unchanged sessions do not churn, and reconciliation
+  protects other homes. Filesystem adapters opt in with `path_key_depth()`.
 - Read all concatenated Zstandard frames in compressed session logs and accept
   the `.zstd` extension used by DeepSeek Harness. Previously only the first
   frame was decoded, which can contain just the session metadata.
