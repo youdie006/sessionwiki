@@ -362,6 +362,11 @@ one feature that touches an LLM is `summarize`, and it does so by running a CLI
 | Gemini CLI | `~/.gemini/tmp/*/chats/*.json[l]` | supported &mdash; Google retired Gemini CLI for personal accounts on 2026-06-18 in favour of Antigravity CLI; the chats it left on disk are still indexed |
 | Antigravity CLI and IDE | `~/.gemini/antigravity-cli/brain/*/.system_generated/logs/transcript.jsonl`, `~/.gemini/antigravity/brain/` | in review ([#83](https://github.com/youdie006/sessionwiki/pull/83)) |
 | OpenCode | `~/.local/share/opencode/opencode.db` (SQLite; also the legacy `storage/**` JSON) | supported |
+| Kimi Code | `$KIMI_CODE_HOME/sessions/` (default `~/.kimi-code`), listed by `session_index.jsonl` | supported |
+| Grok Build | `$GROK_HOME/sessions/<encoded-cwd>/<id>/chat_history.jsonl` (default `~/.grok`) | supported |
+| Muse Code | `$XDG_DATA_HOME/muse/sessions/YYYY/MM/DD/<id>/session.jsonl` (default `~/.local/share`) | supported |
+| DeepSeek Harness | `$DSH_HOME/sessions/` (default `~/.dsh`), versioned JSONL logs including compressed generations | supported |
+| dsh-acp bridge | `$DSH_ACP_DATA_DIR/sessions/<id>.json` (default `.dsh-acp` in the current directory) | supported |
 | Cline, Roo Code, Kilo Code | VS Code `globalStorage/<ext>/tasks/<id>/` (one parser, three tools) | supported |
 | gajae-code (& Pi) | `~/.gjc/agent/sessions/**/*.jsonl` | supported |
 | Continue | `~/.continue/sessions/*.json` | supported |
@@ -369,6 +374,14 @@ one feature that touches an LLM is `summarize`, and it does so by running a CLI
 | prodex (ChatGPT Pro consults) | per-repo `.bridge/tasks|results` via the `~/.local/share/prodex/bridges.json` registry (prodex >=0.11.0); `resume` opens the ChatGPT thread | supported |
 | aider | per-repo `.aider.chat.history.md` (markdown), found by a bounded walk of home; on macOS the walk skips Pictures, Movies, Music and the Trash (no code there, and each would raise a permission prompt) - set `SESSIONWIKI_AIDER_ROOTS` to search somewhere specific | supported |
 | Cursor, Zed, ... | | planned &mdash; PRs welcome |
+
+Embedders can select individual installations with `KimiCode::in_home`,
+`GrokBuild::in_home`, `Muse::in_home`, and `Dsh::in_home`. Muse's home is its
+configuration directory: a private home keeps sessions in `.data/muse/sessions`;
+the standard Muse home uses the XDG data directory. These readers index native
+conversation history and tool calls without requiring Mjolnir. Support here
+means discovery, indexing and reading; it does not add native `resume` commands
+for these tools.
 
 **Using a wrapper like oh-my-claudecode or oh-my-openagent?** Those run on top of
 Claude Code / Codex / OpenCode, so their conversations already live in those

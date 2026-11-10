@@ -6,6 +6,20 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- Native readers for Kimi Code, Grok Build, Muse Code, and DeepSeek Harness,
+  including the dsh-acp bridge's JSON records. Conversations, tool calls and
+  results are searchable from the standalone CLI as well as library embedders.
+  Each reader accepts an explicit profile home and limits deletion
+  reconciliation to that home's sessions.
+
+### Fixed
+
+- Read all concatenated Zstandard frames in compressed session logs and accept
+  the `.zstd` extension used by DeepSeek Harness. Previously only the first
+  frame was decoded, which can contain just the session metadata.
+
 ## [0.34.23] - 2026-11-10
 
 ### Maintenance

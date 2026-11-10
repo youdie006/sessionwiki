@@ -138,8 +138,8 @@ fn session_lines_windowed(
     if len <= cap {
         let lines = BufReader::new(f)
             .lines()
-            .map_while(std::result::Result::ok)
-            .collect();
+            .collect::<std::io::Result<Vec<_>>>()
+            .with_context(|| format!("read {}", path.display()))?;
         return Ok((lines, false));
     }
     let head_n = head_bytes.min(len) as usize;
@@ -712,6 +712,14 @@ mod tests {
             assert!(super::session_lines(&path).is_err());
             assert!(super::for_each_line(&path, |_| {}).is_err());
         }
+    }
+
+    #[test]
+    fn a_plaintext_read_error_is_not_a_successful_partial_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        std::fs::write(&path, b"valid first line\n\xff\n").unwrap();
+        assert!(super::session_lines(&path).is_err());
     }
 }
 
