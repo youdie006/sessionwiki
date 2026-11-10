@@ -708,6 +708,76 @@ mod tests {
     }
 
     #[test]
+    fn transcript_growth_updates_the_token_without_changing_directory_mtime() {
+        use std::fs::FileTimes;
+        use std::io::Write;
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = write(
+            directory.path(),
+            "2026/09/08/session-1/session.jsonl",
+            &[intent(1, "intent-1", "initial prompt")],
+        );
+        let mut transcript = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let initial_mtime = UNIX_EPOCH + Duration::from_millis(1_788_872_000_100);
+        transcript
+            .set_times(FileTimes::new().set_modified(initial_mtime))
+            .unwrap();
+        let directory_mtime = path
+            .parent()
+            .unwrap()
+            .metadata()
+            .unwrap()
+            .modified()
+            .unwrap();
+        let adapter = Muse::in_sessions_root(directory.path());
+        let before = adapter.store().unwrap();
+        assert!(!before.had_error);
+        assert_eq!(before.keys.len(), 1);
+        let original = adapter.parse_key(&before.keys[0].0).unwrap();
+        assert!(texts(&original, Role::Assistant).is_empty());
+
+        let answer = "new searchable transcript-growth beacon";
+        writeln!(
+            transcript,
+            "{}",
+            run(
+                2,
+                json!({
+                    "kind":"assistant_message_committed", "message_id":"answer-1", "text":answer,
+                })
+            )
+        )
+        .unwrap();
+        transcript
+            .set_times(FileTimes::new().set_modified(initial_mtime + Duration::from_millis(1)))
+            .unwrap();
+
+        let after = adapter.store().unwrap();
+        assert!(!after.had_error);
+        assert_eq!(after.keys.len(), 1);
+        assert_eq!(
+            before.keys[0].0, after.keys[0].0,
+            "the file key stays stable"
+        );
+        assert_eq!(after.keys[0].1, before.keys[0].1 + 1);
+        assert_eq!(before.keys[0].1 / 1000, after.keys[0].1 / 1000);
+        assert_eq!(
+            path.parent()
+                .unwrap()
+                .metadata()
+                .unwrap()
+                .modified()
+                .unwrap(),
+            directory_mtime
+        );
+        let refreshed = adapter.parse_key(&after.keys[0].0).unwrap();
+        assert_eq!(refreshed.id, original.id);
+        assert_eq!(texts(&refreshed, Role::Assistant), [answer]);
+    }
+
+    #[test]
     fn missing_roots_are_normal_but_failed_walks_protect_reconciliation() {
         let directory = tempfile::tempdir().unwrap();
         let missing = Muse::in_sessions_root(directory.path().join("missing"));
