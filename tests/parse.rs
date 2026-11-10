@@ -963,3 +963,37 @@ fn a_gajae_edit_that_failed_edited_nothing() {
     let s = adapters::parse_session(adapter.as_ref(), &file).unwrap();
     assert_eq!(s.touched, ["src/ok.ts", "src/open.ts"]);
 }
+
+#[test]
+fn opencode_v2_sqlite_session() {
+    // OpenCode v2.1.1 schema (session_v2 and session_message in SQLite store)
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("opencode.db");
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(include_str!("fixtures/opencode/v2_1_1.sql"))
+        .unwrap();
+    let adapter = adapters::by_name("opencode").unwrap();
+    let s = adapters::parse_session_key(
+        adapter.as_ref(),
+        &format!("{}\u{1f}ses_v2_sanitized_001", path.to_string_lossy()),
+    )
+    .unwrap();
+
+    assert_eq!(s.tool, "opencode");
+    assert_eq!(s.title, "Migrate authentication to JWT");
+    assert_eq!(s.project, "/home/developer/opencode-v2-demo");
+    assert!(!s.subagent);
+    assert_eq!(roles(&s), ["user", "assistant", "tool", "assistant"]);
+    assert_eq!(s.touched, ["src/auth.ts"]);
+    assert_eq!(s.edits.len(), 1);
+    assert_eq!(s.edits[0].path, "src/auth.ts");
+    assert_eq!(
+        s.started,
+        chrono::DateTime::from_timestamp_millis(1718630400000)
+    );
+    assert_eq!(
+        s.ended,
+        chrono::DateTime::from_timestamp_millis(1718630500000)
+    );
+}
