@@ -6,6 +6,33 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- Native readers for Kimi Code, Grok Build, Muse Code, and DeepSeek Harness,
+  including the dsh-acp bridge's JSON records. Conversations, tool calls and
+  results are searchable from the standalone CLI as well as library embedders.
+  Each reader accepts an explicit profile home and limits deletion
+  reconciliation to that home's sessions.
+- Shared-store adapters can report activity dates independently of opaque
+  change fingerprints through `Adapter::modified_at`, so bounded sync and
+  `scan` use real timestamps.
+
+### Fixed
+
+- Grok and Muse readers expose `keep_configured_paths()` for embedders whose
+  existing keys retain symlinked profile-home spelling. The default keeps
+  canonical keys compatible with earlier SessionWiki indexes. Both policies
+  preserve stored IDs and reconcile deleted sessions in their own namespace.
+- Shared Grok and Muse indexes reuse the first indexed key and ID when the CLI
+  and an embedder read the same store through different path aliases. Notes
+  and tags remain attached, unchanged sessions do not churn, and reconciliation
+  protects other homes and concurrent updates. Filesystem scans and parsing
+  leave the database available to other writers; root aliases coordinate in
+  short transactions. Adapters opt in with `path_key_depth()`.
+- Read all concatenated Zstandard frames in compressed session logs and accept
+  the `.zstd` extension used by DeepSeek Harness. Previously only the first
+  frame was decoded, which can contain just the session metadata.
+
 ## [0.34.23] - 2026-11-10
 
 ### Maintenance
