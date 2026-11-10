@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 pub(super) struct ExistingKey {
     pub key: String,
     pub session_id: String,
+    pub state: (i64, i64, bool),
 }
 
 #[derive(Clone)]
@@ -45,22 +46,27 @@ impl PathKeys {
             sessions: HashMap::new(),
             outside: Vec::new(),
         };
-        // Oldest identity wins if an older version already wrote duplicates.
+        // Stable path ordering wins if an older version wrote duplicates.
+        // INSERT OR REPLACE changes files.rowid, so it cannot order identity owners.
         // Do not delete or merge annotations on those pre-existing rows.
-        // Finish the SQLite read before resolving filesystem roots, which
-        // may live on a different volume. No DB read lock spans that I/O.
         let rows = {
             let mut stmt =
-                conn.prepare("SELECT path, session_id FROM files WHERE tool = ?1 ORDER BY rowid")?;
+                conn.prepare("SELECT path, session_id, mtime, size, archived_at IS NOT NULL FROM files WHERE tool = ?1 ORDER BY path")?;
             let rows = stmt.query_map([adapter.name()], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    (
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, bool>(4)?,
+                    ),
+                ))
             })?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
-        for (key, session_id) in rows {
-            if let Some(identity) = keys
-                .identity(&key)
-                .filter(|identity| identity.starts_with(&keys.root))
+        for (key, session_id, state) in rows {
+            if let Some((_, identity)) = keys.identity(&key).filter(|(root, _)| root == &keys.root)
             {
                 keys.sessions
                     .entry(identity)
@@ -69,6 +75,7 @@ impl PathKeys {
                         existing: ExistingKey {
                             key: key.clone(),
                             session_id,
+                            state,
                         },
                         aliases: vec![key],
                     });
@@ -81,7 +88,7 @@ impl PathKeys {
         Ok(Some(keys))
     }
 
-    fn identity(&mut self, key: &str) -> Option<PathBuf> {
+    fn identity(&mut self, key: &str) -> Option<(PathBuf, PathBuf)> {
         let path = Path::new(key);
         let root = path.ancestors().nth(self.depth)?;
         if !root.is_absolute() {
@@ -92,11 +99,14 @@ impl PathKeys {
             .entry(root.to_path_buf())
             .or_insert_with(|| crate::util::canonicalize_as_recorded(root).ok())
             .as_ref()?;
-        Some(physical.join(path.strip_prefix(root).ok()?))
+        Some((
+            physical.clone(),
+            physical.join(path.strip_prefix(root).ok()?),
+        ))
     }
 
     pub fn resolve(&mut self, key: &str) -> Option<Match> {
-        let identity = self.identity(key)?;
+        let (_, identity) = self.identity(key)?;
         self.sessions.get(&identity).cloned()
     }
 

@@ -274,23 +274,6 @@ fn aliased_profile_key_policies_reuse_existing_rows_and_reconcile_deletions() {
 #[cfg(unix)]
 #[test]
 fn standalone_and_embedded_writers_share_alias_identity_without_churn_or_lost_notes() {
-    fn reader(tool: &str, home: &Path, configured: bool) -> Box<dyn Adapter> {
-        if tool == "muse" {
-            let reader = Muse::in_sessions_root(home.join("sessions"));
-            Box::new(if configured {
-                reader.keep_configured_paths()
-            } else {
-                reader
-            })
-        } else {
-            let reader = GrokBuild::in_home(home);
-            Box::new(if configured {
-                reader.keep_configured_paths()
-            } else {
-                reader
-            })
-        }
-    }
     fn rows(conn: &Connection) -> Vec<(String, String)> {
         conn.prepare("SELECT path, session_id FROM files ORDER BY path")
             .unwrap()
@@ -316,9 +299,9 @@ fn standalone_and_embedded_writers_share_alias_identity_without_churn_or_lost_no
             sync_with(
                 &mut conn,
                 &[
-                    reader(tool, &alias, first_configured),
-                    reader(tool, &alias, !first_configured),
-                    reader(tool, &other, false),
+                    alias_reader(tool, &alias, first_configured),
+                    alias_reader(tool, &alias, !first_configured),
+                    alias_reader(tool, &other, false),
                 ],
                 None,
             )
@@ -340,7 +323,7 @@ fn standalone_and_embedded_writers_share_alias_identity_without_churn_or_lost_no
                 .unwrap();
             let changes = conn.total_changes();
             for mode in [!first_configured, first_configured, !first_configured] {
-                sync_with(&mut conn, &[reader(tool, &alias, mode)], None).unwrap();
+                sync_with(&mut conn, &[alias_reader(tool, &alias, mode)], None).unwrap();
             }
             assert_eq!(rows(&conn), original);
             assert_eq!(
@@ -370,7 +353,12 @@ fn standalone_and_embedded_writers_share_alias_identity_without_churn_or_lost_no
                 "{reply}"
             )
             .unwrap();
-            sync_with(&mut conn, &[reader(tool, &alias, !first_configured)], None).unwrap();
+            sync_with(
+                &mut conn,
+                &[alias_reader(tool, &alias, !first_configured)],
+                None,
+            )
+            .unwrap();
             let hits = search(&conn, "shared alias update", 10, Some(tool), None).unwrap();
             assert_eq!(hits.len(), 1);
             assert_eq!(
@@ -402,7 +390,12 @@ fn standalone_and_embedded_writers_share_alias_identity_without_churn_or_lost_no
             } else {
                 std::fs::remove_dir_all(old_source.parent().unwrap()).unwrap();
             }
-            sync_with(&mut conn, &[reader(tool, &alias, !first_configured)], None).unwrap();
+            sync_with(
+                &mut conn,
+                &[alias_reader(tool, &alias, !first_configured)],
+                None,
+            )
+            .unwrap();
             let hits = search(&conn, "fixture", 10, Some(tool), None).unwrap();
             assert_eq!(hits.len(), 4);
             assert_eq!(hits.iter().filter(|hit| hit.row.archived).count(), 1);
@@ -412,12 +405,222 @@ fn standalone_and_embedded_writers_share_alias_identity_without_churn_or_lost_no
                     || !hit.row.archived));
             std::fs::create_dir_all(old_source.parent().unwrap()).unwrap();
             std::fs::write(&old_source, old_body).unwrap();
-            sync_with(&mut conn, &[reader(tool, &alias, first_configured)], None).unwrap();
+            sync_with(
+                &mut conn,
+                &[alias_reader(tool, &alias, first_configured)],
+                None,
+            )
+            .unwrap();
             assert_eq!(rows(&conn), original);
             assert!(search(&conn, "fixture", 10, Some(tool), None)
                 .unwrap()
                 .iter()
                 .all(|hit| !hit.row.archived));
         }
+    }
+}
+
+#[cfg(unix)]
+fn alias_reader(tool: &str, home: &Path, configured: bool) -> Box<dyn Adapter> {
+    if tool == "muse" {
+        let reader = Muse::in_sessions_root(home.join("sessions"));
+        Box::new(if configured {
+            reader.keep_configured_paths()
+        } else {
+            reader
+        })
+    } else {
+        let reader = GrokBuild::in_home(home);
+        Box::new(if configured {
+            reader.keep_configured_paths()
+        } else {
+            reader
+        })
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn aliases_do_not_reconcile_a_different_store_nested_under_the_same_directory() {
+    for tool in ["grok-build", "muse"] {
+        let directory = tempfile::tempdir().unwrap();
+        let outer = directory.path().join("outer");
+        let nested = outer.join("sessions/nested/profile");
+        fixtures(&outer, tool);
+        fixtures(&nested, tool);
+        let alias = directory.path().join("nested-alias");
+        std::os::unix::fs::symlink(&nested, &alias).unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        create_cache_schema(&conn).unwrap();
+        sync_with(&mut conn, &[alias_reader(tool, &alias, true)], None).unwrap();
+        sync_with(&mut conn, &[alias_reader(tool, &outer, false)], None).unwrap();
+        let hits = search(&conn, "fixture", 10, Some(tool), None).unwrap();
+        assert_eq!(hits.len(), 4);
+        assert!(
+            hits.iter().all(|hit| !hit.row.archived),
+            "{tool}: outer sync must not archive a nested store"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn existing_duplicate_alias_owner_does_not_change_when_files_rows_are_replaced() {
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path().join("home");
+    fixtures(&home, "grok-build");
+    let alias = directory.path().join("alias");
+    std::os::unix::fs::symlink(&home, &alias).unwrap();
+    let canonical = home.join("sessions/%2Fwork/recent").canonicalize().unwrap();
+    let lexical = alias.join("sessions/%2Fwork/recent");
+    let mut keys = [canonical, lexical];
+    keys.sort();
+    let adapter = alias_reader("grok-build", &alias, false);
+    let mut conn = Connection::open_in_memory().unwrap();
+    create_cache_schema(&conn).unwrap();
+    let tx = conn.transaction().unwrap();
+    // Insertion order deliberately differs from stable path ordering.
+    for key in keys.iter().rev() {
+        let session = adapter.parse_key(&key.to_string_lossy()).unwrap();
+        index_one(
+            &tx,
+            &session,
+            &key.to_string_lossy(),
+            0,
+            0,
+            ToolOutputMode::Summary,
+        )
+        .unwrap();
+    }
+    tx.commit().unwrap();
+    let owner = crate::util::short_id(&keys[0].to_string_lossy());
+    conn.execute(
+        "INSERT INTO notes VALUES(?1, 'owner-note', 'now')",
+        [&owner],
+    )
+    .unwrap();
+    for (round, configured) in [true, false, true].into_iter().enumerate() {
+        use std::io::Write;
+        writeln!(
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(keys[0].join("chat_history.jsonl"))
+                .unwrap(),
+            "\n{}",
+            json!({"type":"assistant", "content":format!("stable alias owner round{round}")})
+        )
+        .unwrap();
+        sync_with(
+            &mut conn,
+            &[alias_reader("grok-build", &alias, configured)],
+            None,
+        )
+        .unwrap();
+        let hits = search(
+            &conn,
+            &format!("round{round}"),
+            10,
+            Some("grok-build"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].row.session_id, owner);
+        assert_eq!(
+            note_for(&conn, &owner).unwrap().as_deref(),
+            Some("owner-note")
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn concurrent_alias_writers_lock_before_enumeration_and_choose_one_identity() {
+    use crate::adapters::{Discovered, Store};
+    use crate::model::Session;
+    use std::sync::{Arc, Barrier};
+    struct LockedStore {
+        inner: Box<dyn Adapter>,
+        database: PathBuf,
+    }
+    impl Adapter for LockedStore {
+        fn name(&self) -> &'static str {
+            self.inner.name()
+        }
+        fn root(&self) -> Option<PathBuf> {
+            self.inner.root()
+        }
+        fn discover(&self) -> Discovered {
+            self.inner.discover()
+        }
+        fn parse(&self, path: &Path) -> Result<Session> {
+            self.inner.parse(path)
+        }
+        fn parse_key(&self, key: &str) -> Result<Session> {
+            self.inner.parse_key(key)
+        }
+        fn modified_at(&self, key: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+            self.inner.modified_at(key)
+        }
+        fn reconcile_scope(&self) -> Option<String> {
+            self.inner.reconcile_scope()
+        }
+        fn path_key_depth(&self) -> Option<usize> {
+            self.inner.path_key_depth()
+        }
+        fn store(&self) -> Option<Store> {
+            let mut probe = Connection::open(&self.database).unwrap();
+            probe.busy_timeout(std::time::Duration::ZERO).unwrap();
+            let attempt = probe.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate);
+            assert!(
+                matches!(attempt, Err(rusqlite::Error::SqliteFailure(ref error, _))
+                if error.code == rusqlite::ErrorCode::DatabaseBusy),
+                "writer lock must precede inventory collection"
+            );
+            self.inner.store()
+        }
+    }
+    for tool in ["grok-build", "muse"] {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().join("home");
+        fixtures(&home, tool);
+        let alias = directory.path().join("alias");
+        std::os::unix::fs::symlink(&home, &alias).unwrap();
+        let database = directory.path().join("index.db");
+        let conn = Connection::open(&database).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL").unwrap();
+        create_cache_schema(&conn).unwrap();
+        drop(conn);
+        let barrier = Arc::new(Barrier::new(2));
+        let threads: Vec<_> = [false, true]
+            .into_iter()
+            .map(|configured| {
+                let database = database.clone();
+                let alias = alias.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let mut conn = Connection::open(&database).unwrap();
+                    conn.busy_timeout(std::time::Duration::from_secs(10))
+                        .unwrap();
+                    let reader = LockedStore {
+                        inner: alias_reader(tool, &alias, configured),
+                        database,
+                    };
+                    barrier.wait();
+                    sync_with(&mut conn, &[Box::new(reader)], None).unwrap();
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let conn = Connection::open(&database).unwrap();
+        let hits = search(&conn, "fixture", 10, Some(tool), None).unwrap();
+        assert_eq!(
+            hits.len(),
+            2,
+            "{tool}: concurrent policies must share one row per session"
+        );
+        assert!(hits.iter().all(|hit| !hit.row.archived));
     }
 }
