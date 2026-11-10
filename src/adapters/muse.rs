@@ -31,6 +31,15 @@ impl Default for Muse {
 }
 
 impl Muse {
+    fn key_root(&self) -> Option<PathBuf> {
+        let root = self.sessions_root.as_ref()?;
+        Some(if root.is_absolute() {
+            root.clone()
+        } else {
+            std::env::current_dir().ok()?.join(root)
+        })
+    }
+
     /// `home` is Muse's configuration directory, not its data directory.
     /// The native configuration uses XDG data storage; private profiles keep
     /// their data under `<home>/.data/muse/sessions`.
@@ -87,16 +96,21 @@ impl Adapter for Muse {
     }
 
     fn root(&self) -> Option<PathBuf> {
-        let root = self.sessions_root.as_ref()?;
-        Some(crate::util::canonicalize_as_recorded(root).unwrap_or_else(|_| root.clone()))
+        let root = self.key_root()?;
+        Some(crate::util::canonicalize_as_recorded(&root).unwrap_or(root))
     }
 
     fn reconcile_scope(&self) -> Option<String> {
-        super::root_scope(self.root().as_deref())
+        // Keys retain the configured profile's spelling, including aliases.
+        // Scanning uses a canonical root, but reconciliation must match keys.
+        super::root_scope(self.key_root().as_deref())
     }
 
     fn discover(&self) -> Discovered {
         let Some(root) = self.root() else {
+            return Vec::new().into();
+        };
+        let Some(key_root) = self.key_root() else {
             return Vec::new().into();
         };
         match std::fs::symlink_metadata(&root) {
@@ -130,7 +144,11 @@ impl Adapter for Muse {
                 continue;
             };
             if entry.depth() == 5 && entry.file_type().is_file() {
-                files.push(entry.into_path());
+                if let Ok(relative) = entry.path().strip_prefix(&root) {
+                    files.push(key_root.join(relative));
+                } else {
+                    had_error = true;
+                }
             }
         }
         files.sort();
@@ -772,15 +790,14 @@ mod tests {
             write(root, relative, &[]);
         }
         let adapter = Muse::in_sessions_root(root);
-        let canonical_path = crate::util::canonicalize_as_recorded(&path).unwrap();
         let found = adapter.discover();
         assert!(!found.had_error);
-        assert_eq!(found.files, vec![canonical_path.clone()]);
+        assert_eq!(found.files, vec![path.clone()]);
         let store = adapter.store().unwrap();
         assert!(!store.had_error);
         assert_eq!(store.files, found.files);
         assert_eq!(store.keys.len(), 1);
-        assert_eq!(store.keys[0].0, canonical_path.to_string_lossy());
+        assert_eq!(store.keys[0].0, path.to_string_lossy());
         let modified = path
             .metadata()
             .unwrap()
@@ -792,7 +809,7 @@ mod tests {
         assert_eq!(store.keys[0].1, modified);
         let parsed = adapter.parse_key(&store.keys[0].0).unwrap();
         assert_eq!(parsed.id, crate::util::short_id(&store.keys[0].0));
-        assert_eq!(parsed.path, canonical_path);
+        assert_eq!(parsed.path, path);
         assert!(store.keys[0]
             .0
             .starts_with(&adapter.reconcile_scope().unwrap()));
@@ -890,7 +907,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn canonical_scopes_and_symlink_exclusion_prevent_home_escapes() {
+    fn configured_scopes_preserve_aliases_while_scanning_excludes_symlink_escapes() {
         use std::os::unix::fs::symlink;
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("real");
@@ -910,8 +927,18 @@ mod tests {
         let original = Muse::in_sessions_root(&root);
         let alias = Muse::in_sessions_root(directory.path().join("alias"));
         assert_eq!(original.root(), alias.root());
-        assert_eq!(original.reconcile_scope(), alias.reconcile_scope());
-        assert_eq!(alias.discover().files, vec![native.canonicalize().unwrap()]);
+        assert_ne!(original.reconcile_scope(), alias.reconcile_scope());
+        let alias_path = directory
+            .path()
+            .join("alias/2026/09/08/session-1/session.jsonl");
+        assert_eq!(alias.discover().files, vec![alias_path.clone()]);
+        assert!(alias_path
+            .to_string_lossy()
+            .starts_with(&alias.reconcile_scope().unwrap()));
+        assert_eq!(
+            alias_path.canonicalize().unwrap(),
+            native.canonicalize().unwrap()
+        );
         assert!(!alias.discover().had_error);
         assert!(alias.parse(&linked_file.join("session.jsonl")).is_err());
     }
@@ -928,7 +955,7 @@ mod tests {
         let denied = fs::read_dir(&blocked).is_err();
         let store = Muse::in_sessions_root(directory.path()).store().unwrap();
         fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).unwrap();
-        assert_eq!(store.files, vec![path.canonicalize().unwrap()]);
+        assert_eq!(store.files, vec![path]);
         if denied {
             assert!(store.had_error);
         }

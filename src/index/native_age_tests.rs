@@ -163,3 +163,86 @@ fn native_stores_bound_initial_sync_by_date_and_report_real_time_spans() {
         );
     }
 }
+
+/// Mj's old Grok/Muse readers wrote keys using the configured profile path,
+/// even when it was a symlink. New readers must update those same rows and
+/// reconcile deletions under that spelling rather than create canonical twins.
+#[cfg(unix)]
+#[test]
+fn aliased_grok_and_muse_homes_reuse_legacy_rows_and_reconcile_deletions() {
+    let directory = tempfile::tempdir().unwrap();
+    for tool in ["grok-build", "muse"] {
+        let home = directory.path().join(tool);
+        fixtures(&home, tool);
+        let alias = directory.path().join(format!("{tool}-alias"));
+        std::os::unix::fs::symlink(&home, &alias).unwrap();
+        let root = alias.join("sessions");
+        let adapter: Box<dyn Adapter> = if tool == "muse" {
+            Box::new(Muse::in_sessions_root(&root))
+        } else {
+            Box::new(GrokBuild::in_home(&alias))
+        };
+        let legacy_keys: Vec<_> = ["old", "recent"]
+            .into_iter()
+            .map(|id| {
+                if tool == "muse" {
+                    root.join("2026/11/10").join(id).join("session.jsonl")
+                } else {
+                    root.join("%2Fwork").join(id)
+                }
+            })
+            .collect();
+        let mut connection = Connection::open_in_memory().unwrap();
+        create_cache_schema(&connection).unwrap();
+        // Seed the exact key and ID derivation used before the extraction.
+        let transaction = connection.transaction().unwrap();
+        for key in &legacy_keys {
+            let key_text = key.to_string_lossy();
+            let mut session = adapter.parse_key(&key_text).unwrap();
+            session.path = key.clone();
+            session.id = crate::util::short_id(&key_text);
+            index_one(
+                &transaction,
+                &session,
+                &key_text,
+                0,
+                0,
+                ToolOutputMode::Summary,
+            )
+            .unwrap();
+        }
+        transaction.commit().unwrap();
+        let adapters = vec![adapter];
+        sync_with(&mut connection, &adapters, None).unwrap();
+        let hits = search(&connection, "fixture", 10, Some(tool), None).unwrap();
+        assert_eq!(
+            hits.len(),
+            2,
+            "{tool}: migration must not duplicate legacy rows"
+        );
+        for hit in &hits {
+            assert!(legacy_keys
+                .iter()
+                .any(|key| key.to_string_lossy() == hit.row.path));
+            assert_eq!(hit.row.session_id, crate::util::short_id(&hit.row.path));
+            let parsed = adapters[0].parse_key(&hit.row.path).unwrap();
+            assert_eq!(parsed.path.to_string_lossy(), hit.row.path);
+            assert_eq!(parsed.id, hit.row.session_id);
+        }
+        if legacy_keys[0].is_dir() {
+            std::fs::remove_dir_all(&legacy_keys[0]).unwrap();
+        } else {
+            std::fs::remove_file(&legacy_keys[0]).unwrap();
+        }
+        sync_with(&mut connection, &adapters, None).unwrap();
+        let hits = search(&connection, "fixture", 10, Some(tool), None).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits.iter().filter(|hit| hit.row.archived).count(), 1);
+        assert!(hits
+            .iter()
+            .any(|hit| hit.row.path == legacy_keys[0].to_string_lossy() && hit.row.archived));
+        assert!(hits
+            .iter()
+            .any(|hit| hit.row.path == legacy_keys[1].to_string_lossy() && !hit.row.archived));
+    }
+}

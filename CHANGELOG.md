@@ -19,6 +19,9 @@ semantic versioning once it reaches 1.0.
 
 ### Fixed
 
+- Grok and Muse readers preserve the configured profile path in session keys,
+  including symlinked homes, so existing indexed rows are updated rather than
+  duplicated and deleted sessions reconcile under the original path spelling.
 - Read all concatenated Zstandard frames in compressed session logs and accept
   the `.zstd` extension used by DeepSeek Harness. Previously only the first
   frame was decoded, which can contain just the session metadata.

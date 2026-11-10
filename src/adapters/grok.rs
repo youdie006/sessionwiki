@@ -335,13 +335,14 @@ fn history_edits(path: &Path) -> Result<Vec<String>> {
 }
 
 fn absolute(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| {
-        if path.is_absolute() {
-            path.to_owned()
-        } else {
-            std::env::current_dir().unwrap_or_default().join(path)
-        }
-    })
+    // A configured profile's spelling is part of its persistent session key.
+    // Resolving an alias here would duplicate rows written by native readers
+    // that used read_dir under that profile, and escape their old scope.
+    if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    }
 }
 
 fn directories(path: &Path, had_error: &mut bool) -> Vec<PathBuf> {
@@ -488,7 +489,7 @@ mod tests {
                 .join("\n"),
         )
         .unwrap();
-        path.canonicalize().unwrap()
+        path
     }
 
     #[test]
@@ -756,7 +757,16 @@ mod tests {
             let alias_root = tempfile::tempdir().unwrap();
             let alias = alias_root.path().join("alias");
             std::os::unix::fs::symlink(tmp.path(), &alias).unwrap();
-            assert_eq!(GrokBuild::in_home(alias).reconcile_scope(), Some(scope));
+            let alias_adapter = GrokBuild::in_home(&alias);
+            let alias_scope = root_scope(Some(&alias.join("sessions"))).unwrap();
+            assert_ne!(alias_scope, scope);
+            assert_eq!(alias_adapter.reconcile_scope(), Some(alias_scope.clone()));
+            assert!(alias_adapter
+                .store()
+                .unwrap()
+                .keys
+                .iter()
+                .all(|(key, _)| key.starts_with(&alias_scope)));
         }
     }
 
