@@ -38,6 +38,18 @@ fn real_index_scopes_stores_preserves_notes_and_keeps_live_data_on_read_errors()
     );
     let sid = Antigravity::cli_in_home(&home).parse(&cli).unwrap().id;
     index::set_note(&conn, &sid, "keep note").unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_sessionwiki"))
+        .args(["show", &sid])
+        .env("SESSIONWIKI_DATA", dir.path().join("cache"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Inspect the example project"));
+
     // A broken symlink makes a previously readable source unavailable, not a
     // clean deletion. The adapter must retain the inventory error guard.
     #[cfg(unix)]
