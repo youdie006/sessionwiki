@@ -539,13 +539,6 @@ fn parse_transcript(path: &Path, key: &str) -> Result<Session> {
                                 .and_then(Value::as_str)
                                 .map(str::to_owned);
                         }
-                        if project.is_none() {
-                            project = input
-                                .get("Path")
-                                .and_then(Value::as_str)
-                                .and_then(|s| Path::new(s).parent())
-                                .map(|p| p.to_string_lossy().into_owned());
-                        }
                         if pending.len() == 4096 {
                             pending.pop_front();
                         }
