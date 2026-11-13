@@ -134,8 +134,19 @@ impl Adapter for Antigravity {
         let mut keys = Vec::new();
         let mut files = Vec::new();
         let mut had_error = false;
-        let summaries = read_summaries(&root.parent()?.join("conversation_summaries.db"), None)
-            .unwrap_or_default();
+        let summaries =
+            match read_summaries(&root.parent()?.join("conversation_summaries.db"), None) {
+                Ok(summaries) => summaries,
+                Err(_) => {
+                    // A transient metadata failure must not replace indexed titles,
+                    // workspaces or parent relationships with transcript fallbacks.
+                    return Some(Store {
+                        keys,
+                        files,
+                        had_error: true,
+                    });
+                }
+            };
         let mut cache = HashMap::new();
         match std::fs::read_dir(&root) {
             Err(_) => had_error = true,
@@ -271,8 +282,10 @@ impl Antigravity {
 }
 fn read_summaries(db: &Path, id: Option<&str>) -> Result<HashMap<String, Summary>> {
     use rusqlite::{Connection, OpenFlags};
-    if !db.is_file() {
-        return Ok(HashMap::new());
+    match db.metadata() {
+        Ok(metadata) => anyhow::ensure!(metadata.is_file(), "summary database is not a file"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Err(e) => return Err(e.into()),
     }
     let source_modified = [
         db.to_path_buf(),
