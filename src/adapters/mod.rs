@@ -1,4 +1,5 @@
 mod aider;
+mod antigravity;
 mod claude_code;
 mod cline;
 mod codex;
@@ -9,6 +10,7 @@ mod gptme;
 pub mod harness;
 mod opencode;
 mod prodex;
+pub use antigravity::Antigravity;
 pub use claude_code::ClaudeCode;
 pub(crate) use codex::is_subagent_meta as codex_is_subagent_meta;
 #[cfg(test)]
@@ -156,6 +158,8 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
         Box::new(Codex::archived()),
         Box::new(CodexHistory::default()),
         Box::new(gemini::Gemini),
+        Box::new(Antigravity::ide()),
+        Box::new(Antigravity::cli()),
         Box::new(opencode::OpenCode::default()),
         Box::new(cline::Cline),
         Box::new(cline::RooCode),
