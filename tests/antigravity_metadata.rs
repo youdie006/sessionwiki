@@ -99,4 +99,32 @@ fn bounded_sync_indexes_new_summary_metadata_on_an_old_transcript() {
         )
         .unwrap();
     assert_eq!(title, "Recovered native summary");
+    native
+        .execute_batch(
+            "ALTER TABLE conversation_summaries ADD COLUMN last_modified_time TEXT;
+        UPDATE conversation_summaries SET title='Changed with stale row timestamp',
+        last_modified_time='2020-01-01T00:00:00Z'",
+        )
+        .unwrap();
+    index::sync_with(&mut conn, &adapters, Some(1700000000)).unwrap();
+    let title: String = conn
+        .query_row(
+            "SELECT title FROM files WHERE tool='antigravity'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(title, "Changed with stale row timestamp");
+    native
+        .execute("DELETE FROM conversation_summaries", [])
+        .unwrap();
+    index::sync_with(&mut conn, &adapters, Some(1700000000)).unwrap();
+    let title: String = conn
+        .query_row(
+            "SELECT title FROM files WHERE tool='antigravity'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(title, "Inspect the example project");
 }
