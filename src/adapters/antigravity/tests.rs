@@ -33,6 +33,10 @@ fn native_capture_parses_messages_and_paired_tools() {
     let s = crate::adapters::parse_session_key(&a, &store.keys[0].0).unwrap();
     assert_eq!(s.title, "Inspect the example project");
     assert_eq!(
+        s.project, "antigravity",
+        "a nested read is not a workspace root"
+    );
+    assert_eq!(
         s.messages.iter().filter(|m| m.role == Role::User).count(),
         1
     );
