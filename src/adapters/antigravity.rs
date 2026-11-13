@@ -180,18 +180,25 @@ impl Adapter for Antigravity {
         })
     }
     fn modified_at(&self, key: &str) -> Option<DateTime<Utc>> {
-        sources(Path::new(key))
+        let log_time = sources(Path::new(key))
             .ok()?
             .iter()
             .filter_map(|p| p.metadata().ok()?.modified().ok())
             .max()
-            .map(Into::into)
+            .map(DateTime::<Utc>::from);
+        log_time
+            .into_iter()
+            .chain(self.summary(key).and_then(|s| s.updated))
+            .max()
     }
     fn parse_key(&self, key: &str) -> Result<Session> {
         let session = parse_transcript(&preferred(Path::new(key))?, key)?;
         Ok(self.with_summary(session, key))
     }
     fn parse(&self, path: &Path) -> Result<Session> {
+        if path.is_dir() {
+            return self.parse_key(&path.to_string_lossy());
+        }
         let parent = path.parent().context("transcript has no parent")?;
         let dir = if parent.file_name().is_some_and(|n| n == "logs") {
             parent
@@ -210,21 +217,11 @@ struct Summary {
     title: String,
     project: String,
     parent: String,
+    updated: Option<DateTime<Utc>>,
 }
 impl Antigravity {
     fn with_summary(&self, mut session: Session, key: &str) -> Session {
-        let cached = self
-            .summaries
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(key)
-            .cloned();
-        let summary = cached.unwrap_or_else(|| {
-            let dir = Path::new(key);
-            let id = dir.file_name()?.to_str()?;
-            let db = dir.parent()?.parent()?.join("conversation_summaries.db");
-            read_summaries(&db, Some(id)).ok()?.remove(id)
-        });
+        let summary = self.summary(key);
         if let Some(summary) = summary {
             if !summary.project.is_empty() {
                 session.project = summary.project;
@@ -235,6 +232,20 @@ impl Antigravity {
             session.subagent = !summary.parent.is_empty();
         }
         session
+    }
+    fn summary(&self, key: &str) -> Option<Summary> {
+        let cached = self
+            .summaries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+            .cloned();
+        cached.unwrap_or_else(|| {
+            let dir = Path::new(key);
+            let id = dir.file_name()?.to_str()?;
+            let db = dir.parent()?.parent()?.join("conversation_summaries.db");
+            read_summaries(&db, Some(id)).ok()?.remove(id)
+        })
     }
 }
 fn read_summaries(db: &Path, id: Option<&str>) -> Result<HashMap<String, Summary>> {
@@ -249,13 +260,24 @@ fn read_summaries(db: &Path, id: Option<&str>) -> Result<HashMap<String, Summary
             .collect::<rusqlite::Result<Vec<_>>>()?
             .iter()
             .any(|s| s == "parent_conversation_id");
+        let has_updated = conn
+            .prepare("PRAGMA table_info(conversation_summaries)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|s| s == "last_modified_time");
+        let updated = if has_updated {
+            "last_modified_time"
+        } else {
+            "NULL"
+        };
         let parent = if has_parent {
             "parent_conversation_id"
         } else {
             "''"
         };
         let mut stmt = conn.prepare(&format!(
-            "SELECT conversation_id,title,workspace_uris,{parent} FROM conversation_summaries {}",
+            "SELECT conversation_id,title,workspace_uris,{parent},{updated} FROM conversation_summaries {}",
             if id.is_some() {
                 "WHERE conversation_id=?1"
             } else {
@@ -268,11 +290,29 @@ fn read_summaries(db: &Path, id: Option<&str>) -> Result<HashMap<String, Summary
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
+                r.get::<_, rusqlite::types::Value>(4)?,
             ))
         })?;
         let mut out = HashMap::new();
         for row in rows {
-            let (id, title, uris, parent) = row?;
+            let (id, title, uris, parent, updated) = row?;
+            let updated = match updated {
+                rusqlite::types::Value::Text(s) => {
+                    parse_ts(&s.replacen(' ', "T", 1)).or_else(|| {
+                        DateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f %:z")
+                            .ok()
+                            .map(|t| t.with_timezone(&Utc))
+                    })
+                }
+                rusqlite::types::Value::Integer(n) => {
+                    if n.unsigned_abs() > 100_000_000_000 {
+                        DateTime::from_timestamp_millis(n)
+                    } else {
+                        DateTime::from_timestamp(n, 0)
+                    }
+                }
+                _ => None,
+            };
             let uris: Vec<String> = serde_json::from_str(&uris).unwrap_or_default();
             let project = uris.first().and_then(|s| file_uri(s)).unwrap_or_default();
             out.insert(
@@ -281,6 +321,7 @@ fn read_summaries(db: &Path, id: Option<&str>) -> Result<HashMap<String, Summary
                     title,
                     project,
                     parent,
+                    updated,
                 },
             );
         }
