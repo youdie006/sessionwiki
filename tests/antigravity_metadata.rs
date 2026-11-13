@@ -28,7 +28,7 @@ fn bounded_sync_indexes_new_summary_metadata_on_an_old_transcript() {
     let adapters: Vec<Box<dyn Adapter>> = vec![Box::new(Antigravity::cli_in_home(&home))];
     index::sync_with(&mut conn, &adapters, None).unwrap();
     native.execute("UPDATE conversation_summaries SET title='Updated summary title',last_modified_time='2027-02-01 00:00:00+00:00'",[]).unwrap();
-    index::sync_with(&mut conn, &adapters, Some(1800000000)).unwrap();
+    index::sync_with(&mut conn, &adapters, Some(1700000000)).unwrap();
     let title: String = conn
         .query_row(
             "SELECT title FROM files WHERE tool='antigravity'",
@@ -37,4 +37,19 @@ fn bounded_sync_indexes_new_summary_metadata_on_an_old_transcript() {
         )
         .unwrap();
     assert_eq!(title, "Updated summary title");
+    native
+        .execute_batch(
+            "ALTER TABLE conversation_summaries DROP COLUMN last_modified_time;
+        UPDATE conversation_summaries SET title='Legacy summary schema update'",
+        )
+        .unwrap();
+    index::sync_with(&mut conn, &adapters, Some(1700000000)).unwrap();
+    let title: String = conn
+        .query_row(
+            "SELECT title FROM files WHERE tool='antigravity'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(title, "Legacy summary schema update");
 }

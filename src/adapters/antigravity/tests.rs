@@ -218,3 +218,37 @@ fn symlinked_transcripts_cannot_escape_the_conversation() {
         )
         .is_err());
 }
+#[test]
+fn nullable_summary_fields_do_not_discard_other_conversations() {
+    let h = tempfile::tempdir().unwrap();
+    for id in ["empty", "good"] {
+        transcript(h.path(), "antigravity-cli", id, "transcript.jsonl", LIVE);
+    }
+    let c = rusqlite::Connection::open(h.path().join("antigravity-cli/conversation_summaries.db"))
+        .unwrap();
+    c.execute_batch("CREATE TABLE conversation_summaries(conversation_id TEXT,title TEXT,workspace_uris TEXT,parent_conversation_id TEXT); INSERT INTO conversation_summaries VALUES('empty',NULL,NULL,NULL); INSERT INTO conversation_summaries VALUES('good','Valid native title','[\"file:///work/example\"]',NULL)").unwrap();
+    let a = Antigravity::cli_in_home(h.path());
+    let before = a.store().unwrap();
+    let good = before
+        .keys
+        .iter()
+        .find(|(k, _)| k.ends_with("good"))
+        .unwrap();
+    assert_eq!(a.parse_key(&good.0).unwrap().title, "Valid native title");
+    c.execute(
+        "UPDATE conversation_summaries SET title='Other update' WHERE conversation_id='empty'",
+        [],
+    )
+    .unwrap();
+    let after = a.store().unwrap();
+    assert_eq!(
+        good.1,
+        after
+            .keys
+            .iter()
+            .find(|(k, _)| k.ends_with("good"))
+            .unwrap()
+            .1,
+        "unrelated metadata must not invalidate this conversation"
+    );
+}
