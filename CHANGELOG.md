@@ -6,6 +6,13 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- Read Antigravity IDE and agy CLI native transcripts, including explicit
+  Gemini configuration homes. Stable conversation keys deduplicate compact
+  and full logs; full-stream edit evidence survives conversation windowing.
+  Native summary metadata supplies titles, workspaces and parent relationships.
+
 ## [0.34.23] - 2026-11-10
 
 ### Maintenance
