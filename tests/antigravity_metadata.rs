@@ -23,6 +23,7 @@ fn bounded_sync_indexes_new_summary_metadata_on_an_old_transcript() {
     let native =
         rusqlite::Connection::open(home.join("antigravity-cli/conversation_summaries.db")).unwrap();
     native.execute_batch("CREATE TABLE conversation_summaries(conversation_id TEXT,title TEXT,workspace_uris TEXT,parent_conversation_id TEXT,last_modified_time TEXT); INSERT INTO conversation_summaries VALUES('s','Old title','[]','','2020-01-01T00:00:00Z')").unwrap();
+    native.pragma_update(None, "journal_mode", "WAL").unwrap();
     std::env::set_var("SESSIONWIKI_DATA", dir.path().join("index"));
     let mut conn = index::open().unwrap();
     let adapters: Vec<Box<dyn Adapter>> = vec![Box::new(Antigravity::cli_in_home(&home))];
@@ -76,6 +77,19 @@ fn bounded_sync_indexes_new_summary_metadata_on_an_old_transcript() {
         UPDATE conversation_summaries SET title='Recovered native summary'",
         )
         .unwrap();
+    index::sync_with(&mut conn, &adapters, None).unwrap();
+    let title: String = conn
+        .query_row(
+            "SELECT title FROM files WHERE tool='antigravity'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(title, "Recovered native summary");
+    native
+        .execute("UPDATE conversation_summaries SET title=x'0102'", [])
+        .unwrap();
+    assert!(adapters[0].store().unwrap().had_error);
     index::sync_with(&mut conn, &adapters, None).unwrap();
     let title: String = conn
         .query_row(
