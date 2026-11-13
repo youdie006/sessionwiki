@@ -97,6 +97,42 @@ fn full_and_compact_share_a_key_and_metadata_fingerprint() {
     assert_eq!(a.parse(&compact).unwrap().id, id);
 }
 #[test]
+fn a_stale_full_log_does_not_hide_new_compact_turns() {
+    let h = tempfile::tempdir().unwrap();
+    let compact = transcript(h.path(), "antigravity-cli", "s", "transcript.jsonl", LIVE);
+    let full = transcript(
+        h.path(),
+        "antigravity-cli",
+        "s",
+        "transcript_full.jsonl",
+        LIVE,
+    );
+    let a = Antigravity::cli_in_home(h.path());
+    let before = a.store().unwrap();
+    let newer = format!(
+        "{LIVE}{}\n",
+        json!({"step_index":7,"type":"USER_INPUT","content":"A new live turn"})
+    );
+    std::fs::write(&compact, &newer).unwrap();
+    let after = a.store().unwrap();
+    assert_ne!(before.keys[0].1, after.keys[0].1);
+    let s = a.parse_key(&after.keys[0].0).unwrap();
+    assert!(s.messages.iter().any(|m| m.text == "A new live turn"));
+    let id = s.id;
+    // Once the full log catches up, its richer content wins at equal coverage.
+    std::fs::write(
+        &full,
+        newer.replace("A new live turn", "The full untruncated turn"),
+    )
+    .unwrap();
+    let s = a.parse_key(&after.keys[0].0).unwrap();
+    assert_eq!(s.id, id);
+    assert!(s
+        .messages
+        .iter()
+        .any(|m| m.text == "The full untruncated turn"));
+}
+#[test]
 fn only_completed_edits_are_evidence_and_arguments_are_redacted() {
     let h = tempfile::tempdir().unwrap();
     let a = Antigravity::cli_in_home(h.path());

@@ -89,9 +89,35 @@ fn sources(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 fn preferred(dir: &Path) -> Result<PathBuf> {
-    sources(dir)?
-        .into_iter()
-        .find(|path| path.metadata().is_ok_and(|m| m.len() > 0))
+    let mut best: Option<(PathBuf, Option<u64>, std::time::SystemTime)> = None;
+    for path in sources(dir)? {
+        let metadata = path.metadata()?;
+        if metadata.len() == 0 {
+            continue;
+        }
+        // Full logs retain richer output, but can lag behind the compact log
+        // during a live conversation. Prefer coverage before format, retaining
+        // the FILES order (full first) when both reach the same native step.
+        let mut last_step = None;
+        crate::util::for_each_line(&path, |line| {
+            if let Ok(v) = serde_json::from_str::<Value>(line) {
+                if let Some(step) = record_id(&v) {
+                    last_step = Some(last_step.map_or(step, |old: u64| old.max(step)));
+                }
+            }
+        })?;
+        let modified = metadata.modified()?;
+        let newer =
+            best.as_ref()
+                .is_none_or(|(_, old_step, old_modified)| match (*old_step, last_step) {
+                    (Some(old), Some(new)) => new > old,
+                    _ => modified > *old_modified,
+                });
+        if newer {
+            best = Some((path, last_step, modified));
+        }
+    }
+    best.map(|(path, _, _)| path)
         .with_context(|| format!("no readable transcript in {}", dir.display()))
 }
 fn change_token(files: &[PathBuf]) -> Result<i64> {
