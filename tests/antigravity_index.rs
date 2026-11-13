@@ -58,6 +58,7 @@ fn real_index_scopes_stores_preserves_notes_and_keeps_live_data_on_read_errors()
         std::fs::write(&outside, "private").unwrap();
         std::fs::remove_file(&cli).unwrap();
         std::os::unix::fs::symlink(&outside, &cli).unwrap();
+        std::fs::remove_file(&outside).unwrap();
         index::sync_with(&mut conn, &adapters[..1], None).unwrap();
         let archived: bool = conn
             .query_row(
@@ -79,6 +80,17 @@ fn real_index_scopes_stores_preserves_notes_and_keeps_live_data_on_read_errors()
     let hits = index::search(&conn, "Inspect the example", 10, Some("antigravity"), None).unwrap();
     assert_eq!(hits.len(), 2);
     assert_eq!(hits.iter().filter(|h| h.row.archived).count(), 1);
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_sessionwiki"))
+        .args(["show", &sid])
+        .env("SESSIONWIKI_DATA", dir.path().join("cache"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Inspect the example project"));
     assert_eq!(
         index::note_for(&conn, &sid).unwrap().as_deref(),
         Some("keep note")

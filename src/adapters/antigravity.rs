@@ -74,7 +74,15 @@ fn sources(dir: &Path) -> Result<Vec<PathBuf>> {
                 out.push(path);
             }
             Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                for node in path.ancestors().take_while(|p| *p != dir) {
+                    anyhow::ensure!(
+                        !std::fs::symlink_metadata(node).is_ok_and(|m| m.file_type().is_symlink()),
+                        "unreadable transcript symlink in {}",
+                        path.display()
+                    );
+                }
+            }
             Err(e) => return Err(e).with_context(|| format!("stat {}", path.display())),
         }
     }
@@ -188,7 +196,10 @@ impl Adapter for Antigravity {
             .map(DateTime::<Utc>::from);
         log_time
             .into_iter()
-            .chain(self.summary(key).and_then(|s| s.updated))
+            .chain(
+                self.summary(key)
+                    .and_then(|s| s.updated.or(s.source_modified)),
+            )
             .max()
     }
     fn parse_key(&self, key: &str) -> Result<Session> {
@@ -212,12 +223,22 @@ impl Adapter for Antigravity {
         Ok(self.with_summary(parse_transcript(path, &key)?, &key))
     }
 }
-#[derive(Clone, Debug, Hash)]
+#[derive(Clone, Debug)]
 struct Summary {
     title: String,
     project: String,
     parent: String,
     updated: Option<DateTime<Utc>>,
+    source_modified: Option<DateTime<Utc>>,
+}
+impl Hash for Summary {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        self.title.hash(h);
+        self.project.hash(h);
+        self.parent.hash(h);
+        self.updated.hash(h);
+        // Database freshness is only a fallback date, not a per-row change.
+    }
 }
 impl Antigravity {
     fn with_summary(&self, mut session: Session, key: &str) -> Session {
@@ -253,6 +274,14 @@ fn read_summaries(db: &Path, id: Option<&str>) -> Result<HashMap<String, Summary
     if !db.is_file() {
         return Ok(HashMap::new());
     }
+    let source_modified = [
+        db.to_path_buf(),
+        PathBuf::from(format!("{}-wal", db.display())),
+    ]
+    .iter()
+    .filter_map(|p| p.metadata().ok()?.modified().ok())
+    .max()
+    .map(DateTime::<Utc>::from);
     let read = |conn: Connection| -> Result<HashMap<String, Summary>> {
         let has_parent = conn
             .prepare("PRAGMA table_info(conversation_summaries)")?
@@ -287,15 +316,17 @@ fn read_summaries(db: &Path, id: Option<&str>) -> Result<HashMap<String, Summary
         let rows = stmt.query_map([id], |r| {
             Ok((
                 r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
+                r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                r.get::<_, Option<String>>(3)?.unwrap_or_default(),
                 r.get::<_, rusqlite::types::Value>(4)?,
             ))
         })?;
         let mut out = HashMap::new();
         for row in rows {
-            let (id, title, uris, parent, updated) = row?;
+            let Ok((id, title, uris, parent, updated)) = row else {
+                continue;
+            };
             let updated = match updated {
                 rusqlite::types::Value::Text(s) => {
                     parse_ts(&s.replacen(' ', "T", 1)).or_else(|| {
@@ -322,6 +353,7 @@ fn read_summaries(db: &Path, id: Option<&str>) -> Result<HashMap<String, Summary
                     project,
                     parent,
                     updated,
+                    source_modified,
                 },
             );
         }
