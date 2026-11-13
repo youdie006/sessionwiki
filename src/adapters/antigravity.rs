@@ -363,9 +363,7 @@ fn read_summaries(db: &Path, id: Option<&str>) -> Result<HashMap<String, Summary
         })?;
         let mut out = HashMap::new();
         for row in rows {
-            let Ok((id, title, uris, parent, updated)) = row else {
-                continue;
-            };
+            let (id, title, uris, parent, updated) = row?;
             let updated = match updated {
                 rusqlite::types::Value::Text(s) => {
                     parse_ts(&s.replacen(' ', "T", 1)).or_else(|| {
@@ -402,18 +400,6 @@ fn read_summaries(db: &Path, id: Option<&str>) -> Result<HashMap<String, Summary
         db,
         OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?)
-    .or_else(|_| {
-        let encoded = db
-            .to_string_lossy()
-            .replace('%', "%25")
-            .replace('?', "%3f")
-            .replace('#', "%23");
-        let uri = format!("file:{encoded}?immutable=1");
-        read(Connection::open_with_flags(
-            uri,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
-        )?)
-    })
 }
 fn file_uri(uri: &str) -> Option<String> {
     let path = uri.strip_prefix("file://")?;
