@@ -231,12 +231,21 @@ impl Adapter for Antigravity {
             .filter_map(|p| p.metadata().ok()?.modified().ok())
             .max()
             .map(DateTime::<Utc>::from);
+        let db = Path::new(key)
+            .parent()?
+            .parent()?
+            .join("conversation_summaries.db");
+        let metadata_time = [db.clone(), PathBuf::from(format!("{}-wal", db.display()))]
+            .iter()
+            .filter_map(|p| p.metadata().ok()?.modified().ok())
+            .max()
+            .map(DateTime::<Utc>::from);
         log_time
             .into_iter()
-            .chain(
-                self.summary(key)
-                    .and_then(|s| s.updated.or(s.source_modified)),
-            )
+            .chain(self.summary(key).and_then(|s| s.updated))
+            // Row timestamps need not advance on metadata edits or deletion.
+            // Database freshness affects eligibility, never the per-row token.
+            .chain(metadata_time)
             .max()
     }
     fn parse_key(&self, key: &str) -> Result<Session> {
@@ -260,22 +269,12 @@ impl Adapter for Antigravity {
         Ok(self.with_summary(parse_transcript(path, &key)?, &key))
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 struct Summary {
     title: String,
     project: String,
     parent: String,
     updated: Option<DateTime<Utc>>,
-    source_modified: Option<DateTime<Utc>>,
-}
-impl Hash for Summary {
-    fn hash<H: Hasher>(&self, h: &mut H) {
-        self.title.hash(h);
-        self.project.hash(h);
-        self.parent.hash(h);
-        self.updated.hash(h);
-        // Database freshness is only a fallback date, not a per-row change.
-    }
 }
 impl Antigravity {
     fn with_summary(&self, mut session: Session, key: &str) -> Session {
@@ -313,14 +312,6 @@ fn read_summaries(db: &Path, id: Option<&str>) -> Result<HashMap<String, Summary
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
         Err(e) => return Err(e.into()),
     }
-    let source_modified = [
-        db.to_path_buf(),
-        PathBuf::from(format!("{}-wal", db.display())),
-    ]
-    .iter()
-    .filter_map(|p| p.metadata().ok()?.modified().ok())
-    .max()
-    .map(DateTime::<Utc>::from);
     let read = |conn: Connection| -> Result<HashMap<String, Summary>> {
         let has_parent = conn
             .prepare("PRAGMA table_info(conversation_summaries)")?
@@ -390,7 +381,6 @@ fn read_summaries(db: &Path, id: Option<&str>) -> Result<HashMap<String, Summary
                     project,
                     parent,
                     updated,
-                    source_modified,
                 },
             );
         }
