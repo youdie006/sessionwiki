@@ -6,6 +6,16 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Maintenance
+
+- Update rusqlite from 0.41.1 to 0.43.0 (#134). The bundled SQLite stays
+  3.54.1. rusqlite 0.43 refuses to prepare empty or comment-only SQL; every
+  statement sessionwiki prepares is a non-empty SELECT, UPDATE or DELETE, and
+  migrations run through `execute_batch`, which still accepts them. The
+  use-after-free fixes in 0.42 and 0.43 are in features sessionwiki does not
+  enable. A sample of 40 real Claude Code and Codex sessions indexes to the
+  same rows on 0.41.1 and 0.43.0 and passes the FTS integrity check.
+
 ## [0.34.23] - 2026-11-10
 
 ### Maintenance
