@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.24] - 2026-11-19
+
 ### Maintenance
 
 - Update rusqlite from 0.41.1 to 0.43.0 (#134). The bundled SQLite stays
