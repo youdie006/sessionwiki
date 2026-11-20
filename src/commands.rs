@@ -2064,6 +2064,77 @@ pub fn stats() -> Result<()> {
     Ok(())
 }
 
+/// Optimize the search index and defragment the database to reclaim disk space.
+pub fn vacuum() -> Result<()> {
+    let conn = index::open()?;
+    let path = index::db_path()?;
+    let wal_path = path.with_file_name("index.db-wal");
+
+    let before_db = std::fs::metadata(&path)
+        .with_context(|| format!("stat database file {}", path.display()))?
+        .len();
+    let before_wal = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+    let before = before_db + before_wal;
+
+    let required_space = before.saturating_mul(2);
+    let free_space = if let Ok(val) = std::env::var("SESSIONWIKI_SIMULATE_FREE_SPACE") {
+        val.parse::<u64>().unwrap_or(0)
+    } else {
+        crate::util::available_space(&path)?
+    };
+
+    if free_space < required_space {
+        bail!(
+            "insufficient disk space for vacuum: need at least {} (2x database size), but only {} available on volume",
+            human_size(required_space),
+            human_size(free_space),
+        );
+    }
+
+    eprintln!("Optimizing FTS5 search index...");
+    conn.execute_batch("INSERT INTO msgs(msgs) VALUES('optimize');")
+        .context("optimize FTS5 search index")?;
+
+    eprintln!("Defragmenting database and reclaiming free pages...");
+    conn.execute_batch("VACUUM;")
+        .context("vacuum database")?;
+
+    eprintln!("Flushing and truncating WAL log...");
+    let (busy, log, checkpointed): (i32, i32, i32) = conn
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE);", [], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .context("wal_checkpoint(TRUNCATE)")?;
+
+    if busy != 0 {
+        eprintln!(
+            "warning: WAL checkpoint was blocked by an active reader (busy: {busy}, log: {log}, checkpointed: {checkpointed})"
+        );
+    }
+
+    let after_db = std::fs::metadata(&path)
+        .with_context(|| format!("stat database file {}", path.display()))?
+        .len();
+    let after_wal = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+    let after = after_db + after_wal;
+
+    if after < before {
+        let saved = before - after;
+        println!(
+            "Vacuum complete: {} -> {} (reclaimed {})",
+            human_size(before),
+            human_size(after),
+            human_size(saved),
+        );
+    } else {
+        println!(
+            "Database is already compact ({}).",
+            human_size(after),
+        );
+    }
+    Ok(())
+}
+
 /// Long absolute paths make poor labels; keep the tail.
 fn project_label(p: &str) -> String {
     if p.len() > 28 && p.contains('/') {
