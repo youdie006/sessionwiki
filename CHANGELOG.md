@@ -6,6 +6,18 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- OpenCode: `opencode-next.db` is no longer read as a v1 channel database
+  (#133). That file is OpenCode's v2 pre-release database; OpenCode 2.1.1
+  imports it into `opencode.db` during its v1-to-v2 migration and leaves it in
+  place. sessionwiki listed its sessions as v1 sessions and then failed to
+  parse each one ("no such table: message"), so every sync printed one warning
+  per session. A file under that name with OpenCode's pre-release layout
+  (`project`, `session` and `session_message` tables) is now skipped, the same
+  test OpenCode uses before importing it. A v1 database under that name is
+  still read.
+
 ## [0.34.24] - 2026-11-19
 
 ### Maintenance

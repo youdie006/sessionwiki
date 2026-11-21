@@ -73,6 +73,9 @@ impl Adapter for OpenCode {
                     continue;
                 }
             };
+            if is_next_prerelease(db, &conn) {
+                continue;
+            }
             let mut stmt = match conn.prepare("SELECT id, time_updated, time_created FROM session")
             {
                 Ok(s) => s,
@@ -277,6 +280,25 @@ fn db_paths() -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// `opencode-next.db` in the v2 pre-release layout. OpenCode 2.1.1 imports it
+/// into `opencode.db` during its v1-to-v2 migration and leaves the file behind,
+/// so it is not a v1 channel database. The layout test is OpenCode's own
+/// (`isNextDatabase`); a v1 database under this name is still read.
+fn is_next_prerelease(db: &Path, conn: &Connection) -> bool {
+    let has = |table: &str| {
+        conn.query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table],
+            |_| Ok(()),
+        )
+        .is_ok()
+    };
+    db.file_name().is_some_and(|n| n == "opencode-next.db")
+        && has("project")
+        && has("session")
+        && has("session_message")
 }
 
 /// Open another tool's database strictly read-only - never creating, writing,
