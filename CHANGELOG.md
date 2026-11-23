@@ -6,6 +6,8 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.25] - 2026-11-23
+
 ### Fixed
 
 - OpenCode: `opencode-next.db` is no longer read as a v1 channel database
