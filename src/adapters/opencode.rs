@@ -12,7 +12,23 @@ use walkdir::WalkDir;
 mod v1;
 mod v2;
 
-const V2_TOKEN_TAG: i64 = 1 << 62;
+const V2_TOKEN_TAG: i64 = 3 << 61;
+
+fn v2_token(created: Option<i64>, updated: Option<i64>, message_updated: Option<i64>) -> i64 {
+    // FNV-1a over explicitly encoded optional timestamps keeps the persisted
+    // token stable. Changes to either watermark matter even below their max.
+    let mut hash = 0xcbf29ce484222325u64;
+    for time in [created, updated, message_updated] {
+        let present = u8::from(time.is_some());
+        for byte in [present].into_iter().chain(time.unwrap_or(0).to_le_bytes()) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    // Reserve the high bits to distinguish this token from v1 timestamps
+    // and from the earlier v2 timestamp-based token.
+    (hash as i64 & ((1 << 61) - 1)) | V2_TOKEN_TAG
+}
 
 /// OpenCode (sst/opencode) keeps its data under `$XDG_DATA_HOME/opencode`
 /// (default `~/.local/share/opencode`, the same on macOS - it uses
@@ -102,7 +118,8 @@ impl Adapter for OpenCode {
         let (db, sid) = key.split_once(KEY_SEP)?;
         let conn = open_ro(Path::new(db)).ok()?;
         let tx = conn.unchecked_transaction().ok()?;
-        let sql = if uses_v2(&tx, sid).ok()? {
+        let in_v2 = uses_v2(&tx, sid).ok()?;
+        let sql = if in_v2 {
             "SELECT time_updated, time_created FROM session_v2 WHERE id=?1"
         } else {
             "SELECT time_updated, time_created FROM session WHERE id=?1"
@@ -110,8 +127,12 @@ impl Adapter for OpenCode {
         let (updated, created): (Option<i64>, Option<i64>) = tx
             .query_row(sql, [sid], |row| Ok((row.get(0)?, row.get(1)?)))
             .ok()?;
-        updated
-            .or(created)
+        let message_updated = if in_v2 {
+            v2::latest_message_update(&tx, sid).ok()?
+        } else {
+            None
+        };
+        v2::activity_millis(created, updated, message_updated)
             .filter(|time| *time > 0)
             .and_then(DateTime::from_timestamp_millis)
     }
@@ -166,18 +187,7 @@ impl OpenCode {
             };
             let mut seen = std::collections::HashSet::new();
             let mut has_schema = false;
-            for (table, sql, schema_tag) in [
-                (
-                    "session_v2",
-                    "SELECT id, time_updated, time_created FROM session_v2",
-                    V2_TOKEN_TAG,
-                ),
-                (
-                    "session",
-                    "SELECT id, time_updated, time_created FROM session",
-                    0,
-                ),
-            ] {
+            for table in ["session_v2", "session"] {
                 match table_exists(&tx, table) {
                     Ok(false) => continue,
                     Ok(true) => has_schema = true,
@@ -186,7 +196,13 @@ impl OpenCode {
                         continue;
                     }
                 }
-                let mut stmt = match tx.prepare(sql) {
+                let in_v2 = table == "session_v2";
+                let stmt = if in_v2 {
+                    v2::inventory_sql(&tx).and_then(|sql| tx.prepare(sql))
+                } else {
+                    tx.prepare("SELECT id, time_updated, time_created, NULL FROM session")
+                };
+                let mut stmt = match stmt {
                     Ok(stmt) => stmt,
                     Err(_) => {
                         had_error = true;
@@ -195,9 +211,23 @@ impl OpenCode {
                 };
                 let rows = match stmt.query_map([], |row| {
                     let id: String = row.get(0)?;
+                    // A v2 row owns its ID even when its timestamps are unreadable.
+                    if in_v2 && !seen.insert(id.clone()) {
+                        return Ok(None);
+                    }
                     let updated: Option<i64> = row.get(1)?;
                     let created: Option<i64> = row.get(2)?;
-                    Ok((id, updated.or(created).unwrap_or(0)))
+                    let message_updated: Option<i64> = row.get(3)?;
+                    if !in_v2 && (!legacy.allows(&id) || !seen.insert(id.clone())) {
+                        return Ok(None);
+                    }
+                    let time = v2::activity_millis(created, updated, message_updated);
+                    let token = if in_v2 {
+                        v2_token(created, updated, message_updated)
+                    } else {
+                        time.unwrap_or(0)
+                    };
+                    Ok(Some((id, time, token)))
                 }) {
                     Ok(rows) => rows,
                     Err(_) => {
@@ -207,20 +237,16 @@ impl OpenCode {
                 };
                 for row in rows {
                     match row {
-                        Ok((id, token))
-                            if (table != "session" || legacy.allows(&id))
-                                && seen.insert(id.clone()) =>
-                        {
+                        Ok(Some((id, time, token))) => {
                             let key = make_key(db, &id);
                             activity.insert(
                                 key.clone(),
-                                (token > 0)
-                                    .then(|| DateTime::from_timestamp_millis(token))
-                                    .flatten(),
+                                time.filter(|time| *time > 0)
+                                    .and_then(DateTime::from_timestamp_millis),
                             );
-                            keys.push((key, token ^ schema_tag))
+                            keys.push((key, token));
                         }
-                        Ok(_) => {}
+                        Ok(None) => {}
                         Err(_) => had_error = true,
                     }
                 }

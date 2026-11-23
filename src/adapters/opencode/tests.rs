@@ -30,12 +30,45 @@ fn v2_fixture_has_structured_tools_results_and_edit_evidence() {
     assert!(!store.had_error);
     assert_eq!(
         store.keys,
-        [(make_key(&db, SID), 1718630500000 ^ V2_TOKEN_TAG)]
+        [(
+            make_key(&db, SID),
+            v2_token(
+                Some(1718630400000),
+                Some(1718630500000),
+                Some(1718630440000)
+            )
+        )]
     );
     let session = OpenCode::default().parse_key(&store.keys[0].0).unwrap();
     let roles: Vec<_> = session.messages.iter().map(|m| m.role.label()).collect();
-    assert_eq!(roles, ["user", "assistant", "tool", "tool", "assistant"]);
-    assert_eq!(session.touched, ["src/auth.ts"]);
+    assert_eq!(
+        roles,
+        [
+            "user",
+            "assistant",
+            "tool",
+            "tool",
+            "assistant",
+            "tool",
+            "tool",
+            "tool",
+            "tool"
+        ]
+    );
+    assert_eq!(
+        session.touched,
+        ["src/auth.ts", "src/routes.ts", "scripts/rebuild.sh"]
+    );
+    assert_eq!(session.edits.len(), 1);
+    let summaries =
+        crate::adapters::parse_session_key(&OpenCode::default(), &make_key(&db, SID)).unwrap();
+    for name in ["apply_patch", "patch"] {
+        assert!(summaries.messages.iter().any(|message| matches!(
+            &message.tool,
+            Some(crate::model::ToolEvent::Summary(summary))
+                if summary.name == name && summary.output.as_deref() == Some("Patch applied")
+        )));
+    }
     assert_eq!(
         session.edits[0].snippet,
         "export function verifyToken(token: string) { return true; }"
@@ -176,16 +209,32 @@ fn both_schema_scans_keep_sql_and_row_failures_visible() {
                 store.keys,
                 [(
                     make_key(&db, "good"),
-                    7 ^ if good == "session_v2" {
-                        V2_TOKEN_TAG
+                    if good == "session_v2" {
+                        v2_token(None, Some(7), None)
                     } else {
-                        0
+                        7
                     }
                 )],
                 "{broken}/{fault}"
             );
         }
     }
+}
+
+#[test]
+fn unreadable_v2_timestamps_reserve_the_id_without_hiding_healthy_v1_rows() {
+    let (_dir, db) = database(V2);
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(V1).unwrap();
+    conn.execute("INSERT INTO session SELECT * FROM session_v2", [])
+        .unwrap();
+    conn.execute("UPDATE session_v2 SET time_updated='bad timestamp'", [])
+        .unwrap();
+
+    let reader = OpenCode::default();
+    let store = reader.store_in(vec![db.clone()]).unwrap();
+    assert!(store.had_error);
+    assert_eq!(store.keys, [(make_key(&db, "ses_v1"), 2000)]);
 }
 
 #[test]
@@ -221,7 +270,12 @@ fn v2_failed_tools_keep_the_error_without_claiming_an_edit() {
         {"type":"tool","name":"edit","id":"running","state":{"status":"running","input":{"path":"running.ts","newString":"bad"}}}
     ]});
     conn.execute(
-        "UPDATE session_message SET data=?1 WHERE type='assistant'",
+        "DELETE FROM session_message WHERE id IN ('msg_003', 'msg_004')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE session_message SET data=?1 WHERE id='msg_002'",
         [content.to_string()],
     )
     .unwrap();
@@ -242,7 +296,7 @@ fn v2_message_sequence_controls_order_and_fallback_title() {
     conn.execute("UPDATE session_v2 SET title='', parent_id='parent'", [])
         .unwrap();
     conn.execute(
-        "INSERT INTO session_message VALUES('last-id',?1,'user',0,1999999999999,?2)",
+        "INSERT INTO session_message VALUES('last-id',?1,'user',0,1999999999999,NULL,?2)",
         [SID, r#"{"text":"First by sequence"}"#],
     )
     .unwrap();
@@ -259,7 +313,7 @@ fn v2_shell_commands_and_paged_output_survive_normalization() {
     let data = json!({"shellID":"shell1", "command":"cargo check", "status":"exited", "exit":1,
         "output":{"output":"missing dependency", "cursor":18,"size":18,"truncated":false}});
     conn.execute(
-        "INSERT INTO session_message VALUES('shell-row',?1,'shell',3,1718630500000,?2)",
+        "INSERT INTO session_message VALUES('shell-row',?1,'shell',3,1718630500000,NULL,?2)",
         [SID, &data.to_string()],
     )
     .unwrap();
@@ -325,7 +379,7 @@ fn v2_shell_timeout_is_an_error_even_without_output_or_exit_code() {
     let conn = Connection::open(&db).unwrap();
     let data = json!({"shellID":"timeout1","command":"long command","status":"timeout"});
     conn.execute(
-        "INSERT INTO session_message VALUES('timeout-row',?1,'shell',3,1718630500000,?2)",
+        "INSERT INTO session_message VALUES('timeout-row',?1,'shell',3,1718630500000,NULL,?2)",
         [SID, &data.to_string()],
     )
     .unwrap();
@@ -333,6 +387,25 @@ fn v2_shell_timeout_is_an_error_even_without_output_or_exit_code() {
         crate::adapters::parse_session_key(&OpenCode::default(), &make_key(&db, SID)).unwrap();
     assert!(session.messages.iter().any(|message| matches!(&message.tool,
         Some(crate::model::ToolEvent::Summary(summary)) if summary.name == "shell" && summary.is_error == Some(true))));
+}
+
+#[test]
+fn v2_shell_error_without_output_emits_a_failed_tool_result() {
+    let (_dir, db) = database(V2);
+    let conn = Connection::open(&db).unwrap();
+    let data = json!({"shellID":"shell-error","command":"make verify","status":"error"});
+    conn.execute(
+        "INSERT INTO session_message VALUES('shell-error',?1,'shell',5,1718630500000,NULL,?2)",
+        [SID, &data.to_string()],
+    )
+    .unwrap();
+
+    let session = OpenCode::default().parse_key(&make_key(&db, SID)).unwrap();
+    assert!(session.messages.iter().any(|message| matches!(
+        &message.tool,
+        Some(crate::model::ToolEvent::Part(crate::model::ToolPart::Result(result)))
+            if result.call_id.as_deref() == Some("shell-error") && result.is_error
+    )));
 }
 
 #[test]
@@ -413,6 +486,114 @@ fn migration_cursor_preserves_unprocessed_v1_sessions_only() {
         "Legacy title"
     );
     assert!(OpenCode::default().parse_key(&make_key(&db, SID)).is_err());
+}
+
+#[test]
+fn unstarted_migration_keeps_v1_sessions_live_with_an_existing_kv_table() {
+    for (key, value) in [
+        ("migration.v1-v2", r#"{"phase":"sessions"}"#),
+        ("unrelated", "{}"),
+    ] {
+        let (_dir, db) = database(V2);
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(V1).unwrap();
+        conn.execute_batch("CREATE TABLE kv(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+            .unwrap();
+        conn.execute("INSERT INTO kv VALUES(?1,?2)", [key, value])
+            .unwrap();
+        assert!(matches!(
+            LegacyPolicy::read(&conn).unwrap(),
+            LegacyPolicy::All
+        ));
+
+        let reader = OpenCode::default();
+        let store = reader.store_in(vec![db.clone()]).unwrap();
+        assert!(!store.had_error, "{key}");
+        let legacy = make_key(&db, "ses_v1");
+        assert!(store.keys.contains(&(legacy.clone(), 2000)), "{key}");
+        assert_eq!(reader.parse_key(&legacy).unwrap().title, "Legacy title");
+    }
+}
+
+#[test]
+fn migration_markers_require_the_v2_session_table() {
+    for phase in ["sessions", "completed"] {
+        let (_dir, db) = database(V1);
+        let conn = Connection::open(&db).unwrap();
+        migration_marker(&conn, json!({"phase":phase}));
+        assert!(LegacyPolicy::read(&conn).is_err(), "{phase}");
+
+        let reader = OpenCode::default();
+        let store = reader.store_in(vec![db.clone()]).unwrap();
+        assert!(store.had_error, "{phase}");
+        assert!(store.keys.is_empty(), "{phase}");
+        let error = reader.parse_key(&make_key(&db, "ses_v1")).unwrap_err();
+        assert!(format!("{error:#}").contains("OpenCode migration state without session_v2"));
+    }
+}
+
+#[test]
+fn both_v2_watermarks_change_the_token_even_below_the_latest_activity() {
+    let (_dir, db) = database(V2);
+    let conn = Connection::open(&db).unwrap();
+    let reader = OpenCode::default();
+    let key = make_key(&db, SID);
+    let scan = || {
+        let store = reader.store_in(vec![db.clone()]).unwrap();
+        assert!(!store.had_error);
+        assert_eq!(store.keys.len(), 1);
+        assert_eq!(store.keys[0].0, key);
+        (store.keys[0].1, reader.modified_at(&key).unwrap())
+    };
+    let (first_token, first_activity) = scan();
+    assert_ne!(first_token, 0);
+
+    conn.execute(
+        "UPDATE session_message SET time_updated=1718630450000 WHERE id='msg_004'",
+        [],
+    )
+    .unwrap();
+    let (second_token, second_activity) = scan();
+    assert_ne!(first_token, second_token);
+    assert_eq!(first_activity, second_activity);
+
+    conn.execute(
+        "UPDATE session_message SET time_updated=1718630600000 WHERE id='msg_004'",
+        [],
+    )
+    .unwrap();
+    let (third_token, third_activity) = scan();
+    assert!(third_activity > second_activity);
+
+    conn.execute("UPDATE session_v2 SET time_updated=1718630550000", [])
+        .unwrap();
+    let (fourth_token, fourth_activity) = scan();
+    assert_ne!(third_token, fourth_token);
+    assert_eq!(third_activity, fourth_activity);
+}
+
+#[test]
+fn v2_activity_handles_empty_messages_null_times_and_older_schemas() {
+    for sql in [
+        "DELETE FROM session_message",
+        "UPDATE session_message SET time_updated=NULL",
+        "ALTER TABLE session_message DROP COLUMN time_updated",
+    ] {
+        let (_dir, db) = database(V2);
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(sql).unwrap();
+        conn.execute("UPDATE session_v2 SET time_updated=NULL", [])
+            .unwrap();
+        let key = make_key(&db, SID);
+        let expected = DateTime::from_timestamp_millis(1718630400000);
+        let reader = OpenCode::default();
+        assert_eq!(reader.modified_at(&key), expected, "{sql}");
+        let store = reader.store_in(vec![db]).unwrap();
+        assert!(!store.had_error, "{sql}");
+        assert_eq!(store.keys.len(), 1, "{sql}");
+        assert_eq!(reader.modified_at(&key), expected, "{sql}");
+        assert_eq!(reader.parse_key(&key).unwrap().ended, expected, "{sql}");
+    }
 }
 
 #[test]

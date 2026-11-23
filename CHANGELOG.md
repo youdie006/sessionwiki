@@ -13,6 +13,9 @@ semantic versioning once it reaches 1.0.
   per database; failed SQL scans skip deletion reconciliation and failed v2
   reads do not silently fall back to legacy records. Native migration state
   prevents stale v1 copies from resurrecting sessions deleted in v2.
+  File tracing includes paths recorded in assistant snapshots. Shell completion
+  refreshes the indexed result and activity date even when OpenCode only updates
+  the message row.
 
 ## [0.34.25] - 2026-11-23
 

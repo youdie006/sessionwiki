@@ -1,9 +1,13 @@
 These fixtures are synthetic and contain no user data.
 
 - `v1.sql` covers the existing `session` / `message` / `part` layout.
-- `v2_1_1.sql` is a text dump of the synthetic v2.1.1 fixture contributed by
+- `v2_1_1.sql` extends the synthetic v2.1.1 fixture contributed by
   AlexZander85 in [SessionWiki PR #85](https://github.com/youdie006/sessionwiki/pull/85)
-  (commit `e0468cf`). Tests create temporary SQLite databases from this SQL.
+  (commit `e0468cf`). It includes the native `session_message.time_updated`
+  column and migration-shaped assistant snapshots. The patch row records a
+  snapshot-only path and repeats a path from a successful write. A separate
+  assistant row records snapshot files without a content array. Tests create
+  temporary SQLite databases from this SQL.
 
 The targeted released layout is independently confirmed by OpenCode's
 [v2.1.1 migration](https://github.com/anomalyco/opencode/blob/v2.1.1/packages/core/src/database/v1-migration.bun.ts),
