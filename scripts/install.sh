@@ -24,8 +24,10 @@ case "$os" in
   *) echo "unsupported OS: $os (on Windows, download the .zip from the releases page)" >&2; exit 1 ;;
 esac
 
+# grep reads the whole response: `grep -m1` stopped at the first match, and curl
+# then failed writing the rest ("curl: (23) Failure writing output").
 tag="$(curl -sSL "https://api.github.com/repos/$REPO/releases/latest" \
-  | grep -m1 '"tag_name"' | cut -d '"' -f4)"
+  | grep '"tag_name"' | head -n 1 | cut -d '"' -f4)"
 if [ -z "${tag:-}" ]; then
   echo "could not determine the latest release tag" >&2
   exit 1
