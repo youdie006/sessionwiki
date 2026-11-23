@@ -5,7 +5,10 @@
 //! "curl: (23) Failure writing output to destination" on an install that
 //! worked. The test runs the script with the real curl against a local server
 //! that sends a release response larger than a pipe holds.
-#![cfg(unix)]
+//!
+//! Built only where install.sh has a prebuilt binary; elsewhere it points the
+//! user at `cargo install`, and the suite must still pass there.
+#![cfg(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos"))]
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -20,7 +23,7 @@ fn target() -> &'static str {
         ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
         ("macos", "x86_64") => "x86_64-apple-darwin",
         ("macos", "aarch64") => "aarch64-apple-darwin",
-        other => panic!("install.sh has no build for {other:?}"),
+        other => unreachable!("the cfg above excludes {other:?}"),
     }
 }
 
