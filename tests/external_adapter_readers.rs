@@ -63,11 +63,11 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(tool: &'static str, text: &str) -> Self {
+    fn new(tool: &'static str, transcript: impl AsRef<[u8]>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let data = dir.path().join("data");
         let source = dir.path().join("embedded.jsonl");
-        fs::write(&source, text).unwrap();
+        fs::write(&source, transcript).unwrap();
         // Only index::open reads this process-global variable. Restore it
         // before the lock is released; subprocesses receive their own value.
         let mut conn = {
@@ -112,6 +112,29 @@ impl Fixture {
         command.env("SESSIONWIKI_DATA", &self.data);
         command
     }
+}
+
+#[test]
+fn gptme_indexes_complete_records_before_a_torn_utf8_line() {
+    let transcript = concat!(
+        "{\"role\":\"user\",\"content\":\"Question before the tear\"}\n",
+        "{\"role\":\"assistant\",\"content\":\"Answer before the tear\"}\n",
+        "{\"role\":\"assistant\",\"content\":\"",
+    );
+    let bytes = [transcript.as_bytes(), b"\xf0\x9f\x92"].concat();
+    let fixture = Fixture::new("gptme", bytes);
+    let conn = rusqlite::Connection::open(fixture.data.join("index.db")).unwrap();
+    let messages = conn
+        .prepare("SELECT text FROM messages WHERE session_id = ?1 ORDER BY id")
+        .unwrap()
+        .query_map([&fixture.id], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        messages,
+        ["Question before the tear", "Answer before the tear"]
+    );
 }
 
 fn cli_reads_external(source_exists: bool) {

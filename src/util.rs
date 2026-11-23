@@ -1,5 +1,10 @@
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
+use ruzstd::decoding::errors::{FrameDecoderError, ReadFrameHeaderError};
+use ruzstd::decoding::{BlockDecodingStrategy, FrameDecoder, StreamingDecoder};
+use std::collections::VecDeque;
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 /// The largest session file we will read into memory. Session transcripts are
@@ -16,10 +21,19 @@ const WINDOW_TAIL_BYTES: u64 = 512 * 1024;
 /// lines (the partial line at each cut boundary is dropped), so a huge session
 /// is still indexed - searchable, and its start + recent turns readable via
 /// `session_window`/`show` - instead of being dropped entirely. Byte-bounded, so
-/// even a 256 MB+ file is read cheaply (no full scan).
+/// even a 256 MB+ plain file is read cheaply (no full scan). `.zst` files
+/// use their first frame and `.zstd` files use concatenated decoding.
 pub fn session_lines(path: &Path) -> Result<(Vec<String>, bool)> {
     let (cap, head, tail) = window_limits();
-    session_lines_windowed(path, cap, head, tail)
+    session_lines_windowed(path, cap, head, tail, false)
+}
+
+/// Like [`session_lines`], but also reads concatenated frames from `.zst`
+/// files. `.zstd` files use concatenated decoding in either reader.
+/// A torn trailing frame ends the stream at the last complete line.
+pub fn session_lines_concat_zstd(path: &Path) -> Result<(Vec<String>, bool)> {
+    let (cap, head, tail) = window_limits();
+    session_lines_windowed(path, cap, head, tail, true)
 }
 
 /// Most text a windowed read keeps from the middle of a file. Conversation is a
@@ -52,8 +66,7 @@ fn lines_keeping(
     // A plain file's size is known before reading, so one over the cap is
     // windowed from its first line instead of being buffered up to the cap; a
     // compressed one is measured as it decodes.
-    let mut windowed = path.extension().is_none_or(|x| x != "zst")
-        && std::fs::metadata(path).is_ok_and(|m| m.len() > cap);
+    let mut windowed = !is_zstd(path) && std::fs::metadata(path).is_ok_and(|m| m.len() > cap);
     let mut head: Vec<String> = Vec::new();
     let mut middle: Vec<String> = Vec::new();
     let mut middle_used = 0u64;
@@ -127,21 +140,24 @@ fn session_lines_windowed(
     cap: u64,
     head_bytes: u64,
     tail_bytes: u64,
+    concat_zstd: bool,
 ) -> Result<(Vec<String>, bool)> {
-    use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
-    let mut f = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
-    if path.extension().is_some_and(|x| x == "zst") {
-        let decoder = ruzstd::decoding::StreamingDecoder::new(BufReader::new(f))
-            .map_err(|e| anyhow::anyhow!("decompress {}: {e}", path.display()))?;
-        return decoded_lines_windowed(decoder, cap, head_bytes, tail_bytes)
+    let mut f = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    if is_zstd(path) {
+        return zstd_reader(path, BufReader::new(f), concat_zstd)
+            .and_then(|stream| decoded_lines_windowed(stream, cap, head_bytes, tail_bytes))
             .with_context(|| format!("decompress {}", path.display()));
     }
     let len = f.metadata().map(|m| m.len()).unwrap_or(0);
     if len <= cap {
-        let lines = BufReader::new(f)
-            .lines()
-            .map_while(std::result::Result::ok)
-            .collect();
+        let mut lines = Vec::new();
+        read_lines(BufReader::new(f), |line| {
+            let line = line
+                .strip_suffix('\n')
+                .map_or(line, |line| line.strip_suffix('\r').unwrap_or(line));
+            lines.push(line.to_owned());
+        })
+        .with_context(|| format!("read {}", path.display()))?;
         return Ok((lines, false));
     }
     let head_n = head_bytes.min(len) as usize;
@@ -156,57 +172,186 @@ fn session_lines_windowed(
 
 /// The same window over a stream that can only be read front to back: the
 /// whole stream while it stays within `cap`, then its first `head_bytes` and
-/// a rolling last `tail_bytes`.
+/// a rolling last `tail_bytes`. A stream over the cap is reported as windowed
+/// even when a torn frame leaves every complete line in the window.
 fn decoded_lines_windowed(
     mut stream: impl std::io::Read,
     cap: u64,
     head_bytes: u64,
     tail_bytes: u64,
-) -> Result<(Vec<String>, bool)> {
+) -> io::Result<(Vec<String>, bool)> {
     let mut all = Vec::new();
     let mut chunk = vec![0u8; 64 * 1024];
-    let mut tail: Option<(Vec<u8>, std::collections::VecDeque<u8>)> = None;
-    loop {
-        let n = stream.read(&mut chunk)?;
-        if n == 0 {
-            break;
-        }
+    let mut tail: Option<(Vec<u8>, DecodedTail)> = None;
+    let torn = loop {
+        let n = match stream.read(&mut chunk) {
+            Ok(0) => break false,
+            Ok(n) => n,
+            Err(error) if is_torn_frame(&error) => break true,
+            Err(error) => return Err(error),
+        };
         match &mut tail {
-            Some((_, rolling)) => {
-                rolling.extend(&chunk[..n]);
-                let excess = rolling.len().saturating_sub(tail_bytes as usize);
-                rolling.drain(..excess);
-            }
+            Some((_, rolling)) => rolling.push(&chunk[..n]),
             None => {
                 all.extend_from_slice(&chunk[..n]);
                 if all.len() as u64 > cap {
                     let head = all[..(head_bytes as usize).min(all.len())].to_vec();
-                    let keep = all.len().saturating_sub(tail_bytes as usize);
-                    let rolling = all.drain(keep..).collect();
+                    let mut rolling = DecodedTail::new(tail_bytes as usize);
+                    rolling.push(&all);
                     all = Vec::new();
                     tail = Some((head, rolling));
                 }
             }
         }
-    }
+    };
     match tail {
-        Some((head, rolling)) => {
-            let rolling: Vec<u8> = rolling.into();
-            Ok((window_lines(&head, &rolling), true))
+        Some((mut head, rolling)) => {
+            if torn && !head.contains(&b'\n') {
+                head.clear();
+            }
+            let tail = rolling.finish(torn);
+            Ok((
+                window_records(
+                    &head,
+                    &tail.bytes,
+                    Some((tail.first_line, tail.starts_line)),
+                ),
+                true,
+            ))
         }
-        None => Ok((
-            String::from_utf8_lossy(&all)
-                .lines()
-                .map(str::to_owned)
-                .collect(),
-            false,
-        )),
+        None => {
+            if torn {
+                all.truncate(last_line_end(&all));
+            }
+            Ok((
+                String::from_utf8_lossy(&all)
+                    .lines()
+                    .map(str::to_owned)
+                    .collect(),
+                false,
+            ))
+        }
+    }
+}
+
+fn last_line_end(bytes: &[u8]) -> usize {
+    bytes
+        .iter()
+        .rposition(|&byte| byte == b'\n')
+        .map_or(0, |i| i + 1)
+}
+
+/// Keep the latest complete lines available even if a long partial line must
+/// be discarded after a torn frame. Each buffer is bounded by the tail budget.
+/// It also counts bytes and lines so the kept tail can be placed in the stream.
+struct DecodedTail {
+    complete: VecDeque<u8>,
+    partial: VecDeque<u8>,
+    budget: usize,
+    /// Newlines pushed.
+    lines: usize,
+    /// The last byte dropped from the front of `complete`, if any.
+    dropped: Option<u8>,
+    /// The last byte dropped from the front of `partial`, if any.
+    partial_dropped: Option<u8>,
+}
+
+/// The kept tail and where it sits in the stream.
+struct TailWindow {
+    bytes: Vec<u8>,
+    /// Index of the first line in `bytes`, counted from the start of the stream.
+    first_line: usize,
+    /// Whether `bytes` begins at a line start, so its first line is whole
+    /// rather than cut at the tail budget.
+    starts_line: bool,
+}
+
+impl DecodedTail {
+    fn new(budget: usize) -> Self {
+        Self {
+            complete: VecDeque::new(),
+            partial: VecDeque::new(),
+            budget,
+            lines: 0,
+            dropped: None,
+            partial_dropped: None,
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        let (complete, partial) = bytes.split_at(last_line_end(bytes));
+        if !complete.is_empty() {
+            self.lines += complete.iter().filter(|&&byte| byte == b'\n').count();
+            let skip = complete.len().saturating_sub(self.budget);
+            if skip > 0 {
+                self.complete.clear();
+                self.partial.clear();
+                self.partial_dropped = None;
+                self.dropped = Some(complete[skip - 1]);
+                self.complete.extend(&complete[skip..]);
+            } else {
+                if let Some(byte) = self.partial_dropped.take() {
+                    self.complete.clear();
+                    self.dropped = Some(byte);
+                }
+                self.complete.append(&mut self.partial);
+                self.complete.extend(complete);
+                self.trim_complete();
+            }
+        }
+        let pskip = partial.len().saturating_sub(self.budget);
+        if pskip > 0 {
+            self.partial.clear();
+            self.partial_dropped = Some(partial[pskip - 1]);
+            self.partial.extend(&partial[pskip..]);
+        } else {
+            self.partial.extend(partial);
+            let excess = self.partial.len().saturating_sub(self.budget);
+            if excess > 0 {
+                self.partial_dropped = self.partial.drain(..excess).next_back();
+            }
+        }
+    }
+
+    fn trim_complete(&mut self) {
+        let excess = self.complete.len().saturating_sub(self.budget);
+        if excess > 0 {
+            self.dropped = self.complete.drain(..excess).next_back();
+        }
+    }
+
+    fn finish(mut self, torn: bool) -> TailWindow {
+        if !torn {
+            if let Some(byte) = self.partial_dropped.take() {
+                self.complete.clear();
+                self.dropped = Some(byte);
+            }
+            self.complete.append(&mut self.partial);
+            self.trim_complete();
+        }
+        let bytes: Vec<u8> = self.complete.into();
+        // `bytes` ends at the stream's last kept newline or at its end, so
+        // every newline after its start is in it.
+        let newlines = bytes.iter().filter(|&&byte| byte == b'\n').count();
+        TailWindow {
+            starts_line: matches!(self.dropped, None | Some(b'\n')),
+            first_line: self.lines - newlines,
+            bytes,
+        }
     }
 }
 
 /// Lines of a head and a tail cut at byte boundaries, dropping the partial
 /// line at each cut.
 fn window_lines(head: &[u8], tail: &[u8]) -> Vec<String> {
+    window_records(head, tail, None)
+}
+
+/// [`window_lines`] for a tail whose place in the stream is known as
+/// `(index of its first line, whether that line is whole)`. A tail
+/// line the head already kept is not repeated, which happens when a torn frame
+/// shrinks the tail back to the start of the stream.
+fn window_records(head: &[u8], tail: &[u8], tail_start: Option<(usize, bool)>) -> Vec<String> {
     let head_s = String::from_utf8_lossy(head);
     let tail_s = String::from_utf8_lossy(tail);
     let mut lines: Vec<String> = Vec::new();
@@ -215,35 +360,242 @@ fn window_lines(head: &[u8], tail: &[u8]) -> Vec<String> {
     if hl.len() > 1 {
         hl.pop();
     }
+    let head_lines = hl.len();
     lines.extend(hl.iter().map(|s| s.to_string()));
     // Tail: drop the first line (cut mid-line at the seek boundary).
     let mut tl: Vec<&str> = tail_s.lines().collect();
-    if tl.len() > 1 {
+    let (first_line, drop_first) = match tail_start {
+        Some((first_line, whole)) => (first_line, !whole && !tl.is_empty()),
+        None => (head_lines, tl.len() > 1),
+    };
+    let first_line = if drop_first {
         tl.remove(0);
-    }
-    lines.extend(tl.iter().map(|s| s.to_string()));
+        first_line + 1
+    } else {
+        first_line
+    };
+    let already_kept = head_lines.saturating_sub(first_line).min(tl.len());
+    lines.extend(tl[already_kept..].iter().map(|s| s.to_string()));
     lines
 }
 
 /// Every line of a session file, plain or zstd, one at a time - for reading a
-/// file past the byte cap end to end without holding it in memory.
-pub fn for_each_line(path: &Path, mut f: impl FnMut(&str)) -> Result<()> {
-    use std::io::{BufRead, BufReader};
-    let file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let mut reader: Box<dyn BufRead> = if path.extension().is_some_and(|x| x == "zst") {
-        let decoder = ruzstd::decoding::StreamingDecoder::new(BufReader::new(file))
-            .map_err(|e| anyhow::anyhow!("decompress {}: {e}", path.display()))?;
-        Box::new(BufReader::new(decoder))
+/// file past the byte cap end to end without holding it in memory. `.zst`
+/// files use their first frame and `.zstd` files use concatenated decoding.
+pub fn for_each_line(path: &Path, f: impl FnMut(&str)) -> Result<()> {
+    for_each_line_with_zstd(path, false, f)
+}
+
+/// Like [`for_each_line`], but also reads concatenated frames from `.zst`
+/// files. `.zstd` files use concatenated decoding in either reader.
+/// A torn trailing frame ends the stream at the last complete line.
+pub fn for_each_line_concat_zstd(path: &Path, f: impl FnMut(&str)) -> Result<()> {
+    for_each_line_with_zstd(path, true, f)
+}
+
+fn for_each_line_with_zstd(path: &Path, concat_zstd: bool, f: impl FnMut(&str)) -> Result<()> {
+    let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let reader = BufReader::new(file);
+    if is_zstd(path) {
+        zstd_reader(path, reader, concat_zstd)
+            .and_then(|stream| read_lines(BufReader::new(stream), f))
+            .with_context(|| format!("decompress {}", path.display()))
     } else {
-        Box::new(BufReader::new(file))
-    };
+        read_lines(reader, f).with_context(|| format!("read {}", path.display()))
+    }
+}
+
+fn read_lines(mut reader: impl BufRead, mut f: impl FnMut(&str)) -> io::Result<()> {
     let mut line = Vec::new();
     loop {
         line.clear();
-        if reader.read_until(b'\n', &mut line)? == 0 {
-            return Ok(());
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => return Ok(()),
+            Ok(_) => f(&String::from_utf8_lossy(&line)),
+            // read_until may have accumulated a partial line before this error.
+            Err(error) if is_torn_frame(&error) => return Ok(()),
+            Err(error) => return Err(error),
         }
-        f(&String::from_utf8_lossy(&line));
+    }
+}
+
+fn is_zstd(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext == "zst" || ext == "zstd")
+}
+
+fn zstd_reader(
+    path: &Path,
+    source: BufReader<File>,
+    concat_zstd: bool,
+) -> io::Result<Box<dyn Read>> {
+    if concat_zstd || path.extension().is_some_and(|ext| ext == "zstd") {
+        Ok(Box::new(ZstdFrames::new(source)))
+    } else {
+        // Codex rollouts historically ignore all bytes after their first frame.
+        Ok(Box::new(
+            StreamingDecoder::new(source).map_err(io::Error::other)?,
+        ))
+    }
+}
+
+#[derive(Debug)]
+struct TornZstdFrame;
+
+impl std::fmt::Display for TornZstdFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("incomplete trailing zstd frame")
+    }
+}
+
+impl std::error::Error for TornZstdFrame {}
+
+fn is_torn_frame(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|source| source.is::<TornZstdFrame>())
+}
+
+/// A single decoder is reset at each frame boundary, reusing its allocation
+/// and keeping the buffered source. Report a typed end marker so the line
+/// readers can distinguish a torn stream from ordinary EOF.
+struct ZstdFrames<R> {
+    source: R,
+    decoder: FrameDecoder,
+    completed_frame: bool,
+    pending_torn: bool,
+}
+
+impl<R: Read> ZstdFrames<R> {
+    fn new(source: R) -> Self {
+        Self {
+            source,
+            decoder: FrameDecoder::new(),
+            completed_frame: false,
+            pending_torn: false,
+        }
+    }
+
+    fn frame_error(&self, error: FrameDecoderError) -> io::Error {
+        // Transport EOF is nested under the header, block, or checksum error.
+        // Decoder errors such as invalid magic or reserved block types are not EOF.
+        let error_chain = std::iter::successors(
+            Some(&error as &(dyn std::error::Error + 'static)),
+            |error| error.source(),
+        );
+        if self.completed_frame
+            && error_chain
+                .filter_map(|error| error.downcast_ref::<io::Error>())
+                .any(|error| error.kind() == io::ErrorKind::UnexpectedEof)
+        {
+            io::Error::other(TornZstdFrame)
+        } else {
+            io::Error::other(error)
+        }
+    }
+
+    fn start_frame(&mut self) -> io::Result<bool> {
+        loop {
+            // A short magic read is a torn header only if the bytes are a
+            // prefix of a zstd magic number. Replay the complete magic into ruzstd.
+            let mut magic = [0; 4];
+            let n =
+                io::copy(&mut self.source.by_ref().take(4), &mut magic.as_mut_slice())? as usize;
+            if n < magic.len() {
+                if self.completed_frame && n == 0 {
+                    return Ok(false);
+                }
+                let prefix = &magic[..n];
+                let valid_prefix = [0x28, 0xb5, 0x2f, 0xfd].starts_with(prefix)
+                    || ((0x50..=0x5f).contains(&magic[0])
+                        && [0x2a, 0x4d, 0x18].starts_with(&prefix[1..]));
+                return Err(if !valid_prefix {
+                    io::Error::new(io::ErrorKind::InvalidData, "invalid zstd magic number")
+                } else if self.completed_frame {
+                    io::Error::other(TornZstdFrame)
+                } else {
+                    io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "incomplete first zstd frame header",
+                    )
+                });
+            }
+            match self
+                .decoder
+                .reset(io::Cursor::new(magic).chain(&mut self.source))
+            {
+                Ok(()) => return Ok(true),
+                Err(FrameDecoderError::ReadFrameHeaderError(ReadFrameHeaderError::SkipFrame {
+                    length,
+                    ..
+                })) => {
+                    let length = u64::from(length);
+                    if io::copy(&mut self.source.by_ref().take(length), &mut io::sink())? < length {
+                        return Err(if self.completed_frame {
+                            io::Error::other(TornZstdFrame)
+                        } else {
+                            io::Error::new(
+                                io::ErrorKind::UnexpectedEof,
+                                "incomplete skippable zstd frame",
+                            )
+                        });
+                    }
+                }
+                Err(error) => return Err(self.frame_error(error)),
+            }
+        }
+    }
+}
+
+impl<R: Read> Read for ZstdFrames<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if self.decoder.can_collect() > 0 {
+                return self.decoder.read(buf);
+            }
+            if self.pending_torn {
+                return Err(io::Error::other(TornZstdFrame));
+            }
+            if self.decoder.is_finished() && !self.start_frame()? {
+                return Ok(0);
+            }
+            match self
+                .decoder
+                .decode_blocks(&mut self.source, BlockDecodingStrategy::UptoBlocks(1))
+            {
+                Ok(_) => self.completed_frame |= self.decoder.is_finished(),
+                Err(error) => {
+                    // The decoder holds back one window of decoded bytes until
+                    // its frame finishes. A frame torn at a block header, block
+                    // body or checksum would strand those bytes, so finish the
+                    // frame with the bytes the stream lacks. The torn block
+                    // itself added nothing: ruzstd advances its buffer only
+                    // after a block body is read in full.
+                    let finisher: &[u8] = match &error {
+                        FrameDecoderError::FailedToReadBlockHeader(_)
+                        | FrameDecoderError::FailedToReadBlockBody(_) => {
+                            // An empty final raw block, then a placeholder
+                            // checksum that a frame without one never reads.
+                            &[0x01, 0x00, 0x00, 0, 0, 0, 0]
+                        }
+                        FrameDecoderError::FailedToReadChecksum(_) => &[0; 4],
+                        _ => &[],
+                    };
+                    let error = self.frame_error(error);
+                    if !is_torn_frame(&error) {
+                        return Err(error);
+                    }
+                    self.decoder
+                        .decode_from_to(finisher, &mut [])
+                        .map_err(io::Error::other)?;
+                    // The stream still ends as torn, after the released bytes.
+                    self.pending_torn = true;
+                }
+            }
+        }
     }
 }
 
@@ -253,8 +605,7 @@ pub fn for_each_line(path: &Path, mut f: impl FnMut(&str)) -> Result<()> {
 /// program's business. A partial line at the seek boundary is dropped, so every
 /// line handed back is one the writer finished.
 pub fn read_tail(path: &Path, max_bytes: u64) -> Result<String> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut f = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut f = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let len = f.metadata().map(|m| m.len()).unwrap_or(0);
     if len <= max_bytes {
         let mut s = String::new();
@@ -495,7 +846,7 @@ pub fn green(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{decoded_lines_windowed, lines_keeping, session_lines_windowed, truncate};
+    use super::*;
 
     #[test]
     fn a_canonical_folder_is_spelled_as_tools_record_it() {
@@ -543,11 +894,11 @@ mod tests {
         let content: String = (0..10).map(|i| format!("line{i:02}\n")).collect();
         std::fs::write(&p, &content).unwrap();
         // Under the cap: every line, not windowed.
-        let (all, w) = session_lines_windowed(&p, 10_000, 22, 22).unwrap();
+        let (all, w) = session_lines_windowed(&p, 10_000, 22, 22, false).unwrap();
         assert_eq!(all.len(), 10);
         assert!(!w);
         // Over the cap with small budgets: head + tail only, middle dropped.
-        let (win, w2) = session_lines_windowed(&p, 30, 22, 22).unwrap();
+        let (win, w2) = session_lines_windowed(&p, 30, 22, 22, false).unwrap();
         assert!(w2, "flagged windowed");
         assert!(win.iter().any(|l| l == "line00"), "head kept: {win:?}");
         assert!(win.iter().any(|l| l == "line09"), "tail kept: {win:?}");
@@ -625,11 +976,11 @@ mod tests {
             ),
         )
         .unwrap();
-        let (all, w) = session_lines_windowed(&p, 10_000, 22, 22).unwrap();
+        let (all, w) = session_lines_windowed(&p, 10_000, 22, 22, false).unwrap();
         assert_eq!(all.len(), 10, "{all:?}");
         assert_eq!(all[9], "line09");
         assert!(!w);
-        let (win, w2) = session_lines_windowed(&p, 30, 22, 22).unwrap();
+        let (win, w2) = session_lines_windowed(&p, 30, 22, 22, false).unwrap();
         assert!(w2, "flagged windowed");
         assert!(win.iter().any(|l| l == "line00"), "head kept: {win:?}");
         assert!(win.iter().any(|l| l == "line09"), "tail kept: {win:?}");
@@ -637,6 +988,516 @@ mod tests {
             !win.iter().any(|l| l == "line05"),
             "middle dropped: {win:?}"
         );
+    }
+
+    #[test]
+    fn a_small_plain_session_continues_after_invalid_utf8() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("conversation.jsonl");
+        std::fs::write(&path, b"start\r\nbad: \xff\r\nafter\nclean final line\r").unwrap();
+        let (lines, windowed) = session_lines(&path).unwrap();
+        assert!(!windowed);
+        assert_eq!(
+            lines,
+            ["start", "bad: \u{fffd}", "after", "clean final line\r"]
+        );
+    }
+
+    #[test]
+    fn a_small_plain_session_decodes_a_torn_final_character() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("conversation.jsonl");
+        std::fs::write(&path, b"start\nlast: \xf0\x9f\x92").unwrap();
+        assert_eq!(
+            session_lines(&path).unwrap(),
+            (vec!["start".into(), "last: \u{fffd}".into()], false)
+        );
+    }
+
+    struct FailingSource<R>(R);
+
+    impl<R: Read> Read for FailingSource<R> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            match self.0.read(buf)? {
+                0 => Err(io::Error::other("source read failed")),
+                n => Ok(n),
+            }
+        }
+    }
+
+    #[test]
+    fn the_plain_line_loop_propagates_a_read_error() {
+        let source = FailingSource(&b"valid first line\npartial"[..]);
+        let mut lines = Vec::new();
+        let error =
+            read_lines(BufReader::new(source), |line| lines.push(line.to_owned())).unwrap_err();
+        assert_eq!(lines, ["valid first line\n"]);
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(error.to_string(), "source read failed");
+    }
+
+    fn zstd_frame(bytes: &[u8]) -> Vec<u8> {
+        use ruzstd::encoding::{compress_to_vec, CompressionLevel};
+        compress_to_vec(bytes, CompressionLevel::Fastest)
+    }
+
+    #[test]
+    fn default_zst_readers_ignore_everything_after_the_first_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout-example.jsonl.zst");
+        let first_frame = zstd_frame(b"first\r\nfinal");
+        let next_frame = zstd_frame(b"ignore this frame\n");
+        for suffix in [b"trailing junk".as_slice(), &next_frame[..2], &next_frame] {
+            std::fs::write(&path, [first_frame.as_slice(), suffix].concat()).unwrap();
+            assert_eq!(
+                session_lines(&path).unwrap(),
+                (vec!["first".into(), "final".into()], false)
+            );
+            assert_eq!(
+                session_lines_keeping(&path, |_| true).unwrap(),
+                session_lines(&path).unwrap()
+            );
+            let mut lines = Vec::new();
+            for_each_line(&path, |line| lines.push(line.to_owned())).unwrap();
+            assert_eq!(lines, ["first\r\n", "final"]);
+        }
+    }
+
+    #[test]
+    fn concatenated_frames_preserve_lines_across_empty_and_skippable_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let frames = [
+            zstd_frame(b"first\nsec"),
+            zstd_frame(b""),
+            // Skippable frame with a one-byte payload.
+            vec![0x50, 0x2a, 0x4d, 0x18, 1, 0, 0, 0, 42],
+            zstd_frame(b"ond\r\nthird"),
+        ]
+        .concat();
+        for suffix in ["zst", "zstd"] {
+            let path = dir.path().join(format!("session.jsonl.{suffix}"));
+            std::fs::write(&path, &frames).unwrap();
+            let mut raw = Vec::new();
+            let (lines, windowed) = if suffix == "zst" {
+                for_each_line_concat_zstd(&path, |line| raw.push(line.to_owned())).unwrap();
+                session_lines_concat_zstd(&path).unwrap()
+            } else {
+                for_each_line(&path, |line| raw.push(line.to_owned())).unwrap();
+                let result = session_lines(&path).unwrap();
+                assert_eq!(session_lines_keeping(&path, |_| true).unwrap(), result);
+                result
+            };
+            assert!(!windowed);
+            assert_eq!(lines, ["first", "second", "third"]);
+            assert_eq!(raw, ["first\n", "second\r\n", "third"]);
+        }
+    }
+
+    fn push_raw_block(frame: &mut Vec<u8>, size: u32, last: bool, bytes: &[u8]) {
+        let header = (size << 3) | u32::from(last);
+        frame.extend(&header.to_le_bytes()[..3]);
+        frame.extend(bytes);
+    }
+
+    /// Enough decoded data to emit a complete line and a partial line before
+    /// the decoder reaches the truncated final block or checksum.
+    fn torn_zstd_body(checksum: bool) -> Vec<u8> {
+        // Multi-segment frame with a 1 KiB window and an optional checksum.
+        let mut frame = vec![0x28, 0xb5, 0x2f, 0xfd, if checksum { 4 } else { 0 }, 0];
+        let mut block = b"second\n".to_vec();
+        block.resize(1024, b'x');
+        push_raw_block(&mut frame, 1024, false, &block);
+        push_raw_block(&mut frame, 1024, false, &[b'x'; 1024]);
+        if checksum {
+            push_raw_block(&mut frame, 1, true, b"x");
+            frame.extend([0x00, 0x00]); // half of the four-byte checksum
+        } else {
+            push_raw_block(&mut frame, 10, true, b"x"); // nine missing payload bytes
+        }
+        frame
+    }
+
+    #[test]
+    fn concatenated_readers_recover_a_torn_trailing_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl.zst");
+        let frame = zstd_frame(b"first\n");
+        for prefix_len in [2, 5] {
+            std::fs::write(&path, [&frame[..], &frame[..prefix_len]].concat()).unwrap();
+            assert_eq!(
+                session_lines_concat_zstd(&path).unwrap(),
+                (vec!["first".into()], false)
+            );
+            let mut raw = Vec::new();
+            for_each_line_concat_zstd(&path, |line| raw.push(line.to_owned())).unwrap();
+            assert_eq!(raw, ["first\n"]);
+        }
+    }
+
+    #[test]
+    fn concatenated_readers_discard_a_partial_line_after_payload_or_checksum_eof() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl.zstd");
+        for checksum in [false, true] {
+            let frames = [zstd_frame(b"first\n"), torn_zstd_body(checksum)].concat();
+            std::fs::write(&path, frames).unwrap();
+            let (lines, windowed) = session_lines(&path).unwrap();
+            assert!(!windowed);
+            assert_eq!(lines, ["first", "second"]);
+            let mut raw = Vec::new();
+            for_each_line(&path, |line| raw.push(line.to_owned())).unwrap();
+            assert_eq!(raw, ["first\n", "second\n"]);
+            // An emitted fragment far larger than the tail budget cannot push
+            // the preceding complete record out of the recovered tail.
+            assert_eq!(
+                session_lines_windowed(&path, 40, 6, 7, false).unwrap(),
+                (vec!["first".into(), "second".into()], true)
+            );
+        }
+    }
+
+    /// Every line `for_each_line` (or its concatenated-`.zst` variant) yields,
+    /// without line endings.
+    fn trimmed_lines(path: &Path, concat: bool) -> Vec<String> {
+        let mut lines = Vec::new();
+        let push = |line: &str| lines.push(line.trim_end().to_owned());
+        if concat {
+            for_each_line_concat_zstd(path, push).unwrap();
+        } else {
+            for_each_line(path, push).unwrap();
+        }
+        lines
+    }
+
+    /// A second frame with a 1 KiB window, optionally a checksum and a declared
+    /// content size, whose first block is non-final and which then ends in
+    /// `torn`: the start of a block that never completes.
+    fn torn_second_frame(
+        checksum: bool,
+        content_size: Option<u16>,
+        first_block: &[u8],
+        torn: &[u8],
+    ) -> Vec<u8> {
+        let flags = u8::from(checksum) << 2 | u8::from(content_size.is_some()) << 6;
+        let mut frame = vec![0x28, 0xb5, 0x2f, 0xfd, flags, 0];
+        if let Some(content_size) = content_size {
+            frame.extend((content_size - 256).to_le_bytes());
+        }
+        push_raw_block(&mut frame, first_block.len() as u32, false, first_block);
+        frame.extend(torn);
+        frame
+    }
+
+    /// Everything a frame decoded before its torn block comes out, and
+    /// nothing from the torn block: the decoder holds one window of bytes back
+    /// until its frame finishes, and that window must be released.
+    #[test]
+    fn a_torn_block_after_a_complete_one_releases_the_decoded_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.zstd");
+        let mut raw_block = Vec::new();
+        push_raw_block(&mut raw_block, 10, true, b"thi");
+        let torn_ends: [&[u8]; 4] = [
+            &raw_block,      // header and 3 of 10 body bytes
+            &raw_block[..3], // header only
+            &raw_block[..1], // part of a header
+            b"",             // the stream ends between blocks
+        ];
+        for (checksum, content_size) in [
+            (false, None),
+            (true, None),
+            (false, Some(300)),
+            (true, Some(300)),
+        ] {
+            for (first_block, expected) in [
+                (&b"second\n"[..], vec!["first", "second"]),
+                (b"second\npart", vec!["first", "second"]),
+                (b"second\nthird\n", vec!["first", "second", "third"]),
+            ] {
+                for torn in torn_ends {
+                    let second = torn_second_frame(checksum, content_size, first_block, torn);
+                    std::fs::write(&path, [zstd_frame(b"first\n"), second].concat()).unwrap();
+                    let context = format!(
+                        "checksum={checksum} size={content_size:?} block={first_block:?} torn={torn:?}"
+                    );
+                    let expected_lines: Vec<String> =
+                        expected.iter().map(|line| line.to_string()).collect();
+                    for result in [
+                        session_lines(&path).unwrap(),
+                        session_lines_concat_zstd(&path).unwrap(),
+                        session_lines_keeping(&path, |_| true).unwrap(),
+                    ] {
+                        assert_eq!(result, (expected_lines.clone(), false), "{context}");
+                    }
+                    for concat in [false, true] {
+                        assert_eq!(trimmed_lines(&path, concat), expected_lines, "{context}");
+                    }
+                    // The same stream through the windowed reader, over the cap.
+                    let windowed =
+                        session_lines_windowed(&path, 8, 1 << 20, 1 << 20, false).unwrap();
+                    assert_eq!(windowed, (expected_lines, true), "{context}");
+                }
+            }
+        }
+    }
+
+    /// A reproduction from review: a torn raw block after a non-final block
+    /// that is `second\n`, a first frame of `first\n`.
+    #[test]
+    fn a_torn_raw_block_keeps_the_previous_blocks_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.zstd");
+        let mut second = vec![0x28, 0xb5, 0x2f, 0xfd, 0, 0];
+        push_raw_block(&mut second, 7, false, b"second\n");
+        push_raw_block(&mut second, 10, true, b"thi"); // cut after 3 of 10 bytes
+        std::fs::write(&path, [zstd_frame(b"first\n"), second].concat()).unwrap();
+        let expected = vec!["first".to_owned(), "second".to_owned()];
+        assert_eq!(session_lines(&path).unwrap(), (expected.clone(), false));
+        assert_eq!(
+            session_lines_concat_zstd(&path).unwrap(),
+            (expected.clone(), false)
+        );
+        for concat in [false, true] {
+            assert_eq!(trimmed_lines(&path, concat), expected);
+        }
+    }
+
+    /// The same torn stream with a block that ends mid-line: the line before
+    /// the break survives and the fragment is dropped.
+    #[test]
+    fn a_torn_raw_block_drops_the_fragment_ending_the_previous_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.zstd");
+        let mut second = vec![0x28, 0xb5, 0x2f, 0xfd, 0, 0];
+        push_raw_block(&mut second, 11, false, b"second\npart");
+        push_raw_block(&mut second, 10, true, b"thi");
+        std::fs::write(&path, [zstd_frame(b"first\n"), second].concat()).unwrap();
+        let expected = vec!["first".to_owned(), "second".to_owned()];
+        assert_eq!(session_lines(&path).unwrap(), (expected.clone(), false));
+        assert_eq!(
+            session_lines_concat_zstd(&path).unwrap(),
+            (expected.clone(), false)
+        );
+        for concat in [false, true] {
+            assert_eq!(trimmed_lines(&path, concat), expected);
+        }
+    }
+
+    /// A torn stream rewinds the tail to records the head already holds; the
+    /// window lists each record once.
+    #[test]
+    fn a_torn_stream_does_not_repeat_records_held_by_head_and_tail() {
+        let mut torn = b"first\nsecond\n".to_vec();
+        torn.extend([b'x'; 100]);
+        let stream = ChunkThenTorn(Some(torn));
+        assert_eq!(
+            decoded_lines_windowed(stream, 40, 20, 20).unwrap(),
+            (vec!["first".into(), "second".into()], true)
+        );
+        // Not torn: the same bytes end at an unterminated line.
+        let mut plain = b"first\nsecond\n".to_vec();
+        plain.extend([b'x'; 100]);
+        let (lines, windowed) = decoded_lines_windowed(io::Cursor::new(plain), 40, 20, 20).unwrap();
+        assert!(windowed);
+        assert_eq!(
+            lines.iter().filter(|l| *l == "second").count(),
+            1,
+            "{lines:?}"
+        );
+    }
+
+    /// Yields each chunk in turn, then end of stream (or a torn-frame error).
+    struct Chunks {
+        chunks: std::collections::VecDeque<Vec<u8>>,
+        torn: bool,
+    }
+
+    impl Chunks {
+        fn new(chunks: &[&[u8]], torn: bool) -> Self {
+            Self {
+                chunks: chunks.iter().map(|chunk| chunk.to_vec()).collect(),
+                torn,
+            }
+        }
+    }
+
+    impl Read for Chunks {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            match self.chunks.pop_front() {
+                Some(chunk) => {
+                    buf[..chunk.len()].copy_from_slice(&chunk);
+                    Ok(chunk.len())
+                }
+                None if self.torn => Err(io::Error::other(TornZstdFrame)),
+                None => Ok(0),
+            }
+        }
+    }
+
+    fn windowed_chunks(
+        chunks: &[&[u8]],
+        torn: bool,
+        cap: u64,
+        head: u64,
+        tail: u64,
+    ) -> Vec<String> {
+        let (lines, windowed) =
+            decoded_lines_windowed(Chunks::new(chunks, torn), cap, head, tail).unwrap();
+        assert!(windowed);
+        lines
+    }
+
+    /// The push that crosses the cap holds more complete bytes than the tail
+    /// budget. When the cut falls inside a line, that line's tail end is not a
+    /// record; when it falls on a line start, the line is whole.
+    #[test]
+    fn a_tail_cut_inside_a_line_drops_the_clipped_line_and_a_cut_on_a_boundary_keeps_it() {
+        let stream: &[u8] = b"aaaa\nbbbb\ncccc\n"; // 15 bytes, one chunk over the cap
+        for torn in [false, true] {
+            // The last 8 bytes are `bb\ncccc\n`: `bb` is the end of `bbbb`.
+            assert_eq!(windowed_chunks(&[stream], torn, 10, 5, 8), ["aaaa", "cccc"]);
+            // The last 10 bytes are `bbbb\ncccc\n`: the cut is just after a newline.
+            assert_eq!(
+                windowed_chunks(&[stream], torn, 10, 5, 10),
+                ["aaaa", "bbbb", "cccc"]
+            );
+            // The last 5 bytes are exactly `cccc\n`.
+            assert_eq!(windowed_chunks(&[stream], torn, 10, 5, 5), ["aaaa", "cccc"]);
+            // A budget of zero keeps no tail.
+            assert_eq!(windowed_chunks(&[stream], torn, 10, 5, 0), ["aaaa"]);
+        }
+    }
+
+    /// A line longer than the tail budget is never emitted as a clipped record,
+    /// whether it ends in a newline, at the end of the stream, or in a tear.
+    #[test]
+    fn a_partial_line_longer_than_the_tail_budget_is_not_emitted_clipped() {
+        // `aaaa\n`, then a 20-byte unterminated line: both arrive in one push.
+        let long_first: &[u8] = b"aaaa\nxxxxxxxxxxxxxxxxxxxx";
+        // The unterminated line ends in a newline, then another line follows.
+        assert_eq!(
+            windowed_chunks(&[long_first, b"yy\nzz\n"], false, 10, 5, 8),
+            ["aaaa", "zz"]
+        );
+        // The same, torn after those lines.
+        assert_eq!(
+            windowed_chunks(&[long_first, b"yy\nzz\n"], true, 10, 5, 8),
+            ["aaaa", "zz"]
+        );
+        // The stream ends inside the long line.
+        assert_eq!(windowed_chunks(&[long_first], false, 10, 5, 8), ["aaaa"]);
+        // The stream is torn inside the long line: the line before it stays.
+        assert_eq!(windowed_chunks(&[long_first], true, 10, 5, 8), ["aaaa"]);
+        // The long line grows over several pushes before its newline.
+        assert_eq!(
+            windowed_chunks(
+                &[b"aaaa\n", b"xxxxxxxxxxxx", b"xxxxxxxxxxxx", b"\nzz\n"],
+                false,
+                10,
+                5,
+                8
+            ),
+            ["aaaa", "zz"]
+        );
+        // A final line shorter than the budget, after a long one, is whole.
+        assert_eq!(
+            windowed_chunks(&[long_first, b"\nend"], false, 10, 5, 8),
+            ["aaaa", "end"]
+        );
+    }
+
+    /// Yields its bytes once, then a torn-frame error.
+    struct ChunkThenTorn(Option<Vec<u8>>);
+
+    impl Read for ChunkThenTorn {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let Some(bytes) = self.0.take() else {
+                return Err(io::Error::other(TornZstdFrame));
+            };
+            assert!(bytes.len() <= buf.len());
+            buf[..bytes.len()].copy_from_slice(&bytes);
+            Ok(bytes.len())
+        }
+    }
+
+    /// A zero-byte file is not a session: both extensions report the missing
+    /// first frame, in either reader, rather than an empty session.
+    #[test]
+    fn an_empty_zstd_file_is_an_error_like_an_empty_zst_file() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["empty.jsonl.zst", "empty.jsonl.zstd"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"").unwrap();
+            assert!(session_lines(&path).is_err(), "{name}");
+            assert!(session_lines_concat_zstd(&path).is_err(), "{name}");
+            assert!(session_lines_keeping(&path, |_| true).is_err(), "{name}");
+            assert!(for_each_line(&path, |_| {}).is_err(), "{name}");
+            assert!(for_each_line_concat_zstd(&path, |_| {}).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn concatenated_readers_keep_records_from_a_small_frame_with_a_torn_checksum() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl.zstd");
+        let mut frames = zstd_frame(b"first\n");
+        let payload = b"second\nthird\npartial";
+        // A single-segment frame with a checksum and a one-byte content size.
+        frames.extend([0x28, 0xb5, 0x2f, 0xfd, 0x24, payload.len() as u8]);
+        push_raw_block(&mut frames, payload.len() as u32, true, payload);
+        frames.extend([0, 0]); // half of the four-byte checksum
+        std::fs::write(&path, frames).unwrap();
+
+        let expected = vec!["first".into(), "second".into(), "third".into()];
+        assert_eq!(
+            session_lines_concat_zstd(&path).unwrap(),
+            (expected.clone(), false)
+        );
+        assert_eq!(
+            session_lines_windowed(&path, 15, 6, 19, false).unwrap(),
+            (expected, true)
+        );
+        let mut raw = Vec::new();
+        for_each_line_concat_zstd(&path, |line| raw.push(line.to_owned())).unwrap();
+        assert_eq!(raw, ["first\n", "second\n", "third\n"]);
+    }
+
+    #[test]
+    fn concatenated_readers_reject_corruption_and_first_frame_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl.zstd");
+        let first = zstd_frame(b"first\n");
+        let reserved_block = [0x28, 0xb5, 0x2f, 0xfd, 0, 0, 7, 0, 0];
+        for frames in [
+            [&first[..], b"junk"].concat(),
+            [&first[..], b"xx"].concat(),
+            [&first[..], &reserved_block].concat(),
+            reserved_block.to_vec(),
+            first[..2].to_vec(),
+            torn_zstd_body(false),
+            torn_zstd_body(true),
+        ] {
+            std::fs::write(&path, frames).unwrap();
+            assert!(session_lines(&path).is_err());
+            assert!(for_each_line(&path, |_| {}).is_err());
+        }
+    }
+
+    #[test]
+    fn non_eof_io_error_inside_a_trailing_frame_propagates() {
+        let frames = [zstd_frame(b"first\n"), torn_zstd_body(false)].concat();
+        let stream = ZstdFrames::new(BufReader::new(FailingSource(frames.as_slice())));
+        let error = decoded_lines_windowed(stream, 10_000, 100, 100).unwrap_err();
+        let frame_error = error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<FrameDecoderError>()
+            .unwrap();
+        assert!(matches!(
+            frame_error,
+            FrameDecoderError::FailedToReadBlockBody(_)
+        ));
+        assert!(frame_error.to_string().contains("source read failed"));
     }
 }
 

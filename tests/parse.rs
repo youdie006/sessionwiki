@@ -702,6 +702,27 @@ fn gptme_malformed_lines_do_not_panic() {
 }
 
 #[test]
+fn codex_reads_the_first_zstd_frame_with_trailing_bytes() {
+    use ruzstd::encoding::{compress_to_vec, CompressionLevel};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rollout-example.jsonl.zst");
+    let rollout = std::fs::read(fixture(
+        "codex/rollout-2026-07-13T08-00-00-repeated-prompt.jsonl",
+    ))
+    .unwrap();
+    let adapter = adapters::by_name("codex").unwrap();
+    let frame = compress_to_vec(rollout.as_slice(), CompressionLevel::Fastest);
+    for trailing in [b"arbitrary trailing bytes".as_slice(), &frame[..2]] {
+        std::fs::write(&path, [frame.as_slice(), trailing].concat()).unwrap();
+        let session = adapters::parse_session(adapter.as_ref(), &path).unwrap();
+        assert_eq!(roles(&session), ["user", "assistant", "user"]);
+        assert_eq!(session.messages[0].text, "continue");
+        assert_eq!(session.messages[2].text, "continue");
+    }
+}
+
+#[test]
 fn missing_file_errors_without_panicking() {
     let adapter = adapters::by_name("codex").unwrap();
     assert!(adapter

@@ -6,6 +6,21 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- Small plain session files decode invalid UTF-8 lossily and continue reading
+  subsequent records. File read errors still propagate.
+
+### Added
+
+- Shared session readers support concatenated `.zstd` frames, with explicit
+  opt-in helpers for concatenated `.zst` files. When a trailing frame is torn,
+  complete lines already decoded are kept and the final partial line is
+  discarded, including after a torn block that follows complete blocks of
+  the same frame, and a window of head and tail lines never repeats a line.
+  An empty `.zst` or `.zstd` file is an error. Existing `.zst` readers,
+  including Codex, read the first frame.
+
 ## [0.34.26] - 2026-11-24
 
 ### Added
