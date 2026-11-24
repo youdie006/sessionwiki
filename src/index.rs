@@ -4103,6 +4103,9 @@ mod legacy_migration_tests {
 mod codex_history_tests;
 
 #[cfg(test)]
+mod kimi_age_tests;
+
+#[cfg(test)]
 mod embedder_hook_tests {
     use super::*;
     use crate::adapters::{Adapter, Discovered, Store};
