@@ -1,0 +1,7 @@
+2026-09-21T14:13:20.950Z INFO  llm config  turnStep=0.1 provider=openai model=k3 modelAlias=kimi-code/k3 thinkingEffort=max systemPromptChars=8676 toolCount=27
+2026-09-21T14:13:20.950Z INFO  llm request  turnStep=0.1
+2026-09-21T14:13:26.491Z INFO  llm response  turnStep=0.1 ttftMs=4116 streamDurationMs=1423 outputTokens=81 requestBuildMs=3 serverFirstTokenMs=4113 serverDecodeMs=1422 clientConsumeMs=1 clientBlockedMs=20
+2026-09-21T14:13:26.521Z INFO  llm request  turnStep=0.2
+2026-09-21T14:13:30.937Z INFO  llm response  turnStep=0.2 ttftMs=3273 streamDurationMs=1141 outputTokens=81 requestBuildMs=1 serverFirstTokenMs=3272 serverDecodeMs=1141 clientConsumeMs=0 clientBlockedMs=137
+2026-09-21T14:13:30.992Z INFO  llm request  turnStep=0.3
+2026-09-21T14:13:33.997Z INFO  llm response  turnStep=0.3 ttftMs=2973 streamDurationMs=31 outputTokens=14 requestBuildMs=2 serverFirstTokenMs=2971 serverDecodeMs=31 clientConsumeMs=0 clientBlockedMs=2

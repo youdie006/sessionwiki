@@ -6,6 +6,18 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- Kimi Code sessions are indexed. SessionWiki reads Kimi Code's
+  `session_index.jsonl` and each listed session's `state.json` and
+  `agents/*/wire.jsonl` under `$KIMI_CODE_HOME` (default `~/.kimi-code`), so
+  `list`, `search`, `show` and `trace` cover your conversations, tool calls and
+  results, and the files Kimi's `Edit` and `Write` tools changed. Sessions
+  deleted or archived in Kimi Code are not indexed. The reader is checked
+  against a capture from Kimi Code 2.3.2 on Linux. Embedders can read another
+  installation with `KimiCode::in_home`. `resume` does not open Kimi Code
+  sessions.
+
 ## [0.34.26] - 2026-11-24
 
 ### Added
