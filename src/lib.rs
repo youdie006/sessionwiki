@@ -1,6 +1,6 @@
 //! sessionwiki: index, search, and resume every AI coding session on your
-//! machine, across Claude Code, Codex, Gemini CLI, OpenCode, the Cline family,
-//! gajae-code, and Continue.
+//! machine, across Claude Code, Codex, Gemini CLI, OpenCode, Grok Build, the
+//! Cline family, gajae-code, and Continue.
 //!
 //! The binary is a thin CLI over this library. The pieces worth reusing as a
 //! dependency are [`adapters`] (parse a session file into a [`model::Session`])

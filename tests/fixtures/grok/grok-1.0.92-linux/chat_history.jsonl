@@ -1,0 +1,13 @@
+{"type":"system","content":"[system prompt elided from fixture]"}
+{"type":"user","content":[{"type":"text","text":"<user_info>\nOS Version: linux\nShell: /bin/bash\nWorkspace Path: /work/example\nToday's date: 2026-11-24\n</user_info>"}]}
+{"type":"user","content":[{"type":"text","text":"<system-reminder>\n[skill list elided from fixture]\n</system-reminder>"}],"synthetic_reason":"system_reminder"}
+{"type":"user","content":[{"type":"text","text":"<user_query>\nRead sample.txt, replace beta with gamma in sample.txt, and reply Done.\n</user_query>"}],"prompt_index":0}
+{"type":"reasoning","id":"rs_00000000-0000-4000-8000-000000000001","summary":[],"encrypted_content":"ZW5jcnlwdGVkLXJlYXNvbmluZy1lbGlkZWQ=","status":"completed"}
+{"type":"assistant","content":"I'll read `sample.txt`, replace `beta` with `gamma`, and then reply.","tool_calls":[{"id":"call-00000000-0000-4000-8000-000000000002-1","name":"read_file","arguments":"{\"target_file\":\"/work/example/sample.txt\"}"}],"model_id":"grok-4.7-build","model_fingerprint":"fp_0000000000","reasoning_effort":"xhigh"}
+{"type":"tool_result","tool_call_id":"call-00000000-0000-4000-8000-000000000002-1","content":"1→alpha\nbeta\n"}
+{"type":"reasoning","id":"rs_00000000-0000-4000-8000-000000000003","summary":[],"encrypted_content":"ZW5jcnlwdGVkLXJlYXNvbmluZy1lbGlkZWQ=","status":"completed"}
+{"type":"assistant","content":"","tool_calls":[{"id":"call-00000000-0000-4000-8000-000000000004-2","name":"search_replace","arguments":"{\"file_path\":\"/work/example/sample.txt\",\"old_string\":\"beta\",\"new_string\":\"gamma\"}"}],"model_id":"grok-4.7-build","model_fingerprint":"fp_0000000000","reasoning_effort":"xhigh"}
+{"type":"tool_result","tool_call_id":"call-00000000-0000-4000-8000-000000000004-2","content":"The file /work/example/sample.txt has been updated successfully."}
+{"type":"user","content":[{"type":"text","text":"<system-reminder>\n[skill list elided from fixture]\n</system-reminder>"}],"synthetic_reason":"system_reminder"}
+{"type":"reasoning","id":"rs_00000000-0000-4000-8000-000000000005","summary":[],"encrypted_content":"ZW5jcnlwdGVkLXJlYXNvbmluZy1lbGlkZWQ=","status":"completed"}
+{"type":"assistant","content":"Done.","model_id":"grok-4.7-build","model_fingerprint":"fp_0000000000","reasoning_effort":"xhigh"}

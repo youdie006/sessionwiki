@@ -6,6 +6,7 @@ mod continue_dev;
 mod gajae;
 mod gemini;
 mod gptme;
+mod grok;
 pub mod harness;
 mod opencode;
 mod prodex;
@@ -15,6 +16,7 @@ pub(crate) use codex::is_subagent_meta as codex_is_subagent_meta;
 pub(crate) use codex::THREAD_SCANS;
 pub use codex::{Codex, CodexHistory};
 pub(crate) use gemini::project_root as gemini_project_root;
+pub use grok::GrokBuild;
 pub use prodex::thread_url_for_task as prodex_thread_url;
 
 use crate::model::{Session, StoreReport};
@@ -165,6 +167,7 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
         Box::new(gptme::Gptme),
         Box::new(aider::Aider::default()),
         Box::new(prodex::Prodex),
+        Box::new(GrokBuild::default()),
     ]
 }
 
