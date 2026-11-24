@@ -572,6 +572,23 @@ fn is_tool_result_step(v: &Value) -> bool {
         || v.get("is_error").and_then(Value::as_bool).is_some()
         || v.get("content").and_then(Value::as_str).is_some()
 }
+// Native indices identify normal steps. Occurrence suffixes also distinguish
+// duplicate indices; unindexed steps use their original parsed-line slot.
+fn step_key(v: &Value, slot: usize, occurrences: &mut HashMap<u64, usize>) -> String {
+    match record_id(v) {
+        Some(index) => {
+            let count = occurrences.entry(index).or_default();
+            let key = if *count == 0 {
+                index.to_string()
+            } else {
+                format!("{index}:duplicate:{count}")
+            };
+            *count += 1;
+            key
+        }
+        None => format!("slot:{slot}"),
+    }
+}
 fn record_id(v: &Value) -> Option<u64> {
     v.get("step_index").and_then(Value::as_u64)
 }
@@ -693,6 +710,7 @@ enum CompactStepKind {
     Other,
 }
 struct CompactEditStep {
+    key: String,
     step_index: Option<u64>,
     ts: Option<DateTime<Utc>>,
     cwd: Option<String>,
@@ -701,6 +719,7 @@ struct CompactEditStep {
 impl CompactEditStep {
     fn placeholder() -> Self {
         Self {
+            key: String::new(),
             step_index: Some(u64::MAX),
             ts: None,
             cwd: None,
@@ -718,27 +737,46 @@ fn parse_transcript(path: &Path, key: &str) -> Result<Session> {
         serde_json::from_str::<Value>(line)
             .is_ok_and(|v| matches!(kind(&v), "USER_INPUT" | "PLANNER_RESPONSE"))
     })?;
+    let mut occurrences = HashMap::new();
     let mut retained: Vec<Value> = lines
         .iter()
         .filter_map(|line| serde_json::from_str(line).ok())
+        .filter(Value::is_object)
+        .enumerate()
+        .map(|(slot, mut v): (usize, Value)| {
+            let mut key = step_key(&v, slot, &mut occurrences);
+            // A window does not preserve absolute slots for unindexed steps.
+            // Keep these calls distinct from full-stream slots, rather than
+            // risk linking them to unrelated omitted calls.
+            if windowed && record_id(&v).is_none() {
+                key = format!("window:{key}");
+            }
+            v["_sessionwiki_step_key"] = Value::String(key);
+            v
+        })
         .collect();
     order_steps(&mut retained);
-    let wanted: HashSet<u64> = retained
+    let wanted: HashSet<String> = retained
         .iter()
         .filter(|v| is_tool_result_step(v))
-        .filter_map(record_id)
+        .filter_map(|v| v.get("_sessionwiki_step_key")?.as_str().map(str::to_owned))
         .collect();
-    let mut links: HashMap<u64, String> = HashMap::new();
+    let mut links: HashMap<String, String> = HashMap::new();
     let mut pending = VecDeque::<Pending>::new();
     let mut edits = Vec::new();
     let mut started: Option<DateTime<Utc>> = None;
     let mut ended: Option<DateTime<Utc>> = None;
     let mut project = None;
     let mut all = Vec::new();
+    let mut occurrences = HashMap::new();
     crate::util::for_each_line(path, |line| {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             return;
         };
+        if !v.is_object() {
+            return;
+        }
+        let key = step_key(&v, all.len(), &mut occurrences);
         let ts = stamp(&v);
         if let Some(t) = ts {
             started = Some(started.map_or(t, |s| s.min(t)));
@@ -785,6 +823,7 @@ fn parse_transcript(path: &Path, key: &str) -> Result<Session> {
             _ => CompactStepKind::Other,
         };
         all.push(CompactEditStep {
+            key,
             step_index: record_id(&v),
             ts,
             cwd,
@@ -820,7 +859,7 @@ fn parse_transcript(path: &Path, key: &str) -> Result<Session> {
                     }
                     pending.push_back(Pending {
                         family,
-                        id: format!("{}:{i}", step.step_index.unwrap_or(0)),
+                        id: format!("{}:{i}", step.key),
                         edit,
                     });
                 }
@@ -833,8 +872,8 @@ fn parse_transcript(path: &Path, key: &str) -> Result<Session> {
                             edits.push(edit);
                         }
                     }
-                    if let Some(id) = step.step_index.filter(|id| wanted.contains(id)) {
-                        links.insert(id, call.id);
+                    if wanted.contains(&step.key) {
+                        links.insert(step.key, call.id);
                     }
                 }
             }
@@ -850,7 +889,7 @@ fn parse_transcript(path: &Path, key: &str) -> Result<Session> {
                 .into_iter()
                 .flatten()
                 .enumerate()
-                .map(move |(i, _)| format!("{}:{i}", record_id(v).unwrap_or(0)))
+                .map(move |(i, _)| format!("{}:{i}", v["_sessionwiki_step_key"].as_str().unwrap()))
         })
         .collect();
     let mut messages = Vec::new();
@@ -883,7 +922,10 @@ fn parse_transcript(path: &Path, key: &str) -> Result<Session> {
                         messages.push(Message::tool_call(
                             ts,
                             ToolCall {
-                                id: Some(format!("{}:{i}", record_id(v).unwrap_or(0))),
+                                id: Some(format!(
+                                    "{}:{i}",
+                                    v["_sessionwiki_step_key"].as_str().unwrap()
+                                )),
                                 name: tc
                                     .get("name")
                                     .and_then(Value::as_str)
@@ -896,7 +938,8 @@ fn parse_transcript(path: &Path, key: &str) -> Result<Session> {
                 }
             }
             _ if is_tool_result_step(v) => {
-                let call_id = record_id(v).and_then(|s| links.get(&s)).cloned();
+                let step_key = v["_sessionwiki_step_key"].as_str().unwrap();
+                let call_id = links.get(step_key).cloned();
                 // A window may have dropped the corresponding call. Do not
                 // pair its output with an unrelated retained tool invocation.
                 if windowed
@@ -909,11 +952,13 @@ fn parse_transcript(path: &Path, key: &str) -> Result<Session> {
                 messages.push(Message::tool_result(
                     ts,
                     ToolResult {
-                        call_id,
+                        // An explicit unknown ID blocks the shared folder's
+                        // positional fallback onto an incompatible pending call.
+                        call_id: Some(call_id.unwrap_or_else(|| format!("unmatched:{step_key}"))),
                         text: bounded_redacted_output(content),
                         is_error: matches!(
                             v.get("status").and_then(Value::as_str),
-                            Some("ERROR" | "FAILED")
+                            Some("ERROR" | "FAILED" | "CANCELLED" | "CANCELED")
                         ) || v.get("is_error").and_then(Value::as_bool).unwrap_or(false),
                     },
                 ));

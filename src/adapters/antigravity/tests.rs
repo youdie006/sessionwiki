@@ -430,3 +430,124 @@ fn preferred_log_uses_completion_before_full_format() {
     std::fs::write(&full, running).unwrap();
     assert_eq!(preferred(dir).unwrap(), compact);
 }
+
+#[test]
+fn unmatched_typed_result_stays_orphaned_after_summary_folding() {
+    use crate::model::ToolEvent;
+    let h = tempfile::tempdir().unwrap();
+    for indexed in [false, true] {
+        let mut steps = [
+            json!({"type":"PLANNER_RESPONSE","tool_calls":[{"name":"replace_file_content","args":{"TargetFile":"/work/sample.txt","ReplacementContent":"new"}}]}),
+            json!({"type":"VIEW_FILE","status":"DONE","content":"Unique unrelated view output"}),
+        ];
+        if indexed {
+            for (i, step) in steps.iter_mut().enumerate() {
+                step["step_index"] = json!(i);
+            }
+        }
+        let data = steps
+            .iter()
+            .map(|v| v.to_string() + "\n")
+            .collect::<String>();
+        let p = transcript(h.path(), "antigravity-cli", "s", "transcript.jsonl", &data);
+        let mut s = parse_transcript(&p, "s").unwrap();
+        assert!(s.edits.is_empty());
+        crate::tool_summary::fold_tool_parts(&mut s);
+        assert_eq!(s.messages.len(), 2);
+        let Some(ToolEvent::Summary(edit)) = &s.messages[0].tool else {
+            panic!("missing edit summary")
+        };
+        assert_eq!(edit.name, "replace_file_content");
+        assert!(edit.output.is_none());
+        assert!(edit.is_error.is_none());
+        assert!(s.messages[0].text.ends_with(" ⇒ pending"));
+        let Some(ToolEvent::Summary(orphan)) = &s.messages[1].tool else {
+            panic!("missing orphan summary")
+        };
+        assert_eq!(
+            orphan.output.as_deref(),
+            Some("Unique unrelated view output")
+        );
+    }
+}
+
+#[test]
+fn unindexed_steps_have_distinct_ids_and_fold_compatible_results() {
+    use crate::model::{ToolEvent, ToolPart};
+    let h = tempfile::tempdir().unwrap();
+    let data = [
+        json!({"type":"PLANNER_RESPONSE","tool_calls":[{"name":"replace_file_content","args":{"TargetFile":"/work/sample.txt","ReplacementContent":"new"}}]}),
+        json!({"type":"PLANNER_RESPONSE","tool_calls":[{"name":"view_file","args":{}}]}),
+        json!({"type":"VIEW_FILE","status":"DONE","content":"Unindexed view output"}),
+        json!({"type":"CODE_ACTION","status":"DONE","content":"Unindexed edit output"}),
+    ].iter().map(|v| v.to_string()+"\n").collect::<String>();
+    let p = transcript(h.path(), "antigravity-cli", "s", "transcript.jsonl", &data);
+    let mut s = parse_transcript(&p, "s").unwrap();
+    let ids: Vec<_> = s
+        .messages
+        .iter()
+        .filter_map(|m| match &m.tool {
+            Some(ToolEvent::Part(ToolPart::Call(c))) => c.id.clone(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], ids[1]);
+    let links: Vec<_> = s
+        .messages
+        .iter()
+        .filter_map(|m| match &m.tool {
+            Some(ToolEvent::Part(ToolPart::Result(r))) => r.call_id.clone(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(links, vec![ids[1].clone(), ids[0].clone()]);
+    assert_eq!(s.edits.len(), 1);
+    crate::tool_summary::fold_tool_parts(&mut s);
+    assert_eq!(s.messages.len(), 2);
+    for (i, output) in ["Unindexed edit output", "Unindexed view output"]
+        .iter()
+        .enumerate()
+    {
+        let Some(ToolEvent::Summary(summary)) = &s.messages[i].tool else {
+            panic!("missing linked summary")
+        };
+        assert_eq!(summary.output.as_deref(), Some(*output));
+        assert_eq!(summary.is_error, Some(false));
+    }
+}
+
+#[test]
+fn cancelled_results_are_errors_without_edit_provenance() {
+    use crate::model::{ToolEvent, ToolPart};
+    let h = tempfile::tempdir().unwrap();
+    for status in ["CANCELLED", "CANCELED"] {
+        for step_type in ["GENERIC", "CODE_ACTION"] {
+            let data = edit_log(status).replace("GENERIC", step_type);
+            let p = transcript(h.path(), "antigravity-cli", "s", "transcript.jsonl", &data);
+            let mut s = parse_transcript(&p, "s").unwrap();
+            let result = s
+                .messages
+                .iter()
+                .find_map(|m| match &m.tool {
+                    Some(ToolEvent::Part(ToolPart::Result(r))) => Some(r),
+                    _ => None,
+                })
+                .unwrap();
+            assert!(result.is_error, "{status} {step_type}");
+            assert_eq!(result.call_id.as_deref(), Some("1:0"));
+            assert!(s.edits.is_empty());
+            assert!(s.touched.is_empty());
+            crate::tool_summary::fold_tool_parts(&mut s);
+            let summary = s
+                .messages
+                .iter()
+                .find_map(|m| match &m.tool {
+                    Some(ToolEvent::Summary(s)) if s.name == "edit_file" => Some(s),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(summary.is_error, Some(true));
+        }
+    }
+}
