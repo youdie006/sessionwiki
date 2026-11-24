@@ -269,20 +269,6 @@ impl Adapter for Prodex {
             }
         }
 
-        // Files the task bundled become provenance links (trace integration).
-        let touched: Vec<String> = task["files"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|f| {
-                        f.as_str()
-                            .map(str::to_string)
-                            .or_else(|| f["path"].as_str().map(str::to_string))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
         Ok(Session {
             id,
             tool: "prodex",
@@ -293,8 +279,6 @@ impl Adapter for Prodex {
             title,
             subagent: false,
             messages,
-            touched,
-            edits: Vec::new(),
         })
     }
 }

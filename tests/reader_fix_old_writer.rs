@@ -80,8 +80,6 @@ impl Adapter for OneChat {
                 ts: None,
                 tool: None,
             }],
-            touched: vec![],
-            edits: vec![],
         })
     }
 }

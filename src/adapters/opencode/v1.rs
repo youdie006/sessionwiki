@@ -1,8 +1,6 @@
 //! Existing v1 SQLite and legacy JSON decoding.
 use super::{display_path, push, redact_json_strings};
-use crate::adapters::{
-    bounded_redacted_output, dedup_paths, redacted_truncate, title_from_messages,
-};
+use crate::adapters::{bounded_redacted_output, redacted_truncate, title_from_messages};
 use crate::model::{Message, Role, Session, ToolCall, ToolResult};
 use crate::util::short_id;
 use anyhow::{Context, Result};
@@ -78,7 +76,6 @@ pub(super) fn parse_sql(
     }
 
     let mut messages: Vec<Message> = Vec::new();
-    let mut touched: Vec<String> = Vec::new();
     for (mid, tc, mdata) in &messages_meta {
         let role = match mdata.get("role").and_then(Value::as_str) {
             Some("user") => Role::User,
@@ -95,18 +92,9 @@ pub(super) fn parse_sql(
                     }
                 }
                 Some("tool") => {
-                    emit_tool_part(p, ts, &mut messages, &mut touched);
+                    emit_tool_part(p, ts, &mut messages);
                 }
-                Some("patch") => {
-                    if let Some(Value::Array(files)) = p.get("files") {
-                        for f in files {
-                            if let Some(fp) = f.as_str() {
-                                touched.push(fp.to_string());
-                            }
-                        }
-                    }
-                }
-                // reasoning / step-* / file / snapshot - skip.
+                // reasoning / step-* / patch / file / snapshot - skip.
                 _ => {}
             }
         }
@@ -128,8 +116,6 @@ pub(super) fn parse_sql(
         title,
         subagent: parent.is_some_and(|p| !p.is_empty()),
         messages,
-        touched: dedup_paths(touched),
-        edits: Vec::new(),
     })
 }
 
@@ -163,7 +149,6 @@ pub(super) fn parse_json(tool: &'static str, path: &Path) -> Result<Session> {
         .and_then(|p| p.parent());
 
     let mut messages: Vec<Message> = Vec::new();
-    let mut touched: Vec<String> = Vec::new();
 
     if let Some(store) = store {
         for msg_path in sorted_json(&store.join("message").join(&session_id)) {
@@ -199,16 +184,7 @@ pub(super) fn parse_json(tool: &'static str, path: &Path) -> Result<Session> {
                         }
                     }
                     Some("tool") => {
-                        emit_tool_part(&p, ts, &mut messages, &mut touched);
-                    }
-                    Some("patch") => {
-                        if let Some(Value::Array(files)) = p.get("files") {
-                            for f in files {
-                                if let Some(fp) = f.as_str() {
-                                    touched.push(fp.to_string());
-                                }
-                            }
-                        }
+                        emit_tool_part(&p, ts, &mut messages);
                     }
                     _ => {}
                 }
@@ -228,30 +204,10 @@ pub(super) fn parse_json(tool: &'static str, path: &Path) -> Result<Session> {
         title,
         subagent,
         messages,
-        touched: dedup_paths(touched),
-        edits: Vec::new(),
     })
 }
 
-/// Both layouts name an edited file in `state.input.filePath` for the
-/// `edit`/`write`/`multiedit` tools. Reads are not authorship.
-fn edited_path(tool: &str, input: Option<&Value>) -> Option<String> {
-    if !matches!(tool, "edit" | "write" | "multiedit") {
-        return None;
-    }
-    input?
-        .get("filePath")
-        .and_then(Value::as_str)
-        .filter(|p| !p.is_empty())
-        .map(String::from)
-}
-
-fn emit_tool_part(
-    part: &Value,
-    ts: Option<DateTime<Utc>>,
-    messages: &mut Vec<Message>,
-    touched: &mut Vec<String>,
-) {
+fn emit_tool_part(part: &Value, ts: Option<DateTime<Utc>>, messages: &mut Vec<Message>) {
     let name = part.get("tool").and_then(Value::as_str).unwrap_or("?");
     let input = part.pointer("/state/input");
     let state = part.get("state");
@@ -260,12 +216,6 @@ fn emit_tool_part(
         .and_then(Value::as_str);
     let has_error_field = state.is_some_and(|value| value.get("error").is_some());
     let is_error = status == Some("error") || has_error_field;
-    // An edit that ended in error - rejected at permission, or no match -
-    // changed nothing.
-    if let Some(path) = edited_path(name, input).filter(|_| !is_error) {
-        touched.push(path);
-    }
-
     let mut args = input.cloned().unwrap_or_else(|| serde_json::json!({}));
     redact_json_strings(&mut args);
     messages.push(Message::tool_call(
@@ -388,47 +338,11 @@ mod tests {
         assert!(!s.subagent);
         let roles: Vec<_> = s.messages.iter().map(|m| m.role.label()).collect();
         assert_eq!(roles, ["user", "assistant", "tool"]);
-        assert_eq!(s.touched, ["src/client.ts"]);
         assert_eq!(s.started, DateTime::from_timestamp_millis(1718630400000));
         assert_eq!(s.ended, DateTime::from_timestamp_millis(1718630500000));
 
         let _ = std::fs::remove_file(&db);
         let _ = std::fs::remove_file(db.with_extension("db-wal"));
         let _ = std::fs::remove_file(db.with_extension("db-shm"));
-    }
-
-    /// An edit that ended in error changed nothing: OpenCode records the
-    /// user rejecting the permission and a failed match ("oldString not found")
-    /// as `status: "error"`. A call still running has no outcome yet and keeps
-    /// its file, as a finished one does.
-    #[test]
-    fn an_edit_that_ended_in_error_edited_nothing() {
-        let part = |path: &str, state: serde_json::Value| {
-            let mut state = state;
-            state["input"] = serde_json::json!({ "filePath": path });
-            serde_json::json!({"type": "tool", "tool": "edit", "callID": path, "state": state})
-        };
-        let parts = [
-            part(
-                "done.ts",
-                serde_json::json!({"status": "completed", "output": "ok"}),
-            ),
-            part("running.ts", serde_json::json!({"status": "running"})),
-            part(
-                "rejected.ts",
-                serde_json::json!({"status": "error", "error": "The user rejected permission to use this specific tool call."}),
-            ),
-            part(
-                "nomatch.ts",
-                serde_json::json!({"status": "error", "error": "oldString not found in content"}),
-            ),
-            part("unstated.ts", serde_json::json!({"error": "failed"})),
-            part("bare.ts", serde_json::json!({"status": "error"})),
-        ];
-        let (mut messages, mut touched) = (Vec::new(), Vec::new());
-        for p in &parts {
-            super::emit_tool_part(p, None, &mut messages, &mut touched);
-        }
-        assert_eq!(touched, ["done.ts", "running.ts"]);
     }
 }

@@ -38,7 +38,7 @@ def claude_session(proj_dir, cwd, summary, turns, day, h):
                           "message": {"role": "assistant",
                                       "content": [{"type": "text", "text": text}]}})
         elif role in ("Edit", "Write", "MultiEdit"):
-            # An edit tool call: `text` is the file path it wrote (provenance).
+            # An edit tool call: `text` is the file path it wrote.
             lines.append({"type": "assistant", "cwd": cwd, "sessionId": sid,
                           "timestamp": ts(day, h, i),
                           "message": {"role": "assistant",

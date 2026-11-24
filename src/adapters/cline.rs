@@ -1,7 +1,4 @@
-use super::{
-    bounded_redacted_output, dedup_paths, redacted_truncate, title_from_messages, Adapter,
-    Discovered,
-};
+use super::{bounded_redacted_output, redacted_truncate, title_from_messages, Adapter, Discovered};
 use crate::model::{Message, Role, Session, ToolCall, ToolResult};
 use crate::util::short_id;
 use anyhow::{Context, Result};
@@ -170,20 +167,6 @@ fn discover_tasks_in(bases: &[PathBuf], ext_id: &str) -> Discovered {
     }
 }
 
-/// File-edit tools across the family. Both the native `tool_use` name and the
-/// XML tag name use these strings; each carries the target in a `path` field.
-/// Read/list/search/command tools do not establish authorship.
-const EDIT_TOOLS: &[&str] = &[
-    "write_to_file",
-    "replace_in_file",
-    "apply_diff",
-    "insert_content",
-    "search_and_replace",
-    "edit_file",
-    "new_rule",
-    "apply_patch",
-];
-
 /// Any tool tag - used only to cut the assistant's prose off before its
 /// embedded XML tool call.
 const TOOL_TAGS: &[&str] = &[
@@ -218,7 +201,6 @@ fn parse_task(tool: &'static str, path: &Path) -> Result<Session> {
     let task_dir = path.parent();
 
     let mut messages: Vec<Message> = Vec::new();
-    let mut touched: Vec<String> = Vec::new();
     let mut cwd = String::new();
 
     for entry in &entries {
@@ -267,15 +249,6 @@ fn parse_task(tool: &'static str, path: &Path) -> Result<Session> {
                     let text = block.get("text").and_then(Value::as_str).unwrap_or("");
                     push(&mut messages, Role::Assistant, prose_before_tools(text));
                     for (name, mut args) in xml_tool_calls(text) {
-                        if EDIT_TOOLS.contains(&name) {
-                            if let Some(path) = args
-                                .get("path")
-                                .and_then(Value::as_str)
-                                .filter(|path| !path.is_empty())
-                            {
-                                touched.push(path.to_owned());
-                            }
-                        }
                         redact_json_strings(&mut args);
                         messages.push(Message::tool_call(
                             None,
@@ -290,15 +263,6 @@ fn parse_task(tool: &'static str, path: &Path) -> Result<Session> {
                 Some("tool_use") => {
                     let name = block.get("name").and_then(Value::as_str).unwrap_or("?");
                     let input = block.get("input");
-                    if EDIT_TOOLS.contains(&name) {
-                        if let Some(p) = input
-                            .and_then(|i| i.get("path"))
-                            .and_then(Value::as_str)
-                            .filter(|p| !p.is_empty())
-                        {
-                            touched.push(p.to_string());
-                        }
-                    }
                     let mut args = input.cloned().unwrap_or_else(|| serde_json::json!({}));
                     redact_json_strings(&mut args);
                     messages.push(Message::tool_call(
@@ -340,8 +304,6 @@ fn parse_task(tool: &'static str, path: &Path) -> Result<Session> {
         title,
         subagent: false,
         messages,
-        touched: dedup_paths(touched),
-        edits: Vec::new(),
     })
 }
 

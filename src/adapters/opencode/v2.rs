@@ -1,9 +1,7 @@
 //! v2 SQLite messages embed their content and tool events in each row.
 use super::{display_path, push, redact_json_strings};
-use crate::adapters::{
-    bounded_redacted_output, clean_path, dedup_paths, redacted_truncate, title_from_messages,
-};
-use crate::model::{EditEvent, EditKind, Message, Role, Session, ToolCall, ToolResult};
+use crate::adapters::{bounded_redacted_output, redacted_truncate, title_from_messages};
+use crate::model::{Message, Role, Session, ToolCall, ToolResult};
 use crate::util::short_id;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -88,8 +86,6 @@ pub(super) fn parse(
     )?;
 
     let mut messages: Vec<Message> = Vec::new();
-    let mut touched: Vec<String> = Vec::new();
-    let mut edits: Vec<EditEvent> = Vec::new();
 
     let rows = stmt.query_map(params![sid], |r| {
         let mtype: String = r.get(0)?;
@@ -117,9 +113,6 @@ pub(super) fn parse(
                 }
             }
             "assistant" => {
-                if let Some(files) = data.pointer("/snapshot/files").and_then(Value::as_array) {
-                    touched.extend(files.iter().filter_map(Value::as_str).map(str::to_owned));
-                }
                 if let Some(content) = data.get("content").and_then(Value::as_array) {
                     for item in content {
                         let itype = item.get("type").and_then(Value::as_str).unwrap_or("");
@@ -133,13 +126,7 @@ pub(super) fn parse(
                                 }
                             }
                             "tool" => {
-                                emit_tool_part_v2(
-                                    item,
-                                    ts,
-                                    &mut messages,
-                                    &mut touched,
-                                    &mut edits,
-                                );
+                                emit_tool_part_v2(item, ts, &mut messages);
                             }
                             _ => {}
                         }
@@ -210,74 +197,16 @@ pub(super) fn parse(
         title,
         subagent: parent.is_some_and(|p| !p.is_empty()),
         messages,
-        touched: dedup_paths(touched),
-        edits,
     })
 }
 
-// v2 embeds tools in session_message.data.content. Keep its input aliases
-// separate from the existing v1/JSON tool-part contract.
-fn edited_path_v2(tool: &str, input: Option<&Value>) -> Option<String> {
-    if !matches!(tool, "edit" | "write" | "multiedit") {
-        return None;
-    }
-    let input = input?;
-    ["filePath", "path", "file_path"]
-        .into_iter()
-        .find_map(|key| {
-            input
-                .get(key)
-                .and_then(Value::as_str)
-                .filter(|path| !path.is_empty())
-                .map(str::to_owned)
-        })
-}
-
-fn edit_event_v2(
-    tool: &str,
-    input: Option<&Value>,
-    ts: Option<DateTime<Utc>>,
-) -> Option<EditEvent> {
-    let path = clean_path(&edited_path_v2(tool, input)?)?;
-    let input = input?;
-    let kind = match tool {
-        "edit" | "multiedit" => EditKind::Edit,
-        "write" => EditKind::Write,
-        _ => return None,
-    };
-    let raw = match kind {
-        EditKind::Edit => input
-            .get("newString")
-            .or_else(|| input.get("new_string"))
-            .or_else(|| input.get("new_str"))
-            .and_then(Value::as_str)
-            .unwrap_or(""),
-        EditKind::Write => input.get("content").and_then(Value::as_str).unwrap_or(""),
-        _ => "",
-    };
-    let snippet = redacted_truncate(raw.trim(), 200);
-    Some(EditEvent {
-        path,
-        kind,
-        snippet,
-        ts,
-    })
-}
-
-fn emit_tool_part_v2(
-    part: &Value,
-    ts: Option<DateTime<Utc>>,
-    messages: &mut Vec<Message>,
-    touched: &mut Vec<String>,
-    edits: &mut Vec<EditEvent>,
-) {
+fn emit_tool_part_v2(part: &Value, ts: Option<DateTime<Utc>>, messages: &mut Vec<Message>) {
     let name = part
         .get("name")
         .or_else(|| part.get("tool"))
         .and_then(Value::as_str)
         .unwrap_or("?");
     let input = part.pointer("/state/input").or_else(|| part.get("input"));
-    let tool_lower = name.to_ascii_lowercase();
 
     let state = part.get("state");
     let status = state
@@ -285,16 +214,6 @@ fn emit_tool_part_v2(
         .and_then(Value::as_str);
     let has_error = state.is_some_and(|value| value.get("error").is_some());
     let is_error = matches!(status, Some("error" | "failed")) || has_error;
-    if let Some(path) =
-        edited_path_v2(&tool_lower, input).filter(|_| status == Some("completed") && !is_error)
-    {
-        if let Some(clean) = clean_path(&path) {
-            touched.push(clean);
-            if let Some(ev) = edit_event_v2(&tool_lower, input, ts) {
-                edits.push(ev);
-            }
-        }
-    }
 
     let mut args = input.cloned().unwrap_or_else(|| serde_json::json!({}));
     redact_json_strings(&mut args);

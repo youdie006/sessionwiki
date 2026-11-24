@@ -44,18 +44,10 @@ fn fresh_index() -> Connection {
     let conn = index::open().unwrap();
     conn.execute_batch(
         "DELETE FROM files; DELETE FROM messages; DELETE FROM tags;
-         DELETE FROM notes; DELETE FROM touched; DELETE FROM archive;",
+         DELETE FROM notes; DELETE FROM archive;",
     )
     .unwrap();
     conn
-}
-
-fn touch(conn: &Connection, id: &str, path: &str) {
-    conn.execute(
-        "INSERT OR IGNORE INTO touched(session_id, path) VALUES (?1, ?2)",
-        params![id, path],
-    )
-    .unwrap();
 }
 
 /// A session with explicit message text. LIKE (the short-query path) reads
@@ -214,75 +206,6 @@ fn related_prefers_same_project_then_shared_tags() {
 }
 
 #[test]
-fn provenance_files_trace_and_shared_file_relatedness() {
-    let _g = LOCK.lock().unwrap();
-    let conn = fresh_index();
-    // Two sessions in different projects both edit the same file (e.g. a
-    // shared lib); a third edits something else.
-    seed(
-        &conn,
-        "f1",
-        "claude-code",
-        "/proj/api",
-        "add auth guard",
-        "2026-06-10T10:00:00+00:00",
-    );
-    seed(
-        &conn,
-        "f2",
-        "codex",
-        "/proj/web",
-        "reuse auth helper",
-        "2026-06-11T10:00:00+00:00",
-    );
-    seed(
-        &conn,
-        "f3",
-        "codex",
-        "/proj/web",
-        "unrelated",
-        "2026-06-09T10:00:00+00:00",
-    );
-    touch(&conn, "f1", "/home/me/proj/src/auth.rs");
-    touch(&conn, "f1", "/home/me/proj/src/lib.rs");
-    touch(&conn, "f2", "/home/me/proj/src/auth.rs");
-    touch(&conn, "f3", "/home/me/proj/src/other.rs");
-
-    // files_for: a session's own edits, order preserved.
-    assert_eq!(
-        index::files_for(&conn, "f1").unwrap(),
-        ["/home/me/proj/src/auth.rs", "/home/me/proj/src/lib.rs"]
-    );
-
-    // trace by suffix: a relative path finds the absolute stored path, both
-    // sessions that touched it, newest first (f2 then f1).
-    let hits = index::sessions_for_file(&conn, "src/auth.rs", 10).unwrap();
-    let ids: Vec<&str> = hits.iter().map(|(r, _)| r.session_id.as_str()).collect();
-    assert_eq!(ids, ["f2", "f1"]);
-    assert_eq!(hits[0].1, "/home/me/proj/src/auth.rs"); // matched path reported
-                                                        // a file only one session touched
-    let one = index::sessions_for_file(&conn, "src/other.rs", 10).unwrap();
-    assert_eq!(one.len(), 1);
-    assert_eq!(one[0].0.session_id, "f3");
-
-    // related now links across projects via the shared file: f2 is related to
-    // f1 even though they are in different projects and share no tag.
-    let rel = index::related(&conn, "f1", 10).unwrap();
-    let ids: Vec<&str> = rel.iter().map(|r| r.session_id.as_str()).collect();
-    assert!(
-        ids.contains(&"f2"),
-        "session editing the same file should be related across projects"
-    );
-    assert!(
-        !ids.contains(&"f3"),
-        "session touching only other files should not be related"
-    );
-
-    // stats counts distinct linked files (auth.rs, lib.rs, other.rs = 3).
-    assert_eq!(index::stats(&conn).unwrap().files, 3);
-}
-
-#[test]
 fn projects_and_stats_rollups() {
     let _g = LOCK.lock().unwrap();
     let conn = fresh_index();
@@ -327,7 +250,7 @@ fn projects_and_stats_rollups() {
 // bump (which drops the disposable cache) and rehydrate the cache, or a version
 // bump would silently destroy exactly the sessions that cannot be re-derived
 // from disk. This test forces a bump and asserts an archived session comes back
-// fully - listable, traceable, searchable, readable.
+// fully - listable, searchable, readable.
 #[test]
 fn archive_survives_schema_bump_rehydration() {
     let _g = LOCK.lock().unwrap();
@@ -338,10 +261,9 @@ fn archive_survives_schema_bump_rehydration() {
           msg_count, kind, transcript, touched, archived_at)
          VALUES ('arc1','/gone/s.jsonl',0,0,'codex','/proj/api','rate limiter fix',
                  '2026-06-10T10:00:00+00:00','2026-06-10T10:05:00+00:00',2,'main',
-                 ?1, ?2, '2026-06-12T00:00:00Z')",
+                 ?1, '[]', '2026-06-12T00:00:00Z')",
         params![
-            r#"[["user","why does the rate limiter go negative"],["assistant","fixed the off-by-one in rate_limiter.rs"]]"#,
-            r#"["/proj/api/src/rate_limiter.rs"]"#
+            r#"[["user","why does the rate limiter go negative"],["assistant","fixed the off-by-one in rate_limiter.rs"]]"#
         ],
     )
     .unwrap();
@@ -363,15 +285,6 @@ fn archive_survives_schema_bump_rehydration() {
     );
     assert_eq!(rows[0].title, "rate limiter fix");
 
-    // Provenance survived: trace still finds it.
-    assert_eq!(
-        index::files_for(&conn, "arc1").unwrap(),
-        ["/proj/api/src/rate_limiter.rs"]
-    );
-    let hits = index::sessions_for_file(&conn, "src/rate_limiter.rs", 10).unwrap();
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].0.session_id, "arc1");
-
     // Transcript survived: search still finds it, and it reads back.
     let s = index::search(&conn, "negative", 10, None, None).unwrap();
     assert!(
@@ -384,7 +297,7 @@ fn archive_survives_schema_bump_rehydration() {
 }
 
 // End-to-end: a real session on disk is indexed, the tool deletes it, the next
-// sync archives it (does not lose it), it stays traceable/searchable/readable
+// sync archives it (does not lose it), it stays searchable/readable
 // from the index, and `forget` finally removes it.
 #[test]
 fn archive_on_prune_serves_and_forgets() {
@@ -425,29 +338,18 @@ fn archive_on_prune_serves_and_forgets() {
         .map(|r| r.session_id.clone())
         .expect("session indexed");
     assert!(!rows.iter().find(|r| r.session_id == sid).unwrap().archived);
-    assert_eq!(
-        index::files_for(&conn, &sid).unwrap(),
-        ["/home/dev/app/src/login.rs"]
-    );
 
     // The tool prunes the session.
     std::fs::remove_file(&sess).unwrap();
     index::sync(&mut conn, Some("claude-code")).unwrap();
 
-    // Kept, flagged archived; trace and search still work.
+    // Kept, flagged archived; search still works.
     let r = index::resolve(&conn, &sid)
         .unwrap()
         .into_iter()
         .next()
         .unwrap();
     assert!(r.archived, "pruned session must be archived, not deleted");
-    assert!(
-        index::sessions_for_file(&conn, "src/login.rs", 10)
-            .unwrap()
-            .iter()
-            .any(|(s, _)| s.session_id == sid),
-        "trace must survive the prune"
-    );
     assert!(
         index::search(&conn, "empty password", 10, None, None)
             .unwrap()
@@ -522,40 +424,6 @@ fn nfd_message_is_found_by_nfc_query_via_fts() {
         .unwrap()
         .iter()
         .any(|h| h.row.session_id == "k1"));
-}
-
-#[test]
-fn nfd_touched_path_is_traceable_by_nfc() {
-    let _g = LOCK.lock().unwrap();
-    let conn = fresh_index();
-    seed(
-        &conn,
-        "t1",
-        "codex",
-        "/p",
-        "korean file",
-        "2026-06-10T10:00:00+00:00",
-    );
-    let nfd_path = format!("/home/me/{}.rs", nfd_hoesa());
-    conn.execute(
-        "INSERT OR IGNORE INTO touched(session_id, path) VALUES ('t1', ?1)",
-        params![sessionwiki::util::nfc(&nfd_path)],
-    )
-    .unwrap();
-    assert!(
-        index::sessions_for_file(&conn, "회사.rs", 10)
-            .unwrap()
-            .iter()
-            .any(|(r, _)| r.session_id == "t1"),
-        "NFC trace query must match the NFC-stored Korean path"
-    );
-    assert!(
-        index::sessions_for_file(&conn, &format!("{}.rs", nfd_hoesa()), 10)
-            .unwrap()
-            .iter()
-            .any(|(r, _)| r.session_id == "t1"),
-        "NFD trace query must be normalized and match"
-    );
 }
 
 // Archived sessions: a pre-fix archive holds an NFD transcript; rehydrate on a
@@ -781,42 +649,4 @@ fn tags_are_nfc_normalized_on_add_filter_and_remove() {
     // And removal accepts the decomposed form too.
     assert_eq!(index::remove_tag(&conn, "nfc1", nfd).unwrap(), 1);
     assert!(index::tag_counts(&conn).unwrap().is_empty());
-}
-
-/// Codex records a path relative to the folder it ran in, Claude Code a full
-/// one: `src/auth.rs` from `/proj/api` and `/proj/api/src/auth.rs` are one
-/// file, while `src/auth.rs` from `/proj/web` is another.
-#[test]
-fn shared_file_relatedness_reads_relative_paths_against_their_folder() {
-    let _g = LOCK.lock().unwrap();
-    let conn = fresh_index();
-    let t = "2026-06-10T10:00:00+00:00";
-    seed(&conn, "full", "claude-code", "/proj", "full path", t);
-    seed(&conn, "rel", "codex", "/proj/api", "relative path", t);
-    seed(&conn, "cased", "claude-code", "/elsewhere", "other case", t);
-    seed(&conn, "web", "codex", "/proj/web", "another file", t);
-    touch(&conn, "full", "/proj/api/src/auth.rs");
-    touch(&conn, "rel", "src/auth.rs");
-    touch(&conn, "cased", "/proj/API/src/auth.rs");
-    touch(&conn, "web", "src/auth.rs");
-    let ids = |id: &str| -> Vec<String> {
-        let mut v: Vec<String> = index::related(&conn, id, 10)
-            .unwrap()
-            .into_iter()
-            .map(|r| r.session_id)
-            .collect();
-        v.sort();
-        v
-    };
-    assert_eq!(ids("rel"), ["cased", "full"]);
-    assert_eq!(ids("full"), ["cased", "rel"]);
-    assert_eq!(ids("web"), Vec::<String>::new());
-
-    // Windows paths are not read against a folder: the same full path recorded
-    // from two folders is still one file.
-    seed(&conn, "win1", "codex", "C:\\repo", "windows", t);
-    seed(&conn, "win2", "codex", "C:\\repo\\src", "windows", t);
-    touch(&conn, "win1", "C:\\repo\\src\\auth.rs");
-    touch(&conn, "win2", "C:\\repo\\src\\auth.rs");
-    assert_eq!(ids("win1"), ["win2"]);
 }

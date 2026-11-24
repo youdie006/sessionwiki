@@ -205,37 +205,3 @@ fn native_migration_state_allows_archival_of_deleted_v2_sessions() {
     assert_eq!(hits.len(), 1);
     assert!(hits[0].row.archived);
 }
-
-#[test]
-fn assistant_snapshot_paths_are_traceable_without_duplicate_or_requested_paths() {
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("data");
-    let db = home.join("opencode/opencode.db");
-    let cache = dir.path().join("cache");
-    std::fs::create_dir_all(db.parent().unwrap()).unwrap();
-    let source = Connection::open(&db).unwrap();
-    source
-        .execute_batch(include_str!("fixtures/opencode/v2_1_1.sql"))
-        .unwrap();
-    sync(&home, &db, &cache);
-
-    let indexed = Connection::open(cache.join("index.db")).unwrap();
-    let session_id: String = indexed
-        .query_row("SELECT session_id FROM files", [], |row| row.get(0))
-        .unwrap();
-    let paths = sessionwiki::index::files_for(&indexed, &session_id).unwrap();
-    assert_eq!(
-        paths,
-        ["src/auth.ts", "src/routes.ts", "scripts/rebuild.sh"]
-    );
-    for path in ["src/routes.ts", "scripts/rebuild.sh"] {
-        let hits = sessionwiki::index::sessions_for_file(&indexed, path, 10).unwrap();
-        assert_eq!(hits.len(), 1, "{path}");
-        assert_eq!(hits[0].0.session_id, session_id, "{path}");
-    }
-    assert!(
-        sessionwiki::index::sessions_for_file(&indexed, "requested-only.txt", 10)
-            .unwrap()
-            .is_empty()
-    );
-}

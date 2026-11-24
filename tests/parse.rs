@@ -84,16 +84,6 @@ fn claude_main_session() {
     assert!(s.messages[0].text.contains("Preflight requests"));
     assert!(s.messages.iter().any(|m| m.text.contains("14 tests pass")));
 
-    // Provenance: Edit/Write file_path is extracted, the repeated edit to
-    // mod.rs is de-duplicated, and the read-only Bash call contributes nothing.
-    assert_eq!(
-        s.touched,
-        [
-            "/home/dev/proj-a/src/middleware/mod.rs",
-            "/home/dev/proj-a/tests/cors_preflight.rs"
-        ]
-    );
-
     assert_eq!(
         s.started.map(|t| t.to_rfc3339()),
         Some("2026-06-09T14:01:00+00:00".to_string())
@@ -162,13 +152,6 @@ fn codex_session_with_schema_variants() {
         Some("```text\n10000 cases passed\n```")
     );
     assert!(s.messages.iter().any(|m| m.text.contains("2.1M ops/sec")));
-
-    // Provenance: apply_patch file headers (Update File / Add File) are pulled
-    // from the call arguments even though the patch is double-JSON-escaped.
-    assert_eq!(
-        s.touched,
-        ["src/rate_limiter.rs", "tests/rate_limiter_props.rs"]
-    );
 }
 
 #[test]
@@ -224,7 +207,7 @@ fn codex_parses_legacy_bare_messages() {
 }
 
 #[test]
-fn codex_indexes_custom_tool_calls_and_their_patched_paths() {
+fn codex_indexes_custom_tool_calls() {
     let s = parse(
         "codex",
         "codex/rollout-2026-07-13T16-05-05-custom-tool-call.jsonl",
@@ -235,7 +218,6 @@ fn codex_indexes_custom_tool_calls_and_their_patched_paths() {
         s.messages[1].text,
         "→ apply_patch(src/synthetic.rs) ⇒ pending"
     );
-    assert_eq!(s.touched, ["src/synthetic.rs"]);
 }
 
 #[test]
@@ -266,7 +248,6 @@ fn codex_structured_tool_calls_and_results_are_summarized() {
         ]
     );
     assert!(tool_lines.iter().all(|line| !line.contains(" {")));
-    assert_eq!(s.touched, ["src/codex_synthetic.rs"]);
 }
 
 #[test]
@@ -408,7 +389,7 @@ fn opencode_multi_file_session() {
 
     // reasoning parts are dropped; text parts and tool parts are folded into
     // compact summaries in id order; the malformed part file is skipped; the
-    // patch part contributes no message (only provenance).
+    // patch part contributes no message.
     assert_eq!(
         roles(&s),
         ["user", "assistant", "tool", "tool", "tool", "tool"]
@@ -437,15 +418,6 @@ fn opencode_multi_file_session() {
             "→ bash(false) ⇒ error · 2 lines — Command failed: exit 1",
             "→ read(README.md) ⇒ ok · 10 lines",
             "→ read(config.json) ⇒ pending"
-        ]
-    );
-
-    // Provenance: edit tool's state.input.filePath + the patch's files list.
-    assert_eq!(
-        s.touched,
-        [
-            "/home/dev/myapp/src/http/client.ts",
-            "/home/dev/myapp/src/util.ts"
         ]
     );
 
@@ -512,10 +484,6 @@ fn cline_xml_and_native_tool_edits() {
         .iter()
         .all(|m| !m.text.contains("successfully saved")));
 
-    // Provenance from BOTH the XML <write_to_file><path> and the native
-    // tool_use input.path.
-    assert_eq!(s.touched, ["src/main.py", "tests/test_main.py"]);
-
     assert_eq!(
         s.started,
         chrono::DateTime::from_timestamp_millis(1749477660000)
@@ -577,10 +545,6 @@ fn gajae_jsonl_session() {
         ]
     );
 
-    // Provenance: write (arguments.path) + ast_edit (arguments.paths[]) with the
-    // repeat de-duplicated; read is excluded.
-    assert_eq!(s.touched, ["src/parse.ts", "src/helper.ts"]);
-
     // started = header RFC3339; ended = last entry's RFC3339.
     assert_eq!(
         s.started.map(|t| t.to_rfc3339()),
@@ -628,9 +592,6 @@ fn continue_session_with_tool_edit() {
         s.messages[6].text,
         "→ read_file(logs/test-output.txt) ⇒ ok · 10 lines"
     );
-
-    // Provenance from toolCallStates[].parsedArgs.filepath.
-    assert_eq!(s.touched, ["src/http.ts"]);
 
     // The session file has no timestamps; started comes from sessions.json's
     // dateCreated (epoch-ms as a string); there is no reliable ended.
@@ -723,7 +684,6 @@ fn aider_golden() {
     assert_eq!(s.title, "add a retry to the webhook");
     let roles: Vec<&str> = s.messages.iter().map(|m| m.role.label()).collect();
     assert_eq!(roles, vec!["user", "assistant", "tool"]);
-    assert_eq!(s.touched, vec!["src/webhook.py", "src/retry.py"]); // dry-run ignored
     assert!(s.started.is_some());
     assert!(s.messages.iter().all(|m| m.ts.is_none()));
     // a bad run index errors, never panics
@@ -893,77 +853,6 @@ fn prodex_multibyte_task_id_never_panics() {
     );
 }
 
-/// A Continue edit that errored or was canceled changed nothing, so it is not a
-/// file the session edited. Continue keeps each call's outcome in the
-/// `toolCallStates` beside it.
-#[test]
-fn a_continue_edit_that_failed_edited_nothing() {
-    let mut session: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(fixture(
-            "continue/sessions/5f1d2c9a-8b34-4e21-9d6e-7a0c1b2e3f44.json",
-        ))
-        .unwrap(),
-    )
-    .unwrap();
-    let edit = |id: &str, path: &str, status: &str| {
-        serde_json::json!({
-            "message": {"role": "assistant", "content": "", "toolCalls": [{
-                "id": id, "type": "function",
-                "function": {"name": "edit_existing_file", "arguments": format!("{{\"filepath\":\"{path}\"}}")}
-            }]},
-            "toolCallStates": [{"toolCallId": id, "status": status}]
-        })
-    };
-    let history = session["history"].as_array_mut().unwrap();
-    history.push(edit("e1", "src/errored.ts", "errored"));
-    history.push(edit("e2", "src/canceled.ts", "canceled"));
-    history.push(edit("e3", "src/pending.ts", "generated"));
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("5f1d2c9a-8b34-4e21-9d6e-7a0c1b2e3f44.json");
-    std::fs::write(&file, session.to_string()).unwrap();
-    let adapter = adapters::by_name("continue").unwrap();
-    let s = adapters::parse_session(adapter.as_ref(), &file).unwrap();
-    assert_eq!(s.touched, ["src/http.ts", "src/pending.ts"]);
-}
-
-/// A gajae-code (Pi) edit whose result is an error changed nothing - the text
-/// to replace was not found, or the call was aborted - so it is not a file the
-/// session edited.
-#[test]
-fn a_gajae_edit_that_failed_edited_nothing() {
-    let line = |v: serde_json::Value| v.to_string() + "\n";
-    let call = |id: &str, path: &str| {
-        line(
-            serde_json::json!({"type": "message", "timestamp": "2026-10-01T00:00:01Z",
-            "message": {"role": "assistant", "content": [
-                {"type": "toolCall", "id": id, "name": "edit", "arguments": {"path": path}}
-            ]}}),
-        )
-    };
-    let result = |id: &str, is_error: bool| {
-        line(
-            serde_json::json!({"type": "message", "timestamp": "2026-10-01T00:00:02Z",
-            "message": {"role": "toolResult", "toolCallId": id, "isError": is_error,
-                "content": [{"type": "text", "text": "result"}]}}),
-        )
-    };
-    let body = [
-        line(serde_json::json!({"type": "session", "id": "s1", "cwd": "/repo", "timestamp": "2026-10-01T00:00:00Z"})),
-        call("ok", "src/ok.ts"),
-        result("ok", false),
-        call("bad", "src/bad.ts"),
-        result("bad", true),
-        call("open", "src/open.ts"),
-    ]
-    .concat();
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("2026-10-01T00-00-00-000Z_s1.jsonl");
-    std::fs::write(&file, body).unwrap();
-    let adapter = adapters::by_name("gajae-code").unwrap();
-    let s = adapters::parse_session(adapter.as_ref(), &file).unwrap();
-    assert_eq!(s.touched, ["src/ok.ts", "src/open.ts"]);
-}
-
 #[test]
 fn opencode_v2_sqlite_session() {
     // OpenCode v2.1.1 schema (session_v2 and session_message in SQLite store)
@@ -988,12 +877,6 @@ fn opencode_v2_sqlite_session() {
         roles(&s),
         ["user", "assistant", "tool", "assistant", "tool", "tool"]
     );
-    assert_eq!(
-        s.touched,
-        ["src/auth.ts", "src/routes.ts", "scripts/rebuild.sh"]
-    );
-    assert_eq!(s.edits.len(), 1);
-    assert_eq!(s.edits[0].path, "src/auth.ts");
     assert_eq!(
         s.started,
         chrono::DateTime::from_timestamp_millis(1718630400000)

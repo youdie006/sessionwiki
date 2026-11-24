@@ -55,13 +55,6 @@ fn split_runs(content: &str) -> Vec<Run> {
     runs
 }
 
-fn push_unique(v: &mut Vec<String>, s: &str) {
-    let s = s.trim().to_string();
-    if !s.is_empty() && !v.contains(&s) {
-        v.push(s);
-    }
-}
-
 fn flush(messages: &mut Vec<Message>, role: Option<Role>, buf: &mut Vec<String>) {
     if let Some(role) = role {
         let text = buf.join("\n").trim().to_string();
@@ -81,12 +74,10 @@ fn flush(messages: &mut Vec<Message>, role: Option<Role>, buf: &mut Vec<String>)
 
 /// Reconstruct turns from one run body. `#### ` = user, `> ` = tool (every aider
 /// tool/warning/error line is blockquoted), blank lines continue the current
-/// turn, everything else is assistant (the default container). Edited files come
-/// from `> Applied edit to` / `> Creating empty file` (relative paths). Known
+/// turn, everything else is assistant (the default container). Known
 /// limitation: an assistant `#### ` heading or `> ` blockquote is misclassified.
-fn parse_turns(body: &str) -> (Vec<Message>, Vec<String>) {
+fn parse_turns(body: &str) -> Vec<Message> {
     let mut messages: Vec<Message> = Vec::new();
-    let mut touched: Vec<String> = Vec::new();
     let mut cur_role: Option<Role> = None;
     let mut buf: Vec<String> = Vec::new();
 
@@ -97,11 +88,6 @@ fn parse_turns(body: &str) -> (Vec<Message>, Vec<String>) {
             } else if raw == "####" {
                 (Some(Role::User), String::new())
             } else if let Some(r) = raw.strip_prefix("> ") {
-                if let Some(p) = r.strip_prefix("Applied edit to ") {
-                    push_unique(&mut touched, p);
-                } else if let Some(p) = r.strip_prefix("Creating empty file ") {
-                    push_unique(&mut touched, p);
-                }
                 (Some(Role::Tool), r.to_string())
             } else if raw == ">" {
                 (Some(Role::Tool), String::new())
@@ -127,7 +113,7 @@ fn parse_turns(body: &str) -> (Vec<Message>, Vec<String>) {
         }
     }
     flush(&mut messages, cur_role, &mut buf);
-    (messages, touched)
+    messages
 }
 
 const HISTORY_FILE: &str = ".aider.chat.history.md";
@@ -270,7 +256,7 @@ fn title_from(messages: &[Message]) -> String {
 
 /// Assemble one already-split run into a Session.
 fn session_from_run(path: &Path, idx: usize, run: &Run) -> Result<Session> {
-    let (messages, touched) = parse_turns(&run.body);
+    let messages = parse_turns(&run.body);
     let key = make_key(&path.to_string_lossy(), idx);
     let project = path
         .parent()
@@ -286,8 +272,6 @@ fn session_from_run(path: &Path, idx: usize, run: &Run) -> Result<Session> {
         title: title_from(&messages),
         subagent: false,
         messages,
-        touched,
-        edits: Vec::new(),
     })
 }
 
@@ -445,12 +429,11 @@ mod tests {
                     > Applied edit to src/a.py\n\
                     > Creating empty file src/b.py\n\
                     > Did not apply edit to src/c.py (--dry-run)\n";
-        let (msgs, touched) = parse_turns(body);
+        let msgs = parse_turns(body);
         let roles: Vec<Role> = msgs.iter().map(|m| m.role).collect();
         assert_eq!(roles, vec![Role::User, Role::Assistant, Role::Tool]);
         assert_eq!(msgs[0].text, "fix the bug");
         assert!(msgs[1].text.contains("Here is the fix."));
-        assert_eq!(touched, vec!["src/a.py", "src/b.py"]); // dedup; dry-run ignored
         assert!(msgs.iter().all(|m| m.ts.is_none()));
     }
 
@@ -460,7 +443,7 @@ mod tests {
                     para one\n\
                     \n\
                     para two\n";
-        let (msgs, _) = parse_turns(body);
+        let msgs = parse_turns(body);
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[1].role, Role::Assistant);
         assert!(msgs[1].text.contains("para one") && msgs[1].text.contains("para two"));
@@ -485,7 +468,6 @@ mod tests {
         assert_eq!(s.tool, "aider");
         assert_eq!(s.project, repo.to_string_lossy());
         assert_eq!(s.title, "add retry");
-        assert_eq!(s.touched, vec!["src/x.py"]);
         assert!(s.started.is_some());
         assert!(!s.subagent);
         // id is stable for the same (path, idx)

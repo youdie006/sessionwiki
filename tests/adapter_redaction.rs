@@ -154,7 +154,7 @@ fn json_encoded_tool_args_are_structured_and_redacted() {
 }
 
 #[test]
-fn claude_edit_snippet_redacts_before_the_snippet_cap() {
+fn claude_write_args_redact_a_secret_past_the_old_preview_cap() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("claude-session.jsonl");
     let secret = fake_openai_key('E');
@@ -175,12 +175,6 @@ fn claude_edit_snippet_redacts_before_the_snippet_cap() {
 
     let session = parse("claude-code", &path);
 
-    assert_eq!(session.edits.len(), 1);
-    assert!(
-        !session.edits[0].snippet.contains(&secret[..8]),
-        "edit snippet: {}",
-        session.edits[0].snippet
-    );
     let tool = session
         .messages
         .iter()

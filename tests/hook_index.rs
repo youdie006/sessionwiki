@@ -13,8 +13,7 @@ fn fresh() -> Connection {
     std::fs::create_dir_all(&dir).unwrap();
     std::env::set_var("SESSIONWIKI_DATA", &dir);
     let conn = index::open().unwrap();
-    conn.execute_batch("DELETE FROM files; DELETE FROM touched;")
-        .unwrap();
+    conn.execute_batch("DELETE FROM files;").unwrap();
     conn
 }
 

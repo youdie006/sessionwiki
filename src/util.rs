@@ -312,11 +312,10 @@ pub fn short_id(s: &str) -> String {
 /// The FTS5 trigram tokenizer windows over raw bytes, so the same grapheme in
 /// two normalization forms never matches: macOS stores Hangul as NFD
 /// (decomposed jamo - "회사" as combining scalars) while a typed query is NFC,
-/// so without this an NFD-stored Korean session is invisible to an NFC search,
-/// and the `trace` suffix match misses the same way. Normalizing both the
-/// indexed text and the query to NFC makes them line up. Pure ASCII is already
-/// NFC, so this is a cheap near-no-op for English; the cost is per-message and
-/// negligible next to parsing and the SQLite write.
+/// so without this an NFD-stored Korean session is invisible to an NFC search.
+/// Normalizing both the indexed text and the query to NFC makes them line up.
+/// Pure ASCII is already NFC, so this is a cheap near-no-op for English; the
+/// cost is per-message and negligible next to parsing and the SQLite write.
 /// `std::fs::canonicalize`, spelled as tools record a folder. On Windows it
 /// answers `\\?\C:\...`, a spelling no tool records, so it never matched a
 /// recorded project or the folder a session is filed under.
@@ -442,7 +441,7 @@ pub fn rel_time(ts: Option<DateTime<Utc>>) -> String {
 pub fn truncate(s: &str, max: usize) -> String {
     // Session titles (and other indexed strings) are untrusted input: a planted
     // or prompt-poisoned session can set any title, and this is the choke point
-    // that renders titles to the terminal across list/search/trace/resume/blame.
+    // that renders titles to the terminal across list/search/resume.
     // Strip control characters so a title can't smuggle ANSI/terminal-control
     // escapes into our output. \n and \t become spaces; every other C0 control,
     // DEL, and the C1 range is dropped (same posture as clean_snippet).

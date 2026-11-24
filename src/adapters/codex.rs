@@ -1,6 +1,5 @@
 use super::{
-    bounded_redacted_output, dedup_paths, ok_or_flag, parse_ts, title_from_messages, Adapter,
-    Discovered,
+    bounded_redacted_output, ok_or_flag, parse_ts, title_from_messages, Adapter, Discovered,
 };
 use crate::model::{Message, Role, Session, ToolCall, ToolResult};
 use crate::util::short_id;
@@ -137,7 +136,6 @@ impl Adapter for Codex {
         let (lines, windowed) = crate::util::session_lines_keeping(path, conversation_line)?;
 
         let mut messages: Vec<Message> = Vec::new();
-        let mut patches = Patches::default();
         let mut cwd: Option<String> = None;
         // Sub-agent threads say so in session_meta; their task arrives encrypted.
         let mut subagent = false;
@@ -217,7 +215,6 @@ impl Adapter for Codex {
                         Some("function_call") => {
                             let payload = v.get("payload").unwrap_or(&Value::Null);
                             let raw_args = payload.get("arguments").and_then(Value::as_str);
-                            patches.call(payload);
                             let mut args = if let Some(raw_args) = raw_args {
                                 serde_json::from_str(raw_args)
                                     .unwrap_or_else(|_| json!({"arguments": raw_args}))
@@ -248,7 +245,6 @@ impl Adapter for Codex {
                                     .map(|(_, patch)| format!("*** Begin Patch{patch}"))
                                     .unwrap_or_else(|| input.to_owned())
                                     .replace("\\n", "\n");
-                                patches.call(payload);
                                 ("apply_patch", json!({"patch": patch}))
                             } else if let Some(cmd) = exec_command_cmd(input) {
                                 // The `exec` tool runs a JS snippet; the common shape is
@@ -282,7 +278,6 @@ impl Adapter for Codex {
                                 .get("output")
                                 .map(unwrap_output_value)
                                 .unwrap_or_default();
-                            patches.result(payload, &output, is_error);
                             messages.push(Message::tool_result(
                                 ts,
                                 ToolResult {
@@ -382,39 +377,6 @@ impl Adapter for Codex {
             }
         }
 
-        // The window drops the middle of the file, and with it the files the
-        // rollout patched there. Those are read from the whole file: only lines
-        // that carry a patch marker or a patch failure are parsed.
-        if windowed {
-            let mut all = Patches::default();
-            let read = crate::util::for_each_line(path, |line| {
-                if !line.contains("*** ") && !Patches::may_report_failure(line) {
-                    return;
-                }
-                let Ok(v) = serde_json::from_str::<Value>(line) else {
-                    return;
-                };
-                if v.get("type").and_then(Value::as_str) != Some("response_item") {
-                    return;
-                }
-                let payload = v.get("payload").unwrap_or(&Value::Null);
-                match payload.get("type").and_then(Value::as_str) {
-                    Some("function_call" | "custom_tool_call") => all.call(payload),
-                    Some("function_call_output" | "custom_tool_call_output") => {
-                        let (output, is_error) = payload
-                            .get("output")
-                            .map(unwrap_output_value)
-                            .unwrap_or_default();
-                        all.result(payload, &output, is_error);
-                    }
-                    _ => {}
-                }
-            });
-            if read.is_ok() {
-                patches = all;
-            }
-        }
-
         let project = cwd.unwrap_or_default();
         for message in &mut messages {
             if let Some(crate::model::ToolEvent::Part(crate::model::ToolPart::Result(result))) =
@@ -445,134 +407,7 @@ impl Adapter for Codex {
             title,
             subagent,
             messages,
-            touched: dedup_paths(patches.applied()),
-            edits: Vec::new(),
         })
-    }
-}
-
-/// Extract the files an apply_patch touched from the raw call arguments. The
-/// patch format names each file on a header line - `*** Add File: path`,
-/// `*** Update File: path`, `*** Delete File: path`, `*** Move to: path` -
-/// regardless of whether the call arrives as a dedicated apply_patch function
-/// or a shell command wrapping a heredoc. Newlines may be JSON-escaped (\\n)
-/// when the patch is embedded in an arguments string, so handle both.
-fn collect_patched_paths(args: &str, out: &mut Vec<String>) {
-    const MARKERS: [&str; 4] = [
-        "*** Add File: ",
-        "*** Update File: ",
-        "*** Delete File: ",
-        "*** Move to: ",
-    ];
-    let normalized = args.replace("\\n", "\n");
-    for line in normalized.lines() {
-        let line = line.trim();
-        for m in MARKERS {
-            if let Some(rest) = line.strip_prefix(m) {
-                let path = rest.trim().trim_matches('"');
-                if !path.is_empty() {
-                    out.push(path.to_string());
-                }
-            }
-        }
-    }
-}
-
-/// The files one `response_item` payload patched: an apply_patch carried by a
-/// function call's arguments or by a custom tool call's input.
-fn touched_by(payload: &Value, out: &mut Vec<String>) {
-    match payload.get("type").and_then(Value::as_str) {
-        // Inspect the original JSON string so escaped patch newlines continue
-        // to contribute to provenance.
-        Some("function_call") => collect_patched_paths(
-            payload
-                .get("arguments")
-                .and_then(Value::as_str)
-                .unwrap_or_default(),
-            out,
-        ),
-        Some("custom_tool_call") => {
-            let input = payload.get("input").and_then(Value::as_str).unwrap_or("");
-            if let Some((_, patch)) = input.split_once("*** Begin Patch") {
-                collect_patched_paths(&format!("*** Begin Patch{patch}").replace("\\n", "\n"), out);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// The files a rollout's patches name, by call, less those of the calls that
-/// did not apply. apply_patch checks every hunk before it writes, so a patch
-/// that failed wrote none of its files.
-#[derive(Default)]
-struct Patches {
-    calls: Vec<(Option<String>, Vec<String>)>,
-    /// Calls that carry one patch, so their result is that patch's; true for
-    /// apply_patch itself, whose error flag is the patch's error.
-    single: HashMap<String, bool>,
-    failed: std::collections::HashSet<String>,
-}
-
-impl Patches {
-    const VERIFY_FAILED: &'static str = "apply_patch verification failed";
-
-    fn call(&mut self, payload: &Value) {
-        let mut paths = Vec::new();
-        touched_by(payload, &mut paths);
-        if paths.is_empty() {
-            return;
-        }
-        let id = call_id(payload);
-        let text = payload
-            .get("input")
-            .or_else(|| payload.get("arguments"))
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if let (Some(id), 1) = (&id, text.matches("*** Begin Patch").count()) {
-            let direct = payload.get("name").and_then(Value::as_str) == Some("apply_patch");
-            self.single.insert(id.clone(), direct);
-        }
-        self.calls.push((id, paths));
-    }
-
-    /// A script or shell command can fail after its patch applied, or print
-    /// apply_patch's error text from a log, so it failed only if it failed with
-    /// that error.
-    fn result(&mut self, payload: &Value, output: &str, is_error: bool) {
-        let Some(id) = call_id(payload) else {
-            return;
-        };
-        let Some(&direct) = self.single.get(&id) else {
-            return;
-        };
-        let verify_failed = output.contains(Self::VERIFY_FAILED);
-        let failed = if direct {
-            is_error || verify_failed || output.starts_with("aborted by user")
-        } else {
-            is_error && verify_failed
-        };
-        if failed {
-            self.failed.insert(id);
-        }
-    }
-
-    /// Whether a raw line can be a result that says a patch failed.
-    fn may_report_failure(line: &str) -> bool {
-        line.contains("_output\"")
-            && (line.contains(Self::VERIFY_FAILED)
-                || line.contains("aborted by user")
-                || line.contains("exit_code")
-                || line.contains("Exit code: ")
-                || line.contains("exited with code "))
-    }
-
-    fn applied(self) -> Vec<String> {
-        let failed = self.failed;
-        self.calls
-            .into_iter()
-            .filter(|(id, _)| !id.as_ref().is_some_and(|id| failed.contains(id)))
-            .flat_map(|(_, paths)| paths)
-            .collect()
     }
 }
 
@@ -863,189 +698,6 @@ mod tests {
         assert!(!codex.parse(&main).unwrap().subagent);
         assert!(codex.parse(&by_thread).unwrap().subagent);
         assert!(codex.parse(&by_source).unwrap().subagent);
-    }
-
-    /// A patch Codex did not apply edited nothing. apply_patch checks every
-    /// hunk before it writes, so a call that failed verification, or that the
-    /// user aborted, wrote none of the files it names. Each output below is a
-    /// shape real rollouts carry.
-    fn failed_patch_rollout() -> String {
-        let patch = |id: &str, name: &str, input: &str| {
-            json!({"type":"response_item","payload":{"type":"custom_tool_call","call_id":id,"name":name,"input":input}}).to_string()
-        };
-        let output = |id: &str, output: Value| {
-            json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":id,"output":output}}).to_string()
-        };
-        let one = |path: &str| {
-            format!("*** Begin Patch\n*** Update File: {path}\n@@\n-a\n+b\n*** End Patch")
-        };
-        let script_failed = |error: &str| {
-            json!([
-                {"type":"input_text","text":"Script failed\nWall time 0.3 seconds\nOutput:\n"},
-                {"type":"input_text","text":format!("Script error:\n{error}")}
-            ])
-        };
-        [
-            json!({"type":"session_meta","payload":{"cwd":"/repo"}}).to_string(),
-            patch(
-                "verify",
-                "apply_patch",
-                "*** Begin Patch\n*** Update File: src/a.rs\n@@\n-a\n+b\n*** Update File: src/b.rs\n@@\n-a\n+b\n*** End Patch",
-            ),
-            output(
-                "verify",
-                json!("apply_patch verification failed: Failed to find expected lines in src/b.rs:\na"),
-            ),
-            patch("exit", "apply_patch", &one("src/c.rs")),
-            output(
-                "exit",
-                json!(r#"{"output":"Failed to find expected lines in src/c.rs","metadata":{"exit_code":1,"duration_seconds":0.0}}"#),
-            ),
-            patch("text", "apply_patch", &one("src/t.rs")),
-            output(
-                "text",
-                json!("Exit code: 1\nWall time: 0 seconds\nOutput:\nFailed to find expected lines in src/t.rs"),
-            ),
-            patch("process", "apply_patch", &one("src/u.rs")),
-            output(
-                "process",
-                json!("Process exited with code 1\nOutput:\nFailed to read file to update src/u.rs"),
-            ),
-            patch("abort", "apply_patch", &one("src/d.rs")),
-            output("abort", json!("aborted by user after 4.2s")),
-            patch(
-                "script",
-                "exec",
-                &format!("text(await tools.apply_patch({:?}))", one("src/e.rs")),
-            ),
-            output(
-                "script",
-                script_failed("apply_patch verification failed: Failed to find expected lines in src/e.rs:\na"),
-            ),
-            // Applied: these stay.
-            patch("ok", "apply_patch", &one("src/ok.rs")),
-            output(
-                "ok",
-                json!(r#"{"output":"Success. Updated the following files:\nM src/ok.rs\n","metadata":{"exit_code":0,"duration_seconds":0.0}}"#),
-            ),
-            patch("pending", "apply_patch", &one("src/pending.rs")),
-            // A script that failed elsewhere may have applied its patch, and of
-            // two patches in one script the first may have applied.
-            patch(
-                "other",
-                "exec",
-                &format!("text(await tools.apply_patch({:?})); boom()", one("src/f.rs")),
-            ),
-            output("other", script_failed("ReferenceError: boom is not defined")),
-            // A script that applied its patch and then printed the phrase.
-            patch(
-                "printed",
-                "exec",
-                &format!("text(await tools.apply_patch({:?})); text(log)", one("src/p.rs")),
-            ),
-            output(
-                "printed",
-                json!([
-                    {"type":"input_text","text":"Script completed\nWall time 0.2 seconds\nOutput:\n"},
-                    {"type":"input_text","text":"Success. Updated the following files:\nM src/p.rs\nlog: apply_patch verification failed: Failed to find expected lines"}
-                ]),
-            ),
-            patch(
-                "two",
-                "exec",
-                &format!(
-                    "await tools.apply_patch({:?}); await tools.apply_patch({:?})",
-                    one("src/g.rs"),
-                    one("src/h.rs")
-                ),
-            ),
-            output(
-                "two",
-                script_failed("apply_patch verification failed: Failed to find expected lines in src/h.rs:\na"),
-            ),
-            // Failed once, applied on the retry.
-            patch("first", "apply_patch", &one("src/r.rs")),
-            output(
-                "first",
-                json!("apply_patch verification failed: Failed to find expected lines in src/r.rs:\na"),
-            ),
-            patch("retry", "apply_patch", &one("src/r.rs")),
-            output(
-                "retry",
-                json!(r#"{"output":"Success. Updated the following files:\nM src/r.rs\n","metadata":{"exit_code":0}}"#),
-            ),
-        ]
-        .join("\n")
-            + "\n"
-    }
-
-    const APPLIED: [&str; 7] = [
-        "src/f.rs",
-        "src/g.rs",
-        "src/h.rs",
-        "src/ok.rs",
-        "src/p.rs",
-        "src/pending.rs",
-        "src/r.rs",
-    ];
-
-    fn sorted(mut paths: Vec<String>) -> Vec<String> {
-        paths.sort();
-        paths
-    }
-
-    #[test]
-    fn a_patch_codex_did_not_apply_edited_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("rollout-2026-10-01T00-00-00-abc.jsonl");
-        std::fs::write(&file, failed_patch_rollout()).unwrap();
-        let session = Codex::default().parse(&file).unwrap();
-        assert_eq!(sorted(session.touched), APPLIED);
-    }
-
-    /// The same when the patches sit in the middle of a windowed rollout.
-    #[test]
-    fn a_windowed_rollout_drops_the_patches_codex_did_not_apply() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("rollout-2026-10-01T00-00-00-abc.jsonl");
-        let filler = |i: usize| {
-            json!({"type":"response_item","payload":{"type":"function_call_output","call_id":format!("x{i}"),"output":"x".repeat(200)}}).to_string() + "\n"
-        };
-        let mut body = (0..10).map(filler).collect::<String>();
-        body.push_str(&failed_patch_rollout());
-        body.extend((10..20).map(filler));
-        std::fs::write(&file, body).unwrap();
-        crate::util::TEST_WINDOW.with(|w| w.set(Some((2_000, 600, 600))));
-        let session = Codex::default().parse(&file).unwrap();
-        crate::util::TEST_WINDOW.with(|w| w.set(None));
-        assert!(session.title.starts_with("[large]"), "{}", session.title);
-        assert_eq!(sorted(session.touched), APPLIED);
-    }
-
-    /// The same for a Codex rollout: its patches in the middle of a windowed
-    /// file are still the files it edited.
-    #[test]
-    fn a_windowed_rollout_keeps_every_file_it_patched() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("rollout-2026-10-01T00-00-00-abc.jsonl");
-        let mut body =
-            String::from("{\"type\":\"session_meta\",\"payload\":{\"cwd\":\"/repo\"}}\n");
-        for i in 0..30 {
-            body.push_str(&format!(
-                "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"custom_tool_call\",\"call_id\":\"c{i}\",\"name\":\"apply_patch\",\"input\":\"*** Begin Patch\\n*** Update File: src/f{i}.rs\\n@@\\n-a\\n+b\\n*** End Patch\"}}}}\n"
-            ));
-            body.push_str(&format!(
-                "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"function_call\",\"call_id\":\"s{i}\",\"name\":\"shell\",\"arguments\":\"{{\\\"cmd\\\":\\\"apply_patch <<EOF\\\\n*** Begin Patch\\\\n*** Add File: src/g{i}.rs\\\\n+x\\\\n*** End Patch\\\\nEOF\\\"}}\"}}}}\n"
-            ));
-        }
-        std::fs::write(&file, body).unwrap();
-        crate::util::TEST_WINDOW.with(|w| w.set(Some((2_000, 600, 600))));
-        let session = Codex::default().parse(&file).unwrap();
-        crate::util::TEST_WINDOW.with(|w| w.set(None));
-        assert!(session.title.starts_with("[large]"), "{}", session.title);
-        assert_eq!(session.touched.len(), 60, "{:?}", session.touched);
-        assert!(session.touched.contains(&"src/f15.rs".to_string()));
-        assert!(session.touched.contains(&"src/g15.rs".to_string()));
     }
 
     /// Only conversation is kept from the middle. A `compacted` record carries

@@ -90,21 +90,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await sleep(400);
   } catch {}
 
-  // 5. Provenance: click a touched-file chip -> sessions that touched it.
-  try {
-    const chip = page.locator("#main .doc-head .filechip").first();
-    if (await chip.count()) {
-      await chip.click();
-      await page.locator("#main .seealso").scrollIntoViewIfNeeded({ timeout: 2000 });
-      await sleep(600);
-      await kf("#main .seealso", "Trace a file back to the sessions that wrote it");
-      await sleep(2100);
-      await page.evaluate(() => { document.querySelector("#main").scrollTop = 0; });
-      await sleep(400);
-    }
-  } catch {}
-
-  // 6. Tag filter: click a tag chip in the header -> the sidebar narrows.
+  // 5. Tag filter: click a tag chip in the header -> the sidebar narrows.
   try {
     const tag = page.locator("#main .doc-head .tagchip", { hasText: "perf" }).first();
     if (await tag.count()) {
@@ -115,7 +101,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     }
   } catch {}
 
-  // 7. Dark theme - whole frame, stays in English.
+  // 6. Dark theme - whole frame, stays in English.
   try {
     await page.click("#theme");
     await sleep(1800);

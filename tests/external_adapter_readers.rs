@@ -49,8 +49,6 @@ impl Adapter for OneFileAdapter {
                 ts: None,
                 tool: None,
             }],
-            touched: vec![],
-            edits: vec![],
         })
     }
 }
@@ -186,8 +184,6 @@ impl Adapter for ToolOutputAdapter {
                     lines: Some(2),
                 })),
             }],
-            touched: Vec::new(),
-            edits: Vec::new(),
         })
     }
 }

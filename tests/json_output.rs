@@ -18,7 +18,7 @@ fn fresh() -> Connection {
     let conn = index::open().unwrap();
     conn.execute_batch(
         "DELETE FROM files; DELETE FROM messages; DELETE FROM tags;
-         DELETE FROM notes; DELETE FROM touched; DELETE FROM archive;",
+         DELETE FROM notes; DELETE FROM archive;",
     )
     .unwrap();
     conn

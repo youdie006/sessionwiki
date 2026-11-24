@@ -223,7 +223,7 @@ enum Command {
         /// Note text; omit to print the existing note
         text: Option<String>,
     },
-    /// Find sessions related to one (shared project, files, and tags)
+    /// Find sessions related to one (shared project and tags)
     Related {
         /// Session id (prefix is enough)
         id: String,
@@ -233,39 +233,6 @@ enum Command {
         /// Emit as a JSON array (agent-friendly, stable field names)
         #[arg(long)]
         json: bool,
-    },
-    /// List the files a session edited or created
-    Files {
-        /// Session id (prefix is enough), from list/search output
-        id: String,
-        /// Emit as a JSON array of paths
-        #[arg(long)]
-        json: bool,
-    },
-    /// Trace a file back to the AI sessions that edited it (newest first)
-    Trace {
-        /// File path as it appears in your editor (e.g. src/auth.rs)
-        path: String,
-        /// Emit as a JSON array (agent-friendly, stable field names)
-        #[arg(long)]
-        json: bool,
-        /// Skip the index sync and query what is already indexed (pair with `sync`)
-        #[arg(long)]
-        no_sync: bool,
-    },
-    /// Attribute each line of a file to the AI session most likely behind it (git blame for the AI era)
-    Blame {
-        /// File path as it appears in your editor (e.g. src/auth.rs)
-        file: String,
-        /// Restrict to a line range, e.g. -L 40,80
-        #[arg(short = 'L', value_name = "START,END", value_parser = parse_line_range)]
-        range: Option<(usize, usize)>,
-        /// Emit as a JSON array (agent-friendly, stable field names)
-        #[arg(long)]
-        json: bool,
-        /// Skip the index sync and query what is already indexed (pair with `sync`)
-        #[arg(long)]
-        no_sync: bool,
     },
     /// Permanently drop an archived (or any) session from the index
     Forget {
@@ -278,7 +245,7 @@ enum Command {
         #[arg(long)]
         tool: Option<String>,
     },
-    /// Markdown rollup of recent sessions by project (files touched, synopses)
+    /// Markdown rollup of recent sessions by project (synopses)
     Digest {
         /// Time window: 7d, 2w, 24h, 90m (a bare number is days)
         #[arg(long, default_value = "7d")]
@@ -429,18 +396,6 @@ fn main() {
         Command::Tag { id, add, remove } => commands::tag(&id, &add, &remove),
         Command::Note { id, text } => commands::note(&id, text.as_deref()),
         Command::Related { id, limit, json } => commands::related(&id, limit, json),
-        Command::Files { id, json } => commands::files(&id, json),
-        Command::Trace {
-            path,
-            json,
-            no_sync,
-        } => commands::trace(&path, json, no_sync),
-        Command::Blame {
-            file,
-            range,
-            json,
-            no_sync,
-        } => commands::blame(&file, range, json, no_sync),
         Command::Forget { id } => commands::forget(&id),
         Command::Sync { tool } => commands::sync_cmd(tool.as_deref()),
         Command::Digest {
@@ -469,16 +424,4 @@ fn main() {
         eprintln!("error: {e:#}");
         std::process::exit(1);
     }
-}
-
-/// Parse a `-L START,END` line range into validated integers (so the raw token
-/// is never forwarded to git). 1-based, inclusive, START <= END.
-fn parse_line_range(s: &str) -> Result<(usize, usize), String> {
-    let (a, b) = s.split_once(',').ok_or("expected START,END")?;
-    let start: usize = a.trim().parse().map_err(|_| "START must be a number")?;
-    let end: usize = b.trim().parse().map_err(|_| "END must be a number")?;
-    if start == 0 || end < start {
-        return Err("require 1 <= START <= END".into());
-    }
-    Ok((start, end))
 }

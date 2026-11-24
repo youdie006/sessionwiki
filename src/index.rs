@@ -5,7 +5,7 @@ use rusqlite::{params, types::ValueRef, Connection, OptionalExtension};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Where a legacy index would sit, given where this one is going.
 ///
@@ -76,13 +76,13 @@ pub fn existing_db_path() -> Option<PathBuf> {
 }
 
 /// `user_version` versions the disposable cache: a mismatch drops and rebuilds
-/// the derived tables (files/messages/msgs/touched) instead of migrating. The
+/// the derived tables (files/messages/msgs) instead of migrating. The
 /// durable tables (summaries, tags, notes, archive) hold what cannot be
 /// re-derived - LLM output, user curation, and sessions whose originals the tool
 /// deleted - and are versioned separately by `meta.durable_version` via forward,
 /// additive-only migrations that never drop, so they survive every upgrade. The
 /// two counters are independent and must never gate each other.
-pub const SCHEMA_VERSION: i64 = 9; // 9: compact tool lines + optional full outputs
+pub const SCHEMA_VERSION: i64 = 10; // 10: file provenance (touched, edits) removed
 
 const DEFAULT_FTS_TOKENIZER: &str = "trigram";
 const FTS_TOKENIZER_META_KEY: &str = "fts_tokenizer";
@@ -173,9 +173,9 @@ struct Migration {
     step: MigrationStep,
 }
 
-/// Forward-only, additive-only durable migrations applied in order. ALTER ADD
-/// COLUMN / CREATE / data repair only - never DROP/RENAME a durable column or
-/// table.
+/// Forward-only durable migrations applied in order. ALTER ADD COLUMN / CREATE /
+/// data repair only - never DROP/RENAME a durable column or table that holds
+/// user data.
 const DURABLE_MIGRATIONS: &[Migration] = &[
     // v2: tags written by pre-0.17 binaries were lowercased but not
     // NFC-normalized, so a decomposed-form tag (macOS IME) is unreachable by
@@ -521,7 +521,7 @@ fn create_cache_schema_with_tokenizer(conn: &Connection, tokenizer: &str) -> Res
         );
         -- Archive (durable, never dropped on a schema bump). When the tool
         -- deletes a session's original file, we keep a self-contained copy
-        -- here - the distilled transcript and provenance plus the metadata
+        -- here - the distilled transcript plus the metadata
         -- needed to reconstruct the files row. This is the only table that is
         -- not re-derivable from disk, so on a schema bump the cache tables are
         -- rehydrated from it. Live sessions are NOT stored here.
@@ -541,30 +541,6 @@ fn create_cache_schema_with_tokenizer(conn: &Connection, tokenizer: &str) -> Res
             touched     TEXT NOT NULL,  -- JSON [path,...]
             archived_at TEXT NOT NULL
         );
-        -- Provenance: which files each session edited or created, from its
-        -- tool calls. Rebuilt from the sessions on sync, so it is dropped on a
-        -- schema bump like messages - not curated. The path index powers
-        -- `trace` (sessions for a file) and shared-file relatedness.
-        CREATE TABLE IF NOT EXISTS touched(
-            session_id TEXT NOT NULL,
-            path       TEXT NOT NULL,
-            PRIMARY KEY (session_id, path)
-        );
-        CREATE INDEX IF NOT EXISTS idx_touched_path ON touched(path);
-        -- Evidence layer over `touched`: the concrete edits (kind + a bounded
-        -- snippet of the change) behind each touched path. A log - multiple rows
-        -- per (session, path) - so the whole change history of a file survives.
-        -- Derived from the sessions on sync, dropped on a schema bump like
-        -- touched. Powers `edits_for` and the file-history page.
-        CREATE TABLE IF NOT EXISTS edits(
-            session_id TEXT NOT NULL,
-            path       TEXT NOT NULL,
-            kind       TEXT NOT NULL,
-            ts         TEXT,
-            snippet    TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_edits_path ON edits(path);
-        CREATE INDEX IF NOT EXISTS idx_edits_session ON edits(session_id);
         ",
     )?;
     if !files_has_reader(conn)? {
@@ -589,8 +565,6 @@ fn cache_schema_needs_work(conn: &Connection) -> Result<bool> {
         "tags",
         "notes",
         "archive",
-        "touched",
-        "edits",
         "msgs",
     ] {
         let exists: bool = conn.query_row(
@@ -702,7 +676,13 @@ pub fn open() -> Result<Connection> {
                          installed version"
                     );
                 }
-                if version != SCHEMA_VERSION {
+                if version == 9 {
+                    // Preserve live cache rows, FTS and fix-up marks in place.
+                    conn.execute_batch(
+                        "DROP TABLE IF EXISTS touched; DROP TABLE IF EXISTS edits;",
+                    )?;
+                    conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+                } else if version != SCHEMA_VERSION {
                     // Drop only the derived cache. The durable tables (summaries, tags,
                     // notes, archive) are never dropped: rebuilding the index is cheap,
                     // re-running an LLM or recovering a session the tool already deleted is
@@ -710,9 +690,14 @@ pub fn open() -> Result<Connection> {
                     conn.execute_batch(
                         "DROP TABLE IF EXISTS msgs;
                          DROP TABLE IF EXISTS messages;
-                         DROP TABLE IF EXISTS touched;
                          DROP TABLE IF EXISTS files;
+                         -- Provenance tables from schema 9 and earlier.
+                         DROP TABLE IF EXISTS touched;
                          DROP TABLE IF EXISTS edits;",
+                    )?;
+                    conn.execute(
+                        "DELETE FROM meta WHERE key = 'large_provenance_reparsed'",
+                        [],
                     )?;
                     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                     // Rebuilt rows restart at rowid 1; the fix-ups start over.
@@ -764,8 +749,8 @@ pub fn open() -> Result<Connection> {
     resolve_gemini_projects(&conn)?;
     drop_empty_archives(&conn)?;
     reparse_codex_for_mcp_errors(&conn)?;
-    reparse_large_for_provenance(&conn)?;
     reparse_after_reader_fixes(&conn)?;
+    reparse_large_windowed_sessions(&conn)?;
     Ok(conn)
 }
 
@@ -912,7 +897,7 @@ fn drop_still_empty(conn: &Connection, key: &str, top: i64, sids: &[String]) -> 
          AND NOT EXISTS (SELECT 1 FROM tags WHERE session_id = ?1)
          AND NOT EXISTS (SELECT 1 FROM notes WHERE session_id = ?1)
          AND NOT EXISTS (SELECT 1 FROM summaries WHERE session_id = ?1)";
-    let deletes: Vec<String> = ["archive", "touched", "edits", "files"]
+    let deletes: Vec<String> = ["archive", "files"]
         .iter()
         .map(|table| format!("DELETE FROM {table} WHERE session_id = ?1 AND {still_empty}"))
         .collect();
@@ -1035,13 +1020,9 @@ fn reparse_after_reader_fixes(conn: &Connection) -> Result<()> {
     apply_without_waiting(conn, "reader_fixes_marked", READER, &[(&mark, vec![])])
 }
 
-/// Sessions over the byte cap were indexed without the files they edited
-/// between their head and tail; an ended session never changes, so it is never
-/// parsed again. Mark the live windowed rows for one re-parse whenever the
-/// windowed reader has changed since. 1: provenance read from the whole file.
-/// 2: the conversation between head and tail kept too. 3: Codex `compacted`
-/// records no longer fill the middle's budget ahead of the conversation.
-fn reparse_large_for_provenance(conn: &Connection) -> Result<()> {
+/// Keep the revision 2–3 conversation recovery reparse for `[large]`
+/// Claude Code and Codex sessions; windowing changes had dropped their middle.
+fn reparse_large_windowed_sessions(conn: &Connection) -> Result<()> {
     const KEY: &str = "large_provenance_reparsed";
     const READER: i64 = 3;
     let done: i64 = conn
@@ -1098,14 +1079,14 @@ fn respell_projects(conn: &Connection) -> Result<()> {
 }
 
 /// After a schema bump drops the cache tables, replay archived sessions back
-/// into them from the durable `archive` table, so search, `trace`, and reading
+/// into them from the durable `archive` table, so search and reading
 /// keep working for sessions whose originals the tool deleted. This is what
 /// makes archive survive a rebuild; without it a version bump would silently
 /// lose exactly the data that cannot be re-derived from disk.
 fn rehydrate_archive(conn: &Connection) -> Result<()> {
     let mut stmt = conn.prepare(
         "SELECT session_id, path, tool, project, title, started, ended,
-                kind, transcript, touched, archived_at FROM archive",
+                kind, transcript, archived_at FROM archive",
     )?;
     let rows: Vec<ArchiveRow> = stmt
         .query_map([], |r| {
@@ -1119,8 +1100,7 @@ fn rehydrate_archive(conn: &Connection) -> Result<()> {
                 ended: r.get(6)?,
                 kind: r.get(7)?,
                 transcript: r.get(8)?,
-                touched: r.get(9)?,
-                archived_at: r.get(10)?,
+                archived_at: r.get(9)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -1139,15 +1119,9 @@ fn rehydrate_archive(conn: &Connection) -> Result<()> {
                 continue;
             }
         };
-        let paths: Vec<String> = serde_json::from_str(&a.touched).unwrap_or_else(|e| {
-            eprintln!("archive: {} has unreadable provenance ({e})", a.session_id);
-            Vec::new()
-        });
-
         // Idempotent: clear any existing cache rows for this session first, so
         // re-running rehydrate never duplicates messages/FTS rows.
         delete_session_msgs(conn, &a.session_id)?;
-        delete_session_provenance(conn, &a.session_id)?;
         conn.execute(
             "DELETE FROM files WHERE session_id = ?1",
             params![a.session_id],
@@ -1196,11 +1170,6 @@ fn rehydrate_archive(conn: &Connection) -> Result<()> {
                 ins_fts.execute(params![conn.last_insert_rowid(), text])?;
             }
         }
-        let mut ins_touched =
-            conn.prepare_cached("INSERT OR IGNORE INTO touched(session_id, path) VALUES (?1,?2)")?;
-        for p in &paths {
-            ins_touched.execute(params![a.session_id, crate::util::nfc(p)])?;
-        }
     }
     Ok(())
 }
@@ -1215,15 +1184,14 @@ struct ArchiveRow {
     ended: Option<String>,
     kind: String,
     transcript: String,
-    touched: String,
     archived_at: String,
 }
 
 /// Bring the index up to date with what is on disk. Files whose (mtime, size)
 /// changed since the last run are re-parsed; archived rows whose source has
 /// returned unchanged are made live again without re-reading the transcript.
-/// Insert one parsed session into the cache tables (files, messages, msgs,
-/// touched) and tag it if an oh-my-* harness drove it. `key` is the stored
+/// Insert one parsed session into the cache tables (files, messages, msgs)
+/// and tag it if an oh-my-* harness drove it. `key` is the stored
 /// path/identity, `mtime` the change-token, `size` the byte size (0 for
 /// shared-store sessions). Shared by the file-per-session and shared-store paths.
 fn index_one(
@@ -1234,7 +1202,6 @@ fn index_one(
     size: i64,
     output_mode: ToolOutputMode,
 ) -> Result<()> {
-    delete_session_provenance(tx, &session.id)?;
     // A path that was archived (the tool deleted it, now it is back) is live
     // again: this INSERT clears archived_at, and the durable copy is dropped.
     tx.execute(
@@ -1308,25 +1275,6 @@ fn index_one(
         for (role, text, full_text) in &rows[kept..] {
             ins_row.execute(params![session.id, role, text, full_text])?;
             ins_fts.execute(params![tx.last_insert_rowid(), text])?;
-        }
-        let mut ins_touched =
-            tx.prepare_cached("INSERT OR IGNORE INTO touched(session_id, path) VALUES (?1,?2)")?;
-        for p in &session.touched {
-            ins_touched.execute(params![session.id, crate::util::nfc(p)])?;
-        }
-        // Evidence layer (a log, not a set - the same file edited twice keeps
-        // both rows). Prior rows were cleared with `touched` above.
-        let mut ins_edit = tx.prepare_cached(
-            "INSERT INTO edits(session_id, path, kind, ts, snippet) VALUES (?1,?2,?3,?4,?5)",
-        )?;
-        for e in &session.edits {
-            ins_edit.execute(params![
-                session.id,
-                crate::util::nfc(&e.path),
-                e.kind.as_str(),
-                e.ts.map(|t| t.to_rfc3339()),
-                crate::redact::redact(&e.snippet).as_ref(),
-            ])?;
         }
     }
     // Tag sessions an oh-my-* harness drove (it wraps Claude Code / Codex /
@@ -1405,7 +1353,6 @@ fn fold_moved_copy(
             )?;
         }
         delete_session_msgs(tx, &sid)?;
-        delete_session_provenance(tx, &sid)?;
         for table in ["files", "archive", "summaries", "tags", "notes"] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE session_id = ?1"),
@@ -1741,25 +1688,10 @@ fn delete_session_msgs_from(conn: &Connection, session_id: &str, first_id: i64) 
     Ok(())
 }
 
-/// Clear a session's derived provenance - `touched` AND `edits` together - so a
-/// delete site can never remember one and forget the other (they drifted once,
-/// leaving orphaned edit rows visible through `edits_for`).
-fn delete_session_provenance(conn: &Connection, session_id: &str) -> Result<()> {
-    conn.execute(
-        "DELETE FROM touched WHERE session_id = ?1",
-        params![session_id],
-    )?;
-    conn.execute(
-        "DELETE FROM edits WHERE session_id = ?1",
-        params![session_id],
-    )?;
-    Ok(())
-}
-
 /// Reconcile the index with a tool's store after discovery. Sessions whose
 /// original file disappeared are **archived** (kept in the durable `archive`
-/// table and flagged in `files`, with messages/touched left in place so
-/// search and trace keep working) instead of deleted - unless
+/// table and flagged in `files`, with messages left in place so
+/// search keeps working) instead of deleted - unless
 /// `SESSIONWIKI_NO_ARCHIVE` is set or the session has no indexed content, in
 /// which case they are pruned as before. Returns how many were newly archived.
 ///
@@ -1831,7 +1763,6 @@ fn archive_or_prune(
         } else if no_archive || !has_messages(conn, &sid)? {
             conn.execute("DELETE FROM files WHERE path = ?1", params![path])?;
             delete_session_msgs(conn, &sid)?;
-            delete_session_provenance(conn, &sid)?;
         } else {
             archive_session(conn, &path, &sid)?;
             archived += 1;
@@ -1851,8 +1782,8 @@ fn has_messages(conn: &Connection, sid: &str) -> Result<bool> {
 }
 
 /// Copy a session whose original file is gone into the durable `archive` table
-/// and flag its `files` row. The messages/msgs/touched rows are left in place
-/// so search and `trace` keep working; the archive copy is the rebuild-survival
+/// and flag its `files` row. The messages/msgs rows are left in place
+/// so search keeps working; the archive copy is the rebuild-survival
 /// backup (replayed by `rehydrate_archive` after a schema bump).
 fn archive_session(conn: &Connection, path: &str, sid: &str) -> Result<()> {
     let mut s = conn
@@ -1868,21 +1799,15 @@ fn archive_session(conn: &Connection, path: &str, sid: &str) -> Result<()> {
             None => serde_json::json!([role, text]),
         })
         .collect();
-    let mut s = conn.prepare("SELECT path FROM touched WHERE session_id = ?1 ORDER BY rowid")?;
-    let touched: Vec<String> = s
-        .query_map(params![sid], |r| r.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    drop(s);
     let transcript_json = serde_json::to_string(&transcript)?;
-    let touched_json = serde_json::to_string(&touched)?;
     conn.execute(
         "INSERT OR REPLACE INTO archive
          (session_id, path, mtime, size, tool, project, title, started, ended,
           msg_count, kind, transcript, touched, archived_at)
          SELECT session_id, path, mtime, size, tool, project, title, started, ended,
-                msg_count, kind, ?2, ?3, datetime('now')
+                msg_count, kind, ?2, '[]', datetime('now')
          FROM files WHERE path = ?1",
-        params![path, transcript_json, touched_json],
+        params![path, transcript_json],
     )?;
     conn.execute(
         "UPDATE files SET archived_at = datetime('now') WHERE path = ?1",
@@ -2553,28 +2478,6 @@ fn snippet_around(text: &str, terms: &[SearchTerm]) -> String {
     out.replace('\n', " ")
 }
 
-/// A path as the path lookups compare it. On Windows `\` cannot be part of a
-/// name and tools record `C:\x\y` and `C:/x/y` alike, so it reads as `/`;
-/// elsewhere it is an ordinary character in a name.
-fn path_query(query: &str) -> String {
-    let q = crate::util::nfc(query.trim());
-    let q = if cfg!(windows) {
-        q.replace('\\', "/")
-    } else {
-        q
-    };
-    q.trim_start_matches("./").to_owned()
-}
-
-/// A stored path column, read the way [`path_query`] reads a query.
-fn path_col(col: &str) -> String {
-    if cfg!(windows) {
-        format!("replace({col}, char(92), '/')")
-    } else {
-        col.to_owned()
-    }
-}
-
 /// Escape LIKE metacharacters ('\' first) so an id/path fragment like "%" or
 /// "_" can't turn a prefix match into a wildcard that resolves every session.
 fn escape_like(s: &str) -> String {
@@ -2844,347 +2747,6 @@ pub fn tag_counts(conn: &Connection) -> Result<Vec<(String, i64)>> {
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-// --- provenance: sessions <-> the code they produced ---
-
-/// Files a session edited or created, in the order it first touched them.
-pub fn files_for(conn: &Connection, session_id: &str) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare("SELECT path FROM touched WHERE session_id = ?1 ORDER BY rowid")?;
-    let rows = stmt.query_map(params![session_id], |r| r.get(0))?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-}
-
-/// One recorded edit to a file - the evidence layer behind `touched`. `matched_path`
-/// is the absolute stored path the query resolved to.
-#[derive(Debug, Serialize)]
-pub struct FileEdit {
-    pub session_id: String,
-    pub kind: String,
-    pub ts: Option<String>,
-    pub snippet: String,
-    pub matched_path: String,
-}
-
-/// The concrete edits made to a file, newest first - the evidence for "why does
-/// this file look like this". Resolves a relative path against the absolute one
-/// on disk by suffix, the same match `sessions_for_file` uses, so
-/// `edits_for("src/auth.rs")` finds `/home/me/proj/src/auth.rs`.
-/// A `usize` limit clamped to a positive `i64` for SQLite: a value past i64::MAX
-/// wraps negative, which SQLite reads as "unlimited" - defeating the memory bound.
-fn sql_limit(n: usize) -> i64 {
-    i64::try_from(n).unwrap_or(i64::MAX)
-}
-
-pub fn edits_for(conn: &Connection, query: &str, limit: usize) -> Result<Vec<FileEdit>> {
-    let q = path_query(query);
-    // Escape LIKE metacharacters so a caller-supplied `%`/`_` matches literally.
-    let esc = q
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    let suffix = format!("%/{esc}");
-    let p = path_col("path");
-    let mut stmt = conn.prepare(&format!(
-        "SELECT session_id, kind, ts, snippet, path
-         FROM edits
-         WHERE {p} = ?1 OR {p} LIKE ?2 ESCAPE '\\'
-            OR (length(?1) > length(path)
-                AND substr(?1, -length(path)) = {p}
-                AND substr(?1, -length(path)-1, 1) = '/')
-         ORDER BY ts DESC, rowid DESC LIMIT ?3"
-    ))?;
-    let rows = stmt.query_map(params![q, suffix, sql_limit(limit)], |r| {
-        Ok(FileEdit {
-            session_id: r.get(0)?,
-            kind: r.get(1)?,
-            ts: r.get(2)?,
-            snippet: r.get(3)?,
-            matched_path: r.get(4)?,
-        })
-    })?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-}
-
-/// A single session's edits to a file, newest first - scoped by session so no
-/// session's edits can be starved by another's under a shared cap. Uses the SAME
-/// suffix path match as `sessions_for_file`, so a session that edited the file
-/// under more than one spelling (abs + relative) contributes ALL its edits, not
-/// just the one spelling `sessions_for_file`'s GROUP BY happened to pick.
-pub fn edits_for_session(
-    conn: &Connection,
-    session_id: &str,
-    query: &str,
-    limit: usize,
-) -> Result<Vec<FileEdit>> {
-    let q = path_query(query);
-    let esc = q
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    let suffix = format!("%/{esc}");
-    let rooted = Path::new(&q).has_root();
-    let (ep, fp) = (path_col("e.path"), path_col("f.project"));
-    let mut stmt = conn.prepare(&format!(
-        "SELECT e.session_id, e.kind, e.ts, e.snippet, e.path
-         FROM edits e LEFT JOIN files f ON f.session_id = e.session_id
-         WHERE e.session_id = ?1
-           AND ({ep} = ?2 COLLATE NOCASE OR {ep} LIKE ?3 ESCAPE '\\'
-                OR (length(?2) > length(e.path)
-                    AND substr(?2, -length(e.path)) = {ep} COLLATE NOCASE
-                    AND substr(?2, -length(e.path)-1, 1) = '/'
-                    AND (NOT ?5
-                         OR rtrim({fp}, '/') || '/' || {ep} = ?2 COLLATE NOCASE)))
-         ORDER BY e.ts DESC, e.rowid DESC LIMIT ?4"
-    ))?;
-    let rows = stmt.query_map(
-        params![session_id, q, suffix, sql_limit(limit), rooted],
-        |r| {
-            Ok(FileEdit {
-                session_id: r.get(0)?,
-                kind: r.get(1)?,
-                ts: r.get(2)?,
-                snippet: r.get(3)?,
-                matched_path: r.get(4)?,
-            })
-        },
-    )?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-}
-
-/// One session's slice of a file's history: its metadata plus the edits it made
-/// to this file.
-#[derive(Serialize)]
-pub struct SessionEvidence {
-    pub session: SessionRow,
-    pub edits: Vec<FileEdit>,
-}
-
-/// A file's full evidence chain - the sessions that edited it, newest first,
-/// each carrying its own edits. What the file-history page renders.
-#[derive(Serialize)]
-pub struct FileHistory {
-    pub path: String,
-    pub sessions: Vec<SessionEvidence>,
-}
-
-/// Assemble a file's evidence chain: the sessions that touched it (with metadata,
-/// newest first) joined to each session's recorded edits. Sessions that touched
-/// the file but carry no structured edits (other adapters, archived sessions)
-/// appear with an empty `edits` list - the touch is still evidence.
-pub fn evidence_for(conn: &Connection, path: &str, limit: usize) -> Result<FileHistory> {
-    let sessions = sessions_for_file(conn, path, limit)?;
-    // Fetch edits PER session (scoped by session, matched by the SAME query path
-    // so every spelling counts), so one session's edits are never starved by
-    // another's - and `limit == 0` does no edit query.
-    const PER_SESSION_EDIT_CAP: usize = 500;
-    let sessions = sessions
-        .into_iter()
-        .map(|(session, _matched)| {
-            let edits = edits_for_session(conn, &session.session_id, path, PER_SESSION_EDIT_CAP)?;
-            Ok(SessionEvidence { session, edits })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(FileHistory {
-        path: path.to_string(),
-        sessions,
-    })
-}
-
-/// The file name to retry with when a full path traces to nothing.
-///
-/// Folders get renamed. A session recorded `~/Project/lunch/diag.py`; the folder
-/// is `~/Project/slack` now, so tracing by the path the file has TODAY matched
-/// nothing and reported that no session had touched it - about a file whose
-/// whole history was in the index under its old directory.
-///
-/// The name is the part that survives a move. `None` when there is nothing to
-/// fall back to: a bare name would just repeat the same miss, and a trailing
-/// slash names a directory rather than a file.
-pub fn basename_fallback(query: &str) -> Option<String> {
-    let q = query.trim();
-    if q.is_empty() || q.ends_with('/') {
-        return None;
-    }
-    let (head, name) = q.rsplit_once('/')?;
-    (!head.is_empty() && !name.is_empty()).then(|| name.to_string())
-}
-
-/// A touched path as a full path. A relative one is relative to the folder the
-/// session ran in, and the file chips query the file's history with it: as a
-/// bare `README.md` it matched every project's README. A file recorded both
-/// ways is listed once.
-pub fn full_touched_paths(project: &str, touched: &[String]) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    touched
-        .iter()
-        .map(|p| {
-            let path = std::path::Path::new(p);
-            if project.is_empty() || path.is_absolute() {
-                p.clone()
-            } else {
-                // Joined as recorded: the index compares this exact spelling.
-                std::path::Path::new(project)
-                    .join(p)
-                    .to_string_lossy()
-                    .into_owned()
-            }
-        })
-        .filter(|p| seen.insert(p.clone()))
-        .collect()
-}
-
-/// `trace`'s fallback when no session recorded the path: sessions that touched
-/// a file of the same name at a path that is gone - where the file was before
-/// its folder moved. A same-named file that still exists is another file.
-pub fn sessions_for_moved_file(
-    conn: &Connection,
-    query: &str,
-    limit: usize,
-) -> Result<Vec<(SessionRow, String)>> {
-    let Some(name) = basename_fallback(query) else {
-        return Ok(Vec::new());
-    };
-    let mut out = Vec::new();
-    // A hit carries one of the session's matching paths; another may be the gone one.
-    for (row, _) in sessions_for_file(conn, &name, usize::MAX)? {
-        let gone = touched_paths_matching(conn, &row.session_id, &name)?
-            .into_iter()
-            .find(|p| !std::path::Path::new(&row.project).join(p).exists());
-        if let Some(gone) = gone {
-            out.push((row, gone));
-            if out.len() == limit {
-                break;
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// Sessions that touched a file, newest first - the reverse provenance link.
-/// Matches either the exact stored path or any stored path ending in the
-/// query, so a relative `src/auth.rs` finds `/home/me/proj/src/auth.rs`. The
-/// matched stored path is returned alongside each session.
-pub fn sessions_for_file(
-    conn: &Connection,
-    query: &str,
-    limit: usize,
-) -> Result<Vec<(SessionRow, String)>> {
-    let q = path_query(query);
-    // Escape LIKE metacharacters: the query is a caller-supplied path (the MCP
-    // trace_file arg included), so a bare `%` must match a literal `%`, not act
-    // as a wildcard that enumerates the whole index.
-    let esc = q
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    let suffix = format!("%/{esc}");
-    let rooted = Path::new(&q).has_root();
-    let (tp, fp) = (path_col("t.path"), path_col("f.project"));
-    // Paths compare ignoring case, as LIKE already does: on a case-insensitive
-    // filesystem a tool records a path in whatever case it was typed.
-    let mut stmt = conn.prepare(&format!(
-        "SELECT f.session_id, f.tool, f.path, f.project, f.title, f.started, f.msg_count, f.kind,
-                {SUMMARY_SQL}, {TAGS_SQL}, t.path, (f.archived_at IS NOT NULL)
-         FROM touched t JOIN files f ON f.session_id = t.session_id
-         WHERE {tp} = ?1 COLLATE NOCASE OR {tp} LIKE ?2 ESCAPE '\\'
-            OR (length(?1) > length(t.path)
-                AND substr(?1, -length(t.path)) = {tp} COLLATE NOCASE
-                AND substr(?1, -length(t.path)-1, 1) = '/'
-                AND (NOT ?4
-                     OR rtrim({fp}, '/') || '/' || {tp} = ?1 COLLATE NOCASE))
-         GROUP BY f.session_id
-         ORDER BY f.started DESC, f.session_id LIMIT ?3"
-    ))?;
-    let rows = stmt.query_map(params![q, suffix, sql_limit(limit), rooted], |r| {
-        Ok((
-            SessionRow {
-                last_active: None,
-                session_id: r.get(0)?,
-                tool: r.get(1)?,
-                path: r.get(2)?,
-                project: r.get(3)?,
-                title: r.get(4)?,
-                started: r.get(5)?,
-                msg_count: r.get(6)?,
-                kind: r.get(7)?,
-                preview: None,
-                summary: r.get(8)?,
-                tags: r.get(9)?,
-                archived: r.get(11)?,
-                account: None,
-            },
-            r.get::<_, String>(10)?,
-        ))
-    })?;
-    let mut out = rows.collect::<rusqlite::Result<Vec<_>>>()?;
-    crate::account_link::annotate(out.iter_mut().map(|(r, _)| r));
-    Ok(out)
-}
-
-/// Like `sessions_for_file` but returns the start/end epoch window and project
-/// that blame's commit->session attribution needs. Matches both an exact stored
-/// path and any stored path ending in the query suffix, so a repo-relative query
-/// (e.g. `src/auth.rs`) catches Claude Code's absolute touched paths and Codex's
-/// relative ones alike (NFC-normalized).
-pub fn sessions_touching(
-    conn: &Connection,
-    query: &str,
-) -> Result<Vec<crate::blame::TouchingSession>> {
-    let q = path_query(query);
-    let suffix = format!("%/{}", escape_like(&q));
-    let tp = path_col("t.path");
-    let mut stmt = conn.prepare(&format!(
-        "SELECT f.session_id, f.tool, f.title, f.project, f.started, f.ended, (f.archived_at IS NOT NULL)
-         FROM touched t JOIN files f ON f.session_id = t.session_id
-         WHERE {tp} = ?1 OR {tp} LIKE ?2 ESCAPE '\\'
-            OR (length(?1) > length(t.path)
-                AND substr(?1, -length(t.path)) = {tp}
-                AND substr(?1, -length(t.path)-1, 1) = '/')
-         GROUP BY f.session_id"
-    ))?;
-    let rows = stmt.query_map(params![q, suffix], |r| {
-        let started: Option<String> = r.get(4)?;
-        let ended: Option<String> = r.get(5)?;
-        Ok(crate::blame::TouchingSession {
-            session_id: r.get(0)?,
-            tool: r.get(1)?,
-            title: r.get(2)?,
-            project: r.get(3)?,
-            started: started.as_deref().and_then(to_epoch),
-            ended: ended.as_deref().and_then(to_epoch),
-            archived: r.get(6)?,
-        })
-    })?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-}
-
-/// The paths one session touched that `sessions_touching` matched `query` by.
-pub fn touched_paths_matching(
-    conn: &Connection,
-    session_id: &str,
-    query: &str,
-) -> Result<Vec<String>> {
-    let q = path_query(query);
-    let suffix = format!("%/{}", escape_like(&q));
-    let p = path_col("path");
-    let mut stmt = conn.prepare(&format!(
-        "SELECT path FROM touched
-         WHERE session_id = ?1
-           AND ({p} = ?2 OR {p} LIKE ?3 ESCAPE '\\'
-                OR (length(?2) > length(path)
-                    AND substr(?2, -length(path)) = {p}
-                    AND substr(?2, -length(path)-1, 1) = '/'))"
-    ))?;
-    let rows = stmt.query_map(params![session_id, q, suffix], |r| r.get(0))?;
-    Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
-}
-
-/// Parse a stored timestamp (RFC3339) to epoch seconds; None if unparseable.
-fn to_epoch(s: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|d| d.timestamp())
-}
-
 // --- archive: serving and forgetting sessions whose originals are gone ---
 
 /// The display name for a tool this binary's adapter registry does not know.
@@ -3270,8 +2832,6 @@ pub fn session_from_index(conn: &Connection, row: &SessionRow) -> Result<crate::
         title: row.title.clone(),
         subagent: row.kind == "sub",
         messages,
-        touched: files_for(conn, &row.session_id)?,
-        edits: Vec::new(),
     })
 }
 
@@ -3283,15 +2843,7 @@ pub fn session_from_index(conn: &Connection, row: &SessionRow) -> Result<crate::
 pub fn forget(conn: &mut Connection, session_id: &str) -> Result<()> {
     let tx = conn.transaction()?;
     delete_session_msgs(&tx, session_id)?;
-    for table in [
-        "files",
-        "touched",
-        "edits",
-        "archive",
-        "summaries",
-        "tags",
-        "notes",
-    ] {
+    for table in ["files", "archive", "summaries", "tags", "notes"] {
         tx.execute(
             &format!("DELETE FROM {table} WHERE session_id = ?1"),
             params![session_id],
@@ -3345,43 +2897,7 @@ pub fn related(conn: &Connection, session_id: &str, limit: usize) -> Result<Vec<
         }
     }
 
-    // 2. sessions that edited a file this one also edited - the strongest
-    //    signal that two sessions are about the same work, and one no other
-    //    session viewer has, since it comes from the provenance link.
-    if out.len() < limit {
-        // Compare files, not spellings: a relative path is read against its
-        // session's folder (`src/auth.rs` from `/proj/api` is the full path
-        // another tool recorded; from `/proj/web` it is another file), and
-        // case is ignored as `trace` ignores it. Only a Unix folder is joined:
-        // a Windows path (`C:\repo\src\a.rs`) is compared as recorded.
-        let full = "CASE WHEN s.project LIKE '/%' AND t.path NOT LIKE '/%'
-                         THEN rtrim(s.project, '/') || '/' || t.path ELSE t.path END";
-        let sql = format!(
-            "SELECT DISTINCT f.session_id, f.tool, f.path, f.project, f.title, f.started,
-                    f.msg_count, f.kind, {PREVIEW_SQL}, {SUMMARY_SQL}, {TAGS_SQL}, (f.archived_at IS NOT NULL)
-             FROM touched t
-             JOIN files s ON s.session_id = t.session_id
-             JOIN files f ON f.session_id = t.session_id
-             WHERE t.session_id != ?1 AND f.kind = 'main'
-               AND ({full}) COLLATE NOCASE IN (
-                   SELECT {full} FROM touched t JOIN files s ON s.session_id = t.session_id
-                   WHERE t.session_id = ?1)
-             ORDER BY f.started DESC LIMIT 50"
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![target.session_id], map_row)?;
-        for row in rows {
-            let row = row?;
-            if seen.insert(row.session_id.clone()) {
-                out.push(row);
-                if out.len() >= limit {
-                    break;
-                }
-            }
-        }
-    }
-
-    // 3. sessions that share a tag with the target (explicit wiki links).
+    // 2. sessions that share a tag with the target (explicit wiki links).
     if out.len() < limit && !target_tags.is_empty() {
         let placeholders = target_tags
             .iter()
@@ -3473,8 +2989,6 @@ pub struct Stats {
     pub projects: i64,
     pub tags: i64,
     pub summarized: i64,
-    /// Distinct files linked to at least one session (provenance coverage).
-    pub files: i64,
     /// Sessions kept after the tool deleted their originals (archive mode).
     pub archived: i64,
 }
@@ -3508,7 +3022,6 @@ pub fn stats(conn: &Connection) -> Result<Stats> {
         )?,
         tags: one("SELECT count(DISTINCT tag) FROM tags")?,
         summarized: one("SELECT count(*) FROM summaries")?,
-        files: one("SELECT count(DISTINCT path) FROM touched")?,
         archived: one("SELECT count(*) FROM files WHERE kind='main' AND archived_at IS NOT NULL")?,
     })
 }
@@ -3683,227 +3196,12 @@ mod native_id_tests {
 }
 
 #[cfg(test)]
-mod edits_tests {
+mod redaction_tests {
     use super::*;
 
-    fn conn_with_edits() -> Connection {
-        let c = Connection::open_in_memory().unwrap();
-        c.execute_batch(
-            "CREATE TABLE edits(session_id TEXT NOT NULL, path TEXT NOT NULL,
-                 kind TEXT NOT NULL, ts TEXT, snippet TEXT NOT NULL);
-             CREATE INDEX idx_edits_path ON edits(path);
-             CREATE TABLE files(session_id TEXT, project TEXT);",
-        )
-        .unwrap();
-        c
-    }
-
-    fn add(c: &Connection, sid: &str, path: &str, kind: &str, ts: &str, snip: &str) {
-        c.execute(
-            "INSERT INTO edits(session_id, path, kind, ts, snippet) VALUES(?1,?2,?3,?4,?5)",
-            params![sid, path, kind, ts, snip],
-        )
-        .unwrap();
-    }
-
     #[test]
-    fn edits_for_returns_a_files_edits_by_suffix_newest_first() {
-        let c = conn_with_edits();
-        add(
-            &c,
-            "s1",
-            "/home/me/proj/src/auth.rs",
-            "edit",
-            "2026-06-08T10:00:00Z",
-            "let a = 1;",
-        );
-        add(
-            &c,
-            "s2",
-            "/home/me/proj/src/auth.rs",
-            "write",
-            "2026-06-09T10:00:00Z",
-            "fn main() {}",
-        );
-        add(
-            &c,
-            "s3",
-            "/home/me/proj/src/other.rs",
-            "edit",
-            "2026-06-10T10:00:00Z",
-            "nope",
-        );
-
-        // A relative path finds the absolute stored path by suffix, like `trace`.
-        let hits = edits_for(&c, "src/auth.rs", 50).unwrap();
-
-        assert_eq!(hits.len(), 2, "both auth.rs edits, not other.rs");
-        assert_eq!(hits[0].kind, "write", "newest edit first");
-        assert!(hits[0].snippet.contains("fn main()"));
-        assert_eq!(hits[1].kind, "edit");
-    }
-
-    #[test]
-    fn index_one_persists_a_sessions_edits() {
-        use crate::model::{EditEvent, EditKind, Session};
-        let mut c = Connection::open_in_memory().unwrap();
-        create_cache_schema(&c).unwrap();
-
-        let session = Session {
-            id: "sx".into(),
-            tool: "claude-code",
-            path: "/store/sx.jsonl".into(),
-            project: "/proj".into(),
-            started: None,
-            ended: None,
-            title: "t".into(),
-            subagent: false,
-            messages: vec![],
-            touched: vec!["/proj/src/auth.rs".into()],
-            edits: vec![EditEvent {
-                path: "/proj/src/auth.rs".into(),
-                kind: EditKind::Write,
-                snippet: "fn main() {}".into(),
-                ts: None,
-            }],
-        };
-
-        let tx = c.transaction().unwrap();
-        index_one(&tx, &session, "/store/sx.jsonl", 0, 0, ToolOutputMode::Full).unwrap();
-        tx.commit().unwrap();
-
-        let hits = edits_for(&c, "src/auth.rs", 50).unwrap();
-        assert_eq!(hits.len(), 1, "the session's one edit was persisted");
-        assert_eq!(hits[0].session_id, "sx");
-        assert_eq!(hits[0].kind, "write");
-        assert!(hits[0].snippet.contains("fn main()"));
-    }
-
-    #[test]
-    fn forget_removes_a_sessions_edits() {
-        let mut c = Connection::open_in_memory().unwrap();
-        create_cache_schema(&c).unwrap();
-        c.execute(
-            "INSERT INTO files(path, session_id, tool, mtime, size) VALUES('/store/s.jsonl','s1','claude-code',0,0)",
-            [],
-        )
-        .unwrap();
-        c.execute(
-            "INSERT INTO edits(session_id,path,kind,ts,snippet) VALUES('s1','/proj/a.rs','write',NULL,'x')",
-            [],
-        )
-        .unwrap();
-        assert_eq!(edits_for(&c, "a.rs", 10).unwrap().len(), 1);
-
-        forget(&mut c, "s1").unwrap();
-
-        assert!(
-            edits_for(&c, "a.rs", 10).unwrap().is_empty(),
-            "forget must remove the session's edits, not orphan them"
-        );
-    }
-
-    #[test]
-    fn edits_for_is_deterministic_when_timestamps_tie() {
-        let c = conn_with_edits();
-        add(&c, "s1", "/p/a.rs", "edit", "2026-01-01T00:00:00Z", "first");
-        add(
-            &c,
-            "s2",
-            "/p/a.rs",
-            "write",
-            "2026-01-01T00:00:00Z",
-            "second",
-        );
-        let hits = edits_for(&c, "a.rs", 10).unwrap();
-        // Equal ts -> deterministic tie-break by rowid DESC (latest insert first).
-        assert_eq!(hits[0].snippet, "second");
-        assert_eq!(hits[1].snippet, "first");
-    }
-
-    #[test]
-    fn edits_for_session_returns_only_that_sessions_edits() {
-        let c = conn_with_edits();
-        add(
-            &c,
-            "s1",
-            "/p/a.rs",
-            "edit",
-            "2026-01-01T00:00:00Z",
-            "s1-edit",
-        );
-        add(
-            &c,
-            "s2",
-            "/p/a.rs",
-            "write",
-            "2026-02-01T00:00:00Z",
-            "s2-edit",
-        );
-        // Scoped by exact session + path, so one session's edits can never be
-        // starved by another's under a shared cap.
-        let hits = edits_for_session(&c, "s1", "/p/a.rs", 10).unwrap();
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].snippet, "s1-edit");
-    }
-
-    #[test]
-    fn edits_for_session_reads_a_relative_path_against_the_session_folder() {
-        let c = conn_with_edits();
-        c.execute("INSERT INTO files VALUES ('s1', '/proj/api')", [])
-            .unwrap();
-        let ts = "2026-01-01T00:00:00Z";
-        add(&c, "s1", "/proj/other/README.md", "edit", ts, "other");
-        add(&c, "s1", "README.md", "edit", ts, "own");
-        let snips = |q: &str| -> Vec<String> {
-            edits_for_session(&c, "s1", q, 10)
-                .unwrap()
-                .into_iter()
-                .map(|e| e.snippet)
-                .collect()
-        };
-        assert_eq!(snips("/proj/other/README.md"), ["other"]);
-        assert_eq!(snips("/proj/api/README.md"), ["own"]);
-        assert_eq!(snips("api/README.md"), ["own"]);
-    }
-
-    #[test]
-    fn edits_for_session_matches_every_spelling_of_the_path() {
-        let c = conn_with_edits();
-        // One session edited the file under two path spellings (abs + relative).
-        add(
-            &c,
-            "s1",
-            "/proj/src/auth.rs",
-            "edit",
-            "2026-01-01T00:00:00Z",
-            "abs",
-        );
-        add(
-            &c,
-            "s1",
-            "src/auth.rs",
-            "write",
-            "2026-01-02T00:00:00Z",
-            "rel",
-        );
-        add(
-            &c,
-            "s2",
-            "/other/auth.rs",
-            "edit",
-            "2026-01-03T00:00:00Z",
-            "different-file",
-        );
-        // Suffix match scoped to s1 must catch BOTH spellings - never miss edits
-        // just because sessions_for_file's GROUP BY picked the other spelling.
-        let hits = edits_for_session(&c, "s1", "src/auth.rs", 10).unwrap();
-        assert_eq!(hits.len(), 2, "all of s1's edits to the file, any spelling");
-    }
-
-    #[test]
-    fn index_redacts_secrets_in_messages_and_edit_snippets() {
-        use crate::model::{EditEvent, EditKind, Message, Role, Session};
+    fn index_redacts_secrets_in_messages_titles_and_summaries() {
+        use crate::model::{Message, Role, Session};
         let mut c = Connection::open_in_memory().unwrap();
         create_cache_schema(&c).unwrap();
         let session = Session {
@@ -3921,13 +3219,6 @@ mod edits_tests {
                 ts: None,
                 tool: None,
             }],
-            touched: vec!["/p/a.rs".into()],
-            edits: vec![EditEvent {
-                path: "/p/a.rs".into(),
-                kind: EditKind::Write,
-                snippet: "const T = \"ghp_016C7f9aBcDeFgHiJkLmNoPqRsTuVwXyZ012\";".into(),
-                ts: None,
-            }],
         };
         let tx = c.transaction().unwrap();
         index_one(&tx, &session, "/s.jsonl", 0, 0, ToolOutputMode::Full).unwrap();
@@ -3940,9 +3231,6 @@ mod edits_tests {
             .unwrap();
         assert!(!msg.contains("sk-abcdef"), "message secret redacted: {msg}");
         assert!(msg.contains("[redacted:openai]"), "{msg}");
-        let snip = edits_for(&c, "a.rs", 10).unwrap()[0].snippet.clone();
-        assert!(!snip.contains("ghp_016C"), "edit secret redacted: {snip}");
-        assert!(snip.contains("[redacted:github]"), "{snip}");
         // Title is durable (copied into archives) - must be redacted too.
         let title: String = c
             .query_row("SELECT title FROM files WHERE session_id='sx'", [], |r| {
@@ -3968,94 +3256,6 @@ mod edits_tests {
             )
             .unwrap();
         assert!(!sum.contains("sk-abcdef"), "summary secret redacted: {sum}");
-    }
-
-    #[test]
-    fn evidence_for_assembles_sessions_with_their_edits_newest_first() {
-        use crate::model::{EditEvent, EditKind, Session};
-        let mut c = Connection::open_in_memory().unwrap();
-        create_cache_schema(&c).unwrap();
-
-        for (sid, store, started, kind, snip) in [
-            (
-                "old",
-                "/store/old.jsonl",
-                "2026-06-01T00:00:00Z",
-                EditKind::Edit,
-                "v1",
-            ),
-            (
-                "new",
-                "/store/new.jsonl",
-                "2026-06-09T00:00:00Z",
-                EditKind::Write,
-                "v2",
-            ),
-        ] {
-            let started = chrono::DateTime::parse_from_rfc3339(started)
-                .unwrap()
-                .with_timezone(&chrono::Utc);
-            let session = Session {
-                id: sid.into(),
-                tool: "claude-code",
-                path: store.into(),
-                project: "/proj".into(),
-                started: Some(started),
-                ended: None,
-                title: format!("{sid} title"),
-                subagent: false,
-                messages: vec![],
-                touched: vec!["/proj/src/a.rs".into()],
-                edits: vec![EditEvent {
-                    path: "/proj/src/a.rs".into(),
-                    kind,
-                    snippet: snip.into(),
-                    ts: None,
-                }],
-            };
-            let tx = c.transaction().unwrap();
-            index_one(&tx, &session, store, 0, 0, ToolOutputMode::Full).unwrap();
-            tx.commit().unwrap();
-        }
-
-        let hist = evidence_for(&c, "src/a.rs", 50).unwrap();
-        assert_eq!(hist.path, "src/a.rs");
-        assert_eq!(hist.sessions.len(), 2, "both sessions that edited the file");
-        assert_eq!(
-            hist.sessions[0].session.session_id, "new",
-            "newest session first"
-        );
-        assert_eq!(hist.sessions[0].edits.len(), 1);
-        assert_eq!(hist.sessions[0].edits[0].snippet, "v2");
-        assert_eq!(hist.sessions[1].session.session_id, "old");
-    }
-}
-
-#[cfg(test)]
-mod moved_file_tests {
-    use super::*;
-
-    /// Folders get renamed. A session recorded `~/Project/lunch/diag.py`; the
-    /// folder is now `~/Project/slack`, so tracing the file by the path it has
-    /// TODAY found nothing and said "no session touched a file matching" - about
-    /// a file whose whole history was sitting in the index under its old name.
-    ///
-    /// The basename is the part that survives a move, so a full path that finds
-    /// nothing falls back to it, and the caller is told the match was by name so
-    /// it can say the folder has moved.
-    #[test]
-    fn a_renamed_folder_still_traces_by_file_name() {
-        assert_eq!(
-            basename_fallback("/Users/b/Project/slack/diag.py").as_deref(),
-            Some("diag.py"),
-            "a full path falls back to its file name"
-        );
-        // Already a bare name: there is nothing to fall back to, and retrying
-        // the same query would just repeat the miss.
-        assert_eq!(basename_fallback("diag.py"), None);
-        assert_eq!(basename_fallback(""), None);
-        // A trailing slash names a directory, not a file to trace.
-        assert_eq!(basename_fallback("/Users/b/Project/slack/"), None);
     }
 }
 
@@ -4157,8 +3357,6 @@ mod embedder_hook_tests {
                     ts: None,
                     tool: None,
                 }],
-                touched: vec![],
-                edits: vec![],
             })
         }
         fn reconcile_scope(&self) -> Option<String> {
@@ -4538,8 +3736,6 @@ mod embedder_hook_tests {
                     lines: Some(1),
                 })),
             }],
-            touched: Vec::new(),
-            edits: Vec::new(),
         };
         for output in ["old full output", "new full output"] {
             let tx = conn.transaction().unwrap();
@@ -4675,8 +3871,6 @@ mod tool_output_tests {
                     lines: Some(2),
                 })),
             }],
-            touched: Vec::new(),
-            edits: Vec::new(),
         }
     }
 
@@ -4932,99 +4126,6 @@ mod tool_output_tests {
             )
             .unwrap();
         assert_eq!(full_text.as_deref(), Some(OUTPUT));
-    }
-}
-
-#[cfg(test)]
-mod separator_tests {
-    use super::*;
-
-    /// What each path lookup finds for `q`: sessions_for_file, edits_for,
-    /// edits_for_session, sessions_touching, touched_paths_matching.
-    fn found(c: &Connection, sid: &str, q: &str) -> [bool; 5] {
-        [
-            sessions_for_file(c, q, 10)
-                .unwrap()
-                .iter()
-                .any(|(s, _)| s.session_id == sid),
-            edits_for(c, q, 10)
-                .unwrap()
-                .iter()
-                .any(|e| e.session_id == sid),
-            !edits_for_session(c, sid, q, 10).unwrap().is_empty(),
-            sessions_touching(c, q)
-                .unwrap()
-                .iter()
-                .any(|s| s.session_id == sid),
-            !touched_paths_matching(c, sid, q).unwrap().is_empty(),
-        ]
-    }
-
-    /// A Windows tool records `D:\p\src\a.rs` or `D:/p/src/b.rs`, and Codex a
-    /// path relative to its folder. `\` cannot be part of a name on Windows,
-    /// so there a path typed with either separator finds them; elsewhere `\`
-    /// is an ordinary character and only the stored spelling matches it.
-    #[test]
-    fn a_windows_path_is_found_by_either_separator() {
-        let c = Connection::open_in_memory().unwrap();
-        create_cache_schema(&c).unwrap();
-        for (sid, project, path) in [
-            ("s1", r"D:\p", r"D:\p\src\a.rs"),
-            ("s1", r"D:\p", "D:/p/src/b.rs"),
-            ("s2", r"D:\q", "src/c.rs"),
-        ] {
-            c.execute(
-                "INSERT OR IGNORE INTO files(path, mtime, size, session_id, tool, project, title,
-                                             started, ended, msg_count, kind)
-                 VALUES (?1, 0, 0, ?1, 'claude-code', ?2, 't', '2026-10-01T10:00:00Z',
-                         '2026-10-01T11:00:00Z', 1, 'main')",
-                [sid, project],
-            )
-            .unwrap();
-            c.execute(
-                "INSERT INTO touched(session_id, path) VALUES (?1, ?2)",
-                [sid, path],
-            )
-            .unwrap();
-            c.execute(
-                "INSERT INTO edits(session_id, path, kind, ts, snippet)
-                 VALUES (?1, ?2, 'edit', '2026-10-01T10:30:00Z', 'x')",
-                [sid, path],
-            )
-            .unwrap();
-        }
-        let windows = cfg!(windows);
-        let cases: &[(&str, &str, bool)] = &[
-            ("s1", r"D:\p\src\a.rs", true),
-            ("s1", "D:/p/src/a.rs", windows),
-            ("s1", r"src\a.rs", windows),
-            ("s1", "src/a.rs", windows),
-            ("s1", r".\src\a.rs", windows),
-            ("s1", "a.rs", windows),
-            ("s1", r"p\src\a.rs", windows),
-            ("s1", r"D:\p\src\b.rs", windows),
-            ("s1", r"src\b.rs", windows),
-            ("s1", "src/b.rs", true),
-            ("s1", "b.rs", true),
-            // not a whole name, another folder, another drive
-            ("s1", r"rc\a.rs", false),
-            ("s1", r"x\a.rs", false),
-            ("s1", r"E:\p\src\a.rs", false),
-        ];
-        for &(sid, q, want) in cases {
-            assert_eq!(found(&c, sid, q), [want; 5], "{q}");
-        }
-        // A relative stored path is read against its session's folder when the
-        // query is a full path (edits_for and sessions_touching match by name).
-        let c2 = [true, true, true, true, true];
-        assert_eq!(found(&c, "s2", r"src\c.rs"), [windows; 5]);
-        if windows {
-            assert_eq!(found(&c, "s2", r"D:\q\src\c.rs"), c2);
-            assert_eq!(
-                found(&c, "s2", r"D:\other\src\c.rs"),
-                [false, true, false, true, true]
-            );
-        }
     }
 }
 

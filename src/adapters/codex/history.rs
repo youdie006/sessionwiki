@@ -1,7 +1,5 @@
 use super::{is_boilerplate, push, redact_json_strings};
-use crate::adapters::{
-    bounded_redacted_output, dedup_paths, title_from_messages, Adapter, Discovered, Store,
-};
+use crate::adapters::{bounded_redacted_output, title_from_messages, Adapter, Discovered, Store};
 use crate::model::{Message, Role, Session, ToolCall, ToolResult};
 use crate::util::short_id;
 use anyhow::{Context, Result};
@@ -237,7 +235,6 @@ impl Adapter for CodexHistory {
             .collect();
 
         let mut messages = Vec::new();
-        let mut touched = Vec::new();
         let mut first_cwd = None;
         let (mut started, mut ended) = (None, None);
         for (ms, raw) in &items {
@@ -252,7 +249,7 @@ impl Adapter for CodexHistory {
             if first_cwd.is_none() {
                 first_cwd = item.get("cwd").and_then(Value::as_str).map(str::to_owned);
             }
-            read_item(&item, ts, &mut messages, &mut touched);
+            read_item(&item, ts, &mut messages);
         }
 
         let registry = Path::new(db)
@@ -271,8 +268,6 @@ impl Adapter for CodexHistory {
             title: title_from_messages(&messages),
             subagent,
             messages,
-            touched: dedup_paths(touched),
-            edits: Vec::new(),
         })
     }
 }
@@ -305,12 +300,7 @@ fn thread_registry(state: &Path, thread: &str) -> Option<(Option<String>, bool)>
     ))
 }
 
-fn read_item(
-    item: &Value,
-    ts: Option<chrono::DateTime<chrono::Utc>>,
-    messages: &mut Vec<Message>,
-    touched: &mut Vec<String>,
-) {
+fn read_item(item: &Value, ts: Option<chrono::DateTime<chrono::Utc>>, messages: &mut Vec<Message>) {
     let id = item.get("id").and_then(Value::as_str).map(str::to_owned);
     // `declined` is a call refused at approval: it never ran.
     let failed = matches!(
@@ -384,9 +374,6 @@ fn read_item(
                 let Some(path) = change.get("path").and_then(Value::as_str) else {
                     continue;
                 };
-                if !failed {
-                    touched.push(path.to_owned());
-                }
                 let header = match change.pointer("/kind/type").and_then(Value::as_str) {
                     Some("add") => "Add File",
                     Some("delete") => "Delete File",
@@ -394,9 +381,6 @@ fn read_item(
                 };
                 patch.push_str(&format!("*** {header}: {path}\n"));
                 if let Some(to) = change.pointer("/kind/move_path").and_then(Value::as_str) {
-                    if !failed {
-                        touched.push(to.to_owned());
-                    }
                     patch.push_str(&format!("*** Move to: {to}\n"));
                 }
                 if let Some(diff) = change.get("diff").and_then(Value::as_str) {

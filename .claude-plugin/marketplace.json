@@ -9,7 +9,7 @@
     {
       "name": "sessionwiki",
       "source": "./plugin",
-      "description": "Recall past AI coding sessions as long-term memory: search prior work, pull context, trace a file to the session that wrote it. Requires the sessionwiki CLI.",
+      "description": "Recall past AI coding sessions as long-term memory: search prior work and pull context. Requires the sessionwiki CLI.",
       "version": "0.1.0",
       "author": {
         "name": "youdie006"

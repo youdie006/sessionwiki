@@ -103,41 +103,6 @@ impl Message {
     }
 }
 
-/// The write tool behind one file edit, normalized across the variants a tool
-/// exposes - the evidence of *what kind* of change a session made to a file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum EditKind {
-    Edit,
-    Write,
-    MultiEdit,
-    NotebookEdit,
-}
-
-impl EditKind {
-    /// Stable lowercase token stored in the index (matches the Serialize form).
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            EditKind::Edit => "edit",
-            EditKind::Write => "write",
-            EditKind::MultiEdit => "multiedit",
-            EditKind::NotebookEdit => "notebookedit",
-        }
-    }
-}
-
-/// One concrete edit a session made to one file - the evidence chain's atom.
-/// `snippet` is a bounded excerpt of the change (the resulting code, or the
-/// created content) so a later reader can see WHAT changed without re-opening
-/// the original session.
-#[derive(Debug, Serialize)]
-pub struct EditEvent {
-    pub path: String,
-    pub kind: EditKind,
-    pub snippet: String,
-    pub ts: Option<DateTime<Utc>>,
-}
-
 #[derive(Debug, Serialize)]
 pub struct Session {
     /// Short stable id derived from the file path (FNV-1a hash, hex).
@@ -151,14 +116,6 @@ pub struct Session {
     /// True for subagent transcripts spawned inside a parent session.
     pub subagent: bool,
     pub messages: Vec<Message>,
-    /// Files the session edited or created, extracted from its tool calls
-    /// (Claude's Edit/Write, Codex's apply_patch). This is the link between a
-    /// session and the code it produced - the basis for `files` and `blame`.
-    pub touched: Vec<String>,
-    /// The concrete edits behind `touched`, per file - the evidence layer: what
-    /// kind of change and a bounded snippet of it. Empty for adapters that do
-    /// not yet extract structured edits (they still populate `touched`).
-    pub edits: Vec<EditEvent>,
 }
 
 /// One discovered session store on disk (for `scan`).

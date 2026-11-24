@@ -1,6 +1,6 @@
 use super::{
-    bounded_redacted_output, dedup_paths, ok_or_flag, parse_ts, redacted_truncate,
-    title_from_messages, Adapter, Discovered,
+    bounded_redacted_output, ok_or_flag, parse_ts, redacted_truncate, title_from_messages, Adapter,
+    Discovered,
 };
 use crate::model::{Message, Role, Session, ToolCall, ToolResult};
 use crate::util::short_id;
@@ -86,11 +86,6 @@ fn sessions_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Tool calls whose `arguments` name a file the session created or edited.
-/// `write`/`edit`/`apply_patch` use `arguments.path`; `ast_edit` uses
-/// `arguments.paths` (an array). `read` is excluded - reading is not authorship.
-const EDIT_TOOLS: &[&str] = &["write", "edit", "apply_patch", "ast_edit"];
-
 fn parse_jsonl(tool: &'static str, path: &Path) -> Result<Session> {
     let raw = crate::util::read_to_string_capped(path)?;
 
@@ -101,9 +96,6 @@ fn parse_jsonl(tool: &'static str, path: &Path) -> Result<Session> {
     let mut last_ts: Option<DateTime<Utc>> = None;
 
     let mut messages: Vec<Message> = Vec::new();
-    // Edited files by call; a call whose result is an error changed nothing.
-    let mut edit_calls: Vec<(Option<String>, Vec<String>)> = Vec::new();
-    let mut failed_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for line in raw.lines() {
         let line = line.trim();
@@ -169,9 +161,6 @@ fn parse_jsonl(tool: &'static str, path: &Path) -> Result<Session> {
                         .filter(|id| !id.is_empty())
                         .map(str::to_owned);
                     let is_error = msg.get("isError").and_then(Value::as_bool).unwrap_or(false);
-                    if let (true, Some(id)) = (is_error, &call_id) {
-                        failed_calls.insert(id.clone());
-                    }
                     messages.push(Message::tool_result(
                         ts,
                         ToolResult {
@@ -202,9 +191,6 @@ fn parse_jsonl(tool: &'static str, path: &Path) -> Result<Session> {
                                         .and_then(Value::as_str)
                                         .filter(|id| !id.is_empty())
                                         .map(str::to_owned);
-                                    if EDIT_TOOLS.contains(&name) {
-                                        edit_calls.push((id.clone(), arg_paths(args)));
-                                    }
                                     let mut args =
                                         args.cloned().unwrap_or_else(|| serde_json::json!({}));
                                     redact_json_strings(&mut args);
@@ -231,11 +217,6 @@ fn parse_jsonl(tool: &'static str, path: &Path) -> Result<Session> {
     }
 
     let _ = session_id;
-    let touched: Vec<String> = edit_calls
-        .into_iter()
-        .filter(|(id, _)| !id.as_ref().is_some_and(|id| failed_calls.contains(id)))
-        .flat_map(|(_, paths)| paths)
-        .collect();
     let title = header_title.unwrap_or_else(|| title_from_messages(&messages));
 
     Ok(Session {
@@ -248,31 +229,7 @@ fn parse_jsonl(tool: &'static str, path: &Path) -> Result<Session> {
         title,
         subagent: false,
         messages,
-        touched: dedup_paths(touched),
-        edits: Vec::new(),
     })
-}
-
-/// A tool call's file path(s): `arguments.path` (string) or `arguments.paths`
-/// (array, used by `ast_edit`).
-fn arg_paths(args: Option<&Value>) -> Vec<String> {
-    let Some(args) = args else {
-        return vec![];
-    };
-    if let Some(p) = args.get("path").and_then(Value::as_str) {
-        if !p.is_empty() {
-            return vec![p.to_string()];
-        }
-    }
-    if let Some(Value::Array(ps)) = args.get("paths") {
-        return ps
-            .iter()
-            .filter_map(Value::as_str)
-            .filter(|p| !p.is_empty())
-            .map(String::from)
-            .collect();
-    }
-    vec![]
 }
 
 fn block_text(content: Option<&Value>) -> String {

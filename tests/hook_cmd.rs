@@ -33,8 +33,7 @@ fn hook_exits_0_and_empty_on_broken_index() {
 }
 
 /// Claude Code hands the hook its folder as it records it (`C:\...` on
-/// Windows), and the brief lists that project's past sessions with each file
-/// relative to it; a file outside the project shows only its name.
+/// Windows), and the brief lists that project's past sessions.
 #[test]
 fn hook_briefs_the_project_it_was_started_in() {
     let root = tempfile::tempdir().unwrap();
@@ -56,16 +55,6 @@ fn hook_briefs_the_project_it_was_started_in() {
         [&proj_str],
     )
     .unwrap();
-    for file in [
-        proj.join("src").join("login.rs"),
-        base.join("app-old").join("notes.md"),
-    ] {
-        conn.execute(
-            "INSERT INTO touched(session_id, path) VALUES ('past', ?1)",
-            [file.to_string_lossy()],
-        )
-        .unwrap();
-    }
     drop(conn);
 
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sessionwiki"))
@@ -86,11 +75,6 @@ fn hook_briefs_the_project_it_was_started_in() {
     let brief = String::from_utf8_lossy(&out.stdout);
 
     assert!(brief.contains("fixed the login form"), "brief: {brief:?}");
-    let login = std::path::Path::new("src").join("login.rs");
-    assert!(
-        brief.contains(&format!("touched {}, notes.md", login.display())),
-        "brief: {brief:?}"
-    );
     assert!(
         !brief.contains(&*base.to_string_lossy()),
         "brief: {brief:?}"

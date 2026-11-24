@@ -219,7 +219,6 @@ fn history_tool_calls_keep_their_outcome_and_edited_files() {
     let store = adapter.store().expect("the history db is a store");
     assert_eq!(store.keys.len(), 1);
     let session = adapter.parse_key(&store.keys[0].0).unwrap();
-    assert_eq!(session.touched, vec!["/repo/src/lib.rs".to_string()]);
     let results: Vec<(String, bool)> = session
         .messages
         .iter()
@@ -262,10 +261,10 @@ fn history_tool_calls_keep_their_outcome_and_edited_files() {
     );
 }
 
-/// A patch refused at approval, or one that failed to apply, changed no file:
-/// the call stays in the transcript, the file is not one the session edited.
+/// A patch refused at approval, or one that failed to apply, stays in the
+/// transcript like any other attempt.
 #[test]
-fn a_declined_or_failed_file_change_edits_nothing() {
+fn a_declined_or_failed_file_change_stays_in_the_transcript() {
     let home = tempfile::tempdir().unwrap();
     let change = |id: &str, status: &str, path: &str| {
         serde_json::json!({"type":"fileChange","id":id,"status":status,
@@ -286,7 +285,6 @@ fn a_declined_or_failed_file_change_edits_nothing() {
     let adapter = CodexHistory::in_home(home.path());
     let store = adapter.store().expect("the history db is a store");
     let session = adapter.parse_key(&store.keys[0].0).unwrap();
-    assert_eq!(session.touched, vec!["/repo/src/applied.rs".to_string()]);
     let patches = session
         .messages
         .iter()

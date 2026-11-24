@@ -90,7 +90,7 @@ CLI *you* configure and run; the tool itself makes no network calls.
 ## Durable schema migrations
 
 The index has two schemas with two version counters. The **cache** (files,
-messages, msgs, touched) is disposable: bump `SCHEMA_VERSION` when its shape
+messages, msgs) is disposable: bump `SCHEMA_VERSION` when its shape
 changes and `open()` drops and rebuilds it. The **durable** tables (summaries,
 tags, notes, archive, meta) hold what cannot be re-derived - LLM output, user
 curation, and archived sessions whose originals the tool deleted - so they are

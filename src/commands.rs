@@ -766,22 +766,6 @@ pub fn show(
     if let Some(note) = index::note_for(&conn, &row.session_id)? {
         ln!("{} {}", dim("note:"), note);
     }
-    let files = index::files_for(&conn, &row.session_id)?;
-    if !files.is_empty() {
-        let shown = files.len().min(8);
-        let more = files.len() - shown;
-        let list = files[..shown]
-            .iter()
-            .map(|f| project_label(f))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let suffix = if more > 0 {
-            format!(" (+{more} more)")
-        } else {
-            String::new()
-        };
-        ln!("{} {}{}", dim("touched:"), list, dim(&suffix));
-    }
     ln!();
 
     for m in &session.messages {
@@ -955,13 +939,6 @@ pub(crate) fn redact_session_for_export(session: &mut crate::model::Session) {
             }
             None => {}
         }
-    }
-    for path in &mut session.touched {
-        clean(path);
-    }
-    for edit in &mut session.edits {
-        clean(&mut edit.path);
-        clean(&mut edit.snippet);
     }
 }
 
@@ -1483,32 +1460,6 @@ pub fn related(id: &str, limit: usize, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Files a session edited or created (its side of the provenance link).
-pub fn files(id: &str, json: bool) -> Result<()> {
-    let conn = index::open()?;
-    let row = resolve_one(&conn, id)?;
-    let files = index::files_for(&conn, &row.session_id)?;
-    if json {
-        println!("{}", serde_json::to_string(&files)?);
-        return Ok(());
-    }
-    println!(
-        "{}",
-        dim(&format!("files touched by: {}", truncate(&row.title, 70)))
-    );
-    if files.is_empty() {
-        println!(
-            "{}",
-            dim("No file edits recorded (Gemini chats, or a read-only session).")
-        );
-        return Ok(());
-    }
-    for f in files {
-        println!("  {f}");
-    }
-    Ok(())
-}
-
 /// Parse a time window like `7d`, `2w`, `24h`, `90m` (a bare number is days).
 fn parse_duration(s: &str) -> Result<chrono::Duration> {
     let s = s.trim();
@@ -1532,8 +1483,8 @@ fn parse_duration(s: &str) -> Result<chrono::Duration> {
 }
 
 /// A markdown rollup of recent sessions grouped by project: what you worked on,
-/// the files each session touched, and any cached synopsis. Composes the
-/// timeline, provenance, and summaries the index already has, over a window.
+/// and any cached synopsis. Composes the timeline and summaries the index
+/// already has, over a window.
 pub fn digest(
     since: &str,
     tool: Option<&str>,
@@ -1590,14 +1541,12 @@ pub fn digest(
                 let sessions: Vec<serde_json::Value> = groups[p]
                     .iter()
                     .map(|r| {
-                        let files = index::files_for(&conn, &r.session_id).unwrap_or_default();
                         serde_json::json!({
                             "id": r.session_id,
                             "tool": r.tool,
                             "title": r.title,
                             "started": r.started,
                             "msgs": r.msg_count,
-                            "files": files,
                             "summary": r.summary,
                         })
                     })
@@ -1641,345 +1590,6 @@ pub fn digest(
             if let Some(s) = &r.summary {
                 println!("  {}", dim(s));
             }
-            let files = index::files_for(&conn, &r.session_id).unwrap_or_default();
-            if !files.is_empty() {
-                let shown: Vec<&str> = files.iter().take(8).map(String::as_str).collect();
-                let more = files.len().saturating_sub(shown.len());
-                let suffix = if more > 0 {
-                    format!(", +{more} more")
-                } else {
-                    String::new()
-                };
-                println!(
-                    "  {}",
-                    dim(&format!("touched: {}{}", shown.join(", "), suffix))
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Reverse lookup: which AI sessions touched a file, newest first. This is the
-/// provenance link read from the code side - trace a file back to the
-/// conversations that edited it, across every tool, with no setup or hooks.
-/// It reports sessions that *touched* the file, not line-level authorship: a
-/// later edit may have replaced the code, so this points you at the relevant
-/// conversations rather than claiming any line came from one.
-pub fn trace(path: &str, json: bool, no_sync: bool) -> Result<()> {
-    let mut conn = index::open()?;
-    if !no_sync {
-        index::sync(&mut conn, None)?;
-    }
-    let mut hits = index::sessions_for_file(&conn, path, 20)?;
-    // A full path that matches nothing is usually a folder that has been
-    // renamed since: the file's history is in the index under its old
-    // directory. The NAME survives a move, so retry with it rather than
-    // reporting that nothing ever touched the file.
-    let mut by_name = false;
-    if hits.is_empty() {
-        hits = index::sessions_for_moved_file(&conn, path, 20)?;
-        by_name = !hits.is_empty();
-    }
-    if json {
-        let out: Vec<serde_json::Value> = hits
-            .iter()
-            .map(|(r, matched)| {
-                let mut v = serde_json::to_value(r).unwrap_or_else(|_| serde_json::json!({}));
-                v["matched"] = serde_json::json!(matched);
-                v
-            })
-            .collect();
-        println!("{}", serde_json::to_string(&serde_json::Value::Array(out))?);
-        return Ok(());
-    }
-    if by_name {
-        // Say WHY the paths below will not match what was typed - otherwise the
-        // reader assumes the index is wrong about where the file lives.
-        println!(
-            "{}",
-            dim(
-                "no session recorded that exact path - matched by file name; \
-                 the folder has moved since"
-            )
-        );
-    }
-    if hits.is_empty() {
-        println!(
-            "No session touched a file matching \"{path}\".\n{}",
-            dim("Pass a path as it appears in the editor, e.g. src/auth.rs")
-        );
-        return Ok(());
-    }
-    println!(
-        "{}",
-        dim(&format!(
-            "{} session(s) touched \"{path}\", newest first:",
-            hits.len()
-        ))
-    );
-    for (r, matched) in hits {
-        let when = r
-            .started
-            .as_deref()
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            .map(|t| t.with_timezone(&chrono::Utc));
-        println!(
-            "{} {} {} {}",
-            yellow(&r.session_id),
-            cyan(&r.tool),
-            dim(&fmt_date(when)),
-            truncate(&r.title, 64),
-        );
-        println!("  {}", dim(&matched));
-    }
-    Ok(())
-}
-
-/// The sessions listed under a blame: those that touched the file, kept to
-/// the blame's candidates.
-pub fn blame_floor(
-    conn: &rusqlite::Connection,
-    file_query: &str,
-    candidates: &[crate::blame::TouchingSession],
-    limit: usize,
-) -> Result<Vec<(index::SessionRow, String)>> {
-    let mut hits = index::sessions_for_file(conn, file_query, usize::MAX)?;
-    hits.retain(|(r, _)| candidates.iter().any(|c| c.session_id == r.session_id));
-    hits.truncate(limit);
-    Ok(hits)
-}
-
-/// One contiguous line range with its commit and the session attributed to it.
-pub struct BlameRun {
-    pub start: usize,
-    pub end: usize,
-    pub commit: String,
-    pub author_time: i64,
-    pub attribution: crate::blame::Attribution,
-}
-
-/// Attribute each run to a session, looking up the touching sessions once and
-/// memoizing the per-commit attribution (one resolution per distinct commit).
-pub fn blame_runs(
-    conn: &rusqlite::Connection,
-    file_query: &str,
-    repo_path: &str,
-    runs: Vec<crate::blame::Run>,
-) -> Result<Vec<BlameRun>> {
-    let candidates = blame_candidates(conn, file_query, repo_path)?;
-    Ok(attribute_runs(&candidates, repo_path, runs))
-}
-
-/// The sessions that may have edited `file_query` in the repository at
-/// `repo_path`: those blame attributes lines among.
-pub fn blame_candidates(
-    conn: &rusqlite::Connection,
-    file_query: &str,
-    repo_path: &str,
-) -> Result<Vec<crate::blame::TouchingSession>> {
-    use std::collections::HashMap;
-    let candidates = index::sessions_touching(conn, file_query)?;
-    // The match is by path suffix, so it also finds sessions that edited a
-    // file of the same name in another repository.
-    let target = std::path::Path::new(repo_path).join(file_query);
-    let this_repo = crate::blame::RepoId::of(std::path::Path::new(repo_path));
-    let mut same: HashMap<std::path::PathBuf, bool> = HashMap::new();
-    // A copy counts only at the same place in a checkout of this repository:
-    // `x.rs` edited from `sub/` is `sub/x.rs`, but from the root it is another file.
-    let mut same_history = |copy: &std::path::Path| {
-        let Some(repo) = copy.parent().and_then(crate::blame::repo_dir) else {
-            return false;
-        };
-        copy.strip_prefix(&repo).ok() == Some(std::path::Path::new(file_query))
-            && *same
-                .entry(repo)
-                .or_insert_with_key(|repo| crate::blame::RepoId::of(repo).same_as(&this_repo))
-    };
-    let mut kept = Vec::with_capacity(candidates.len());
-    for s in candidates {
-        let matched = index::touched_paths_matching(conn, &s.session_id, file_query)?;
-        if crate::blame::may_have_edited(&target, &s.project, &matched, &mut same_history) {
-            kept.push(s);
-        }
-    }
-    Ok(kept)
-}
-
-fn attribute_runs(
-    candidates: &[crate::blame::TouchingSession],
-    repo_path: &str,
-    runs: Vec<crate::blame::Run>,
-) -> Vec<BlameRun> {
-    let mut memo: std::collections::HashMap<String, crate::blame::Attribution> =
-        std::collections::HashMap::new();
-    let mut out = Vec::new();
-    for r in runs {
-        let attr = memo
-            .entry(r.commit.clone())
-            .or_insert_with(|| crate::blame::attribute_commit(r.author_time, repo_path, candidates))
-            .clone();
-        out.push(BlameRun {
-            start: r.start,
-            end: r.end,
-            commit: r.commit,
-            author_time: r.author_time,
-            attribution: attr,
-        });
-    }
-    out
-}
-
-/// git blame for the AI era: attribute each line of a file to the AI session
-/// most likely behind the commit that last changed it. Best-effort - falls back
-/// to file-level `trace` whenever git can't carry the weight.
-pub fn blame(file: &str, range: Option<(usize, usize)>, json: bool, no_sync: bool) -> Result<()> {
-    let path = std::path::Path::new(file);
-    let repo = match crate::blame::repo_root(path) {
-        Ok(r) => r,
-        Err(e) => return blame_fallback(file, json, no_sync, &e.to_string()),
-    };
-    let raw = match crate::blame::run_git_blame(&repo, path, range) {
-        Ok(o) => o,
-        Err(e) => return blame_fallback(file, json, no_sync, &e.to_string()),
-    };
-    let mut conn = index::open()?;
-    if !no_sync {
-        index::sync(&mut conn, None)?;
-    }
-    // Query the index with the repo-relative path: its suffix match then catches
-    // both Claude Code's absolute touched paths and Codex's relative ones.
-    let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let rel = canon
-        .strip_prefix(&repo)
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| file.to_string());
-    let runs = crate::blame::group_runs(&crate::blame::parse_line_porcelain(&raw));
-    let repo_path = repo.to_string_lossy().into_owned();
-    let candidates = blame_candidates(&conn, &rel, &repo_path)?;
-    let results = attribute_runs(&candidates, &repo_path, runs);
-    if json {
-        print_blame_json(&results)?;
-    } else {
-        print_blame_human(file, &rel, &results, &conn, &candidates)?;
-    }
-    Ok(())
-}
-
-fn blame_fallback(file: &str, json: bool, no_sync: bool, reason: &str) -> Result<()> {
-    if !json {
-        eprintln!(
-            "{}",
-            dim(&format!("blame fell back to file-level trace: {reason}"))
-        );
-    }
-    trace(file, json, no_sync)
-}
-
-fn sess_json(s: &crate::blame::TouchingSession) -> serde_json::Value {
-    serde_json::json!({
-        "session_id": s.session_id,
-        "tool": s.tool,
-        "title": s.title,
-        "project": s.project,
-        "archived": s.archived,
-    })
-}
-
-fn print_blame_json(runs: &[BlameRun]) -> Result<()> {
-    use crate::blame::Attribution;
-    let arr: Vec<serde_json::Value> = runs
-        .iter()
-        .map(|r| {
-            let (status, session, candidates) = match &r.attribution {
-                Attribution::Confident(s) => ("confident", Some(sess_json(s)), vec![]),
-                Attribution::Ambiguous(v) => ("ambiguous", None, v.iter().map(sess_json).collect()),
-                Attribution::Unattributed => ("unattributed", None, vec![]),
-            };
-            serde_json::json!({
-                "start": r.start,
-                "end": r.end,
-                "commit": r.commit,
-                "author_time": r.author_time,
-                "status": status,
-                "session": session,
-                "candidates": candidates,
-            })
-        })
-        .collect();
-    println!("{}", serde_json::to_string(&serde_json::Value::Array(arr))?);
-    Ok(())
-}
-
-fn print_blame_human(
-    file: &str,
-    rel: &str,
-    runs: &[BlameRun],
-    conn: &rusqlite::Connection,
-    candidates: &[crate::blame::TouchingSession],
-) -> Result<()> {
-    use crate::blame::Attribution;
-    println!(
-        "{}",
-        dim(&format!(
-            "blame {file}: the session most likely behind the commit that last changed each line - not proof of authorship (git show <sha> to verify)."
-        ))
-    );
-    if runs.is_empty() {
-        println!("{}", dim("No committed lines to blame."));
-    }
-    for r in runs {
-        let when = chrono::DateTime::from_timestamp(r.author_time, 0);
-        let short = &r.commit[..r.commit.len().min(8)];
-        let loc = yellow(&format!("L{}-{}", r.start, r.end));
-        let date = dim(&fmt_date(when));
-        match &r.attribution {
-            Attribution::Confident(s) => {
-                let arch = if s.archived { " [archived]" } else { "" };
-                println!(
-                    "{loc}  {date}  {} {}{arch}  {}",
-                    cyan(&s.tool),
-                    truncate(&s.title, 50),
-                    dim(short)
-                );
-            }
-            Attribution::Ambiguous(v) => {
-                let ids: Vec<&str> = v.iter().map(|s| s.session_id.as_str()).collect();
-                println!(
-                    "{loc}  {date}  {}  {}",
-                    yellow(&format!("ambiguous ({} sessions)", v.len())),
-                    dim(&format!("{} [{short}]", ids.join(", ")))
-                );
-            }
-            Attribution::Unattributed => {
-                println!("{loc}  {date}  {}  {}", dim("unattributed"), dim(short));
-            }
-        }
-    }
-    // File-level floor: the sessions that touched this file, always shown so
-    // unattributed/ambiguous lines still have a way back.
-    let hits = blame_floor(conn, rel, candidates, 20)?;
-    if !hits.is_empty() {
-        println!(
-            "\n{}",
-            dim(&format!(
-                "Sessions that touched this file ({}):",
-                hits.len()
-            ))
-        );
-        for (s, _matched) in hits {
-            let when = s
-                .started
-                .as_deref()
-                .and_then(|x| chrono::DateTime::parse_from_rfc3339(x).ok())
-                .map(|t| t.with_timezone(&chrono::Utc));
-            println!(
-                "  {} {} {} {}",
-                yellow(&s.session_id),
-                cyan(&s.tool),
-                dim(&fmt_date(when)),
-                truncate(&s.title, 50)
-            );
         }
     }
     Ok(())
@@ -2023,8 +1633,8 @@ pub fn stats() -> Result<()> {
     println!(
         "{}",
         bold(&format!(
-            "{} sessions · {} messages · {} projects · {} files · {} tags · {} summarized",
-            s.total_sessions, s.total_messages, s.projects, s.files, s.tags, s.summarized
+            "{} sessions · {} messages · {} projects · {} tags · {} summarized",
+            s.total_sessions, s.total_messages, s.projects, s.tags, s.summarized
         ))
     );
     if s.archived > 0 {
@@ -2130,8 +1740,6 @@ mod tests {
                     tool: None,
                 },
             ],
-            touched: Vec::new(),
-            edits: Vec::new(),
         };
         let out = brief_text(&session, 1600, false, true);
         assert!(!out.contains(secret), "the brief still carries it:\n{out}");
@@ -2228,8 +1836,6 @@ mod tests {
                     })),
                 },
             ],
-            touched: vec![],
-            edits: vec![],
         };
 
         let md = brief_markdown(&session, 4000, true);

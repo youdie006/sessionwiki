@@ -14,6 +14,19 @@ semantic versioning once it reaches 1.0.
   `trace_file` gets the standard unknown-tool error (-32602). The `trace`
   command in the CLI and the web UI is unchanged. Restart any running
   `sessionwiki mcp` servers after upgrading so clients see the new tool list.
+- File provenance is gone. The `trace`, `files` and `blame` commands, the
+  web UI's file chips and file-history panel, and the `/api/trace` and
+  `/api/file` endpoints no longer exist, and `session` JSON and `digest --json`
+  no longer carry `touched` or `files`. `related` ranks by shared project and
+  tags only, `stats` no longer counts linked files, `digest` and the session
+  start brief no longer list files, and the `sessionwiki-recall` plugin no
+  longer offers `trace`. The adapters no longer read edited paths out of tool
+  calls. Existing schema-9 indexes upgrade in place to schema 10, dropping
+  only the `touched` and `edits` cache tables and keeping live sessions searchable
+  immediately. The deprecated `archive.touched` column stays in place with its
+  existing values; new archives write an empty list. Durable version stays at 2,
+  preserving every archive, summary, tag and note. An older sessionwiki
+  will not open the upgraded index; it tells you to run the installed version.
 
 ## [0.34.26] - 2026-11-24
 

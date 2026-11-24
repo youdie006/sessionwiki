@@ -3,7 +3,7 @@
   "name": "sessionwiki",
   "displayName": "sessionwiki session recall",
   "version": "0.1.0",
-  "description": "Recall and reuse your past AI coding sessions as long-term memory. Searches the local sessionwiki index so the agent can find prior work, pull context, and trace which session wrote a file.",
+  "description": "Recall and reuse your past AI coding sessions as long-term memory. Searches the local sessionwiki index so the agent can find prior work and pull context.",
   "author": {
     "name": "youdie006",
     "url": "https://github.com/youdie006"

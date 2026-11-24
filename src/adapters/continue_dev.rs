@@ -1,6 +1,6 @@
 use super::{
-    bounded_redacted_output, dedup_paths, ok_or_flag, redacted_truncate, title_from_messages,
-    Adapter, Discovered,
+    bounded_redacted_output, ok_or_flag, redacted_truncate, title_from_messages, Adapter,
+    Discovered,
 };
 use crate::model::{Message, Role, Session, ToolCall, ToolResult};
 use crate::util::short_id;
@@ -16,9 +16,7 @@ use std::path::{Path, PathBuf};
 /// (epoch-ms as a string) in the index, which we read for `started`.
 ///
 /// `history` is an array of items shaped `{ message: {role, content, toolCalls},
-/// toolCallStates: [...] }` - role/text live under `message`. File edits are in
-/// `toolCallStates[].parsedArgs.filepath` (already parsed) or, failing that, in
-/// `message.toolCalls[].function.arguments` (a JSON-encoded string).
+/// toolCallStates: [...] }` - role/text live under `message`.
 pub struct Continue;
 
 impl Adapter for Continue {
@@ -73,15 +71,6 @@ fn continue_dir() -> Option<PathBuf> {
         .or_else(|| dirs::home_dir().map(|h| h.join(".continue")))
 }
 
-/// Tools whose args name a file the session created or edited. The path is
-/// always `filepath`. Read/search/ls tools are excluded.
-const EDIT_TOOLS: &[&str] = &[
-    "create_new_file",
-    "edit_existing_file",
-    "single_find_and_replace",
-    "multi_edit",
-];
-
 fn parse_session(tool: &'static str, path: &Path) -> Result<Session> {
     let raw = crate::util::read_to_string_capped(path)?;
     let s: Value =
@@ -99,7 +88,6 @@ fn parse_session(tool: &'static str, path: &Path) -> Result<Session> {
         .map(|t| redacted_truncate(t, 80));
 
     let mut messages: Vec<Message> = Vec::new();
-    let mut touched: Vec<String> = Vec::new();
 
     if let Some(history) = s.get("history").and_then(Value::as_array) {
         let explicit_result_ids: HashSet<&str> = history
@@ -150,19 +138,6 @@ fn parse_session(tool: &'static str, path: &Path) -> Result<Session> {
 
             for mut call in tool_calls(item) {
                 redact_json_strings(&mut call.args);
-                let filepath = call
-                    .args
-                    .get("filepath")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                // An edit that errored or was canceled changed nothing.
-                let failed = call
-                    .id
-                    .as_deref()
-                    .is_some_and(|id| tool_status_is_error(history, id));
-                if EDIT_TOOLS.contains(&call.name.as_str()) && !filepath.is_empty() && !failed {
-                    touched.push(filepath.to_owned());
-                }
                 messages.push(Message::tool_call(None, call));
             }
 
@@ -207,8 +182,6 @@ fn parse_session(tool: &'static str, path: &Path) -> Result<Session> {
         title,
         subagent: false,
         messages,
-        touched: dedup_paths(touched),
-        edits: Vec::new(),
     })
 }
 

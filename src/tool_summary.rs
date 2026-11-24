@@ -441,8 +441,6 @@ mod tests {
             title: "test".into(),
             subagent: false,
             messages,
-            touched: vec![],
-            edits: vec![],
         }
     }
 

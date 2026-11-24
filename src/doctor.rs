@@ -72,7 +72,7 @@ pub fn index_checks(conn: &Connection, expected_schema: i64) -> Vec<Check> {
     // table, lock, read-corruption), never a healthy empty index - so it must not
     // become a silent "ok, 0". (Full PRAGMA integrity_check needs write access for
     // the FTS5 index, so it can't run on this read-only connection.)
-    const CORE: &[&str] = &["files", "messages", "edits", "archive", "summaries"];
+    const CORE: &[&str] = &["files", "messages", "archive", "summaries"];
     let unreadable: Vec<&str> = CORE
         .iter()
         .copied()
@@ -266,7 +266,6 @@ mod tests {
             "CREATE TABLE files(path TEXT PRIMARY KEY, session_id TEXT NOT NULL, archived_at TEXT,
                  kind TEXT NOT NULL DEFAULT 'main');
              CREATE TABLE messages(id INTEGER PRIMARY KEY);
-             CREATE TABLE edits(session_id TEXT);
              CREATE TABLE archive(session_id TEXT);
              CREATE TABLE summaries(session_id TEXT);
              CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -324,7 +323,7 @@ mod tests {
     #[test]
     fn a_missing_core_table_is_a_fail_not_a_healthy_zero() {
         let c = conn();
-        c.execute("DROP TABLE edits", []).unwrap();
+        c.execute("DROP TABLE archive", []).unwrap();
         let tables = index_checks(&c, 9)
             .into_iter()
             .find(|c| c.name == "index tables")

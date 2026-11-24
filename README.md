@@ -15,7 +15,6 @@
 <a href="#install"><img src="docs/nav/install.png" height="20" alt="Install"></a>
 <a href="#quick-start"><img src="docs/nav/quick-start.png" height="20" alt="Quick start"></a>
 <a href="#commands"><img src="docs/nav/commands.png" height="20" alt="Commands"></a>
-<a href="#trace-code-back-to-its-session"><img src="docs/nav/trace.png" height="20" alt="Trace"></a>
 <a href="#nothing-gets-lost-archive-mode"><img src="docs/nav/archive.png" height="20" alt="Archive"></a>
 <a href="#pick-up-where-you-left-off"><img src="docs/nav/resume.png" height="20" alt="Resume"></a>
 <a href="#adding-an-adapter"><img src="docs/nav/add-a-tool.png" height="20" alt="Add a tool"></a>
@@ -24,7 +23,7 @@
 
 </div>
 
-**sessionwiki turns the sessions your AI coding tools already wrote to disk into one durable history you can read, search, and trace &mdash; every file back to the conversation that wrote it, and nothing lost when a tool prunes the original.** Every tool at once. No daemon, no cloud, no logging habit to build &mdash; it works retroactively over the history you already have.
+**sessionwiki turns the sessions your AI coding tools already wrote to disk into one durable history you can read, search, and resume &mdash; and nothing lost when a tool prunes the original.** Every tool at once. No daemon, no cloud, no logging habit to build &mdash; it works retroactively over the history you already have.
 
 ```console
 $ sessionwiki scan
@@ -40,14 +39,12 @@ That is one real machine. Run it on yours &mdash; the number is usually a surpri
 
 ## What you can do with it
 
-- **[Trace](#trace-code-back-to-its-session)** a file back to the conversations that wrote it &mdash; the link between your code and your sessions, across every tool, retroactively.
-- **Blame** a line back to the session behind it &mdash; `git blame` for the AI era; best-effort, falls back to file-level `trace`.
-- **[Keep](#nothing-gets-lost-archive-mode)** every session &mdash; archived when a tool prunes it, so `search` and `trace` never go dark; delete the bulky originals and still search them.
+- **[Keep](#nothing-gets-lost-archive-mode)** every session &mdash; archived when a tool prunes it, so `search` never goes dark; delete the bulky originals and still search them.
 - **Read & resume** any session &mdash; reopen it in its original tool, or `brief` it into another.
 - **Search** every message of every tool at once &mdash; substring + CJK, zero setup.
 - **Curate** &mdash; tag, note, jump to [related](#session-engineering) sessions, and see where your agent time goes.
 
-And a web UI for reading and browsing, not just grepping &mdash; live search, rendered transcripts, and each session's files as clickable provenance chips. `sessionwiki web`:
+And a web UI for reading and browsing, not just grepping &mdash; live search and rendered transcripts. `sessionwiki web`:
 
 <img src="docs/demo-search.webp" width="820" alt="The sessionwiki web UI: typing a partial word into the search and seeing matches from Codex and Claude Code at once">
 
@@ -163,7 +160,7 @@ GB). After that, updates are incremental and take seconds.
 | `web` | Local viewer on `127.0.0.1:7575`: day-grouped sessions, live search with highlighted snippets, rendered transcripts with outlines/tags/related, resume commands, light/dark, UI auto-localized (en/ko/ja/zh). Reads the existing index; `web --sync` refreshes first. Never leaves localhost. |
 | `sync [--tool]` | Build or refresh the index on demand. Pair with `--no-sync` (below) so queries skip the store walk. Handy from a cron to keep the index warm. |
 
-Every query command (`search`, `list`, `recall`, `show`, `brief`, `resume`, `trace`) takes `--no-sync` to query the already-built index without re-walking the stores &mdash; the fast path when something else (e.g. a cron running `sessionwiki sync`) keeps the index current.
+Every query command (`search`, `list`, `recall`, `show`, `brief`, `resume`) takes `--no-sync` to query the already-built index without re-walking the stores &mdash; the fast path when something else (e.g. a cron running `sessionwiki sync`) keeps the index current.
 
 Search uses the `trigram` tokenizer by default, which finds substrings and works
 well for CJK text. Under `trigram`, a quoted phrase includes its whitespace
@@ -202,48 +199,21 @@ a navigable, maintained one. They read the index, so they are instant.
 
 | Command | What it does |
 |---|---|
-| `related <id>` | Sessions about the same thing: same project first, then sessions that edited the same files, then anything sharing a tag. The "see also" for your work. |
-| `files <id>` | The files a session edited or created &mdash; its side of the provenance link. |
-| `trace <path>` | The AI sessions that touched a file, newest first. Matches a relative path against the absolute one on disk, so `trace src/auth.rs` just works. See [below](#trace-code-back-to-its-session). |
-| `blame <path>` | git blame for the AI era: attributes each line to the AI session most likely behind the commit that last changed it, by joining `git blame` with the index. `-L 40,80` for a range. Best-effort, not proof of authorship &mdash; `ambiguous`/`unattributed` are normal, and it falls back to file-level `trace`. |
+| `related <id>` | Sessions about the same thing: same project first, then anything sharing a tag. The "see also" for your work. |
 | `tag <id> <tag>...` | Tag a session (`--rm` to remove). No id lists every tag in use. Filter with `list --tag`. Tags are stored in the index and survive reindexing &mdash; the original session files are never touched. |
 | `note <id> "text"` | Pin a freeform note on a session; omit the text to read it back. |
 | `forget <id>` | Permanently drop a session from the index and archive. The escape hatch for [archive mode](#nothing-gets-lost-archive-mode) when you want a kept session gone. |
 | `projects` | One row per project: session count, message volume, last activity. A page per codebase. |
-| `stats` | Totals plus a breakdown by tool, by month, files linked to sessions, and how many sessions were kept after the tools deleted them. |
-| `digest [--since 7d]` | A markdown rollup of recent sessions grouped by project &mdash; what you worked on, the files each touched, and any cached synopsis. `--since 2w`/`24h`/`90m`, `--project`, `--tool`, `--json`. The standup / PR-body / "what did I ship this week" view, assembled from the index. |
-
-### Trace code back to its session
-
-AI writes most of the code now, so the question is no longer "who wrote this
-line" but "which conversation produced it, and why." sessionwiki reads the file
-edits out of each session's tool calls &mdash; Claude's `Edit`/`Write`, Codex's
-`apply_patch` &mdash; and links every session to the files it changed.
-
-<img src="docs/demo-trace.webp" width="820" alt="A session's files listed as provenance chips, and the sessions that touched one of those files">
-
-```console
-$ sessionwiki trace src/middleware/mod.rs
-2 session(s) touched "src/middleware/mod.rs", newest first:
-35a59790  claude-code  2026-06-09  Fix CORS preflight failing on /auth routes
-4fd0ce37  claude-code  2026-06-08  Add retry with backoff to the payment webhook handler
-```
-
-It works retroactively, with no hooks or setup, over every session already on
-disk &mdash; nothing to install before the fact. The honest scope: this points
-you at the conversations that *touched* a file, not at line-level authorship; a
-later edit may have replaced the code, so `trace` is a way back to the relevant
-discussion, not a claim that a given line came from one session. In the web UI,
-the files a session touched are chips in its header &mdash; click one to see
-every other session that touched it.
+| `stats` | Totals plus a breakdown by tool, by month, and how many sessions were kept after the tools deleted them. |
+| `digest [--since 7d]` | A markdown rollup of recent sessions grouped by project &mdash; what you worked on and any cached synopsis. `--since 2w`/`24h`/`90m`, `--project`, `--tool`, `--json`. The standup / PR-body / "what did I ship this week" view, assembled from the index. |
 
 ### Nothing gets lost (archive mode)
 
-Claude Code and Codex prune old sessions over time. The first time `trace`
-comes up empty for a file you *know* an agent wrote &mdash; because the session
-behind it was deleted &mdash; the whole link is worthless. So once sessionwiki
+Claude Code and Codex prune old sessions over time. The first time `search`
+comes up empty for a conversation you *know* happened &mdash; because the session
+was deleted &mdash; the history is worthless. So once sessionwiki
 has indexed a session, it keeps it: when a tool deletes the original, the
-session is **archived**, not dropped, and `search`, `trace`, and `brief` keep
+session is **archived**, not dropped, and `search` and `brief` keep
 working for it.
 
 ```console
@@ -255,19 +225,19 @@ a1b2c3d4  claude-code  3w ago  12  …/api-server  Fix CORS preflight…  [archi
 
 It is automatic and reversible: `forget <id>` drops an archived session for good,
 and a session that reappears on disk un-archives itself. The original tool can no
-longer reopen it, but you can still read, `brief`, and `trace` it. This is the
+longer reopen it, but you can still read, `brief`, and search it. This is the
 part a generation-time hook can't do &mdash; it works for the sessions that
 already exist, and the ones the tool deleted while you weren't looking.
 
 **It also reclaims disk.** The index keeps a distilled copy of each session
-(the conversation and its file links, with tool calls represented by compact
+(the conversation, with tool calls represented by compact
 summary lines). In the default `summary` mode it keeps no full tool results;
 failed calls include their first output line in the compact summary. Use
 `sessionwiki tool-output full` to retain up to 8 KB of redacted tool output per
 result in a separate, non-searchable column. The index is far
 smaller than the raw stores &mdash; roughly 7&times; on the machine above (47 GB
 &rarr; ~7 GB). Delete the old raw sessions to free the space and `search`,
-`trace`, `brief`, and reading still work from the index. The tradeoff: an
+`brief`, and reading still work from the index. The tradeoff: an
 archived session is the distilled transcript, not the byte-exact original &mdash;
 which is exactly the part you want when you are hunting for the conversation that
 solved something. In the default `summary` mode that transcript keeps less tool
@@ -381,27 +351,20 @@ oh-my-claudecode` works &mdash; a filesystem signal, so a session that merely
 
 Searching and browsing AI session history is an active &mdash; and now crowded &mdash;
 space. Each of these is good at what it does; sessionwiki's bet is a **durable,
-browsable home** for your history: read it in a web UI (not just grep), trace any
-file back to the conversation that wrote it, and keep every session even after the
-tool prunes the original.
+browsable home** for your history: read it in a web UI (not just grep), and keep
+every session even after the tool prunes the original.
 
 | | Great at | What sessionwiki adds |
 |---|---|---|
 | [deja-vu](https://github.com/vshulcz/deja-vu) | Fast cross-agent recall as an MCP memory layer (SSH sync, handoff, redaction) | A web UI to read and browse, not just query; and archive mode &mdash; history survives after the tool deletes the original |
-| [Claudia](https://github.com/getAsterisk/claudia) | A polished Claude Code GUI | Cross-tool, CLI *and* web, and `trace` links code back to its conversation |
+| [Claudia](https://github.com/getAsterisk/claudia) | A polished Claude Code GUI | Cross-tool, CLI *and* web, with archive mode and curation |
 | [SpecStory](https://specstory.com) | Capturing chat history as you work | Works retroactively over the sessions you already have &mdash; no capture step |
-| [claude-code-log](https://github.com/daaain/claude-code-log) | Rendering one tool's transcripts to HTML | Every tool at once, full-text search, and provenance |
-| [cass](https://github.com/Dicklesworthstone/coding_agent_session_search) | Fast cross-tool + cross-machine search | File&rarr;conversation provenance, archived deleted sessions, curation, web UI |
-
-**`trace <file>`** goes from a file to the AI conversations that edited it
-&mdash; retroactively, no hooks, across every tool, [even for sessions your tool
-has since deleted](#nothing-gets-lost-archive-mode). A generation-time hook can't
-do that for the sessions you already have; a single-tool viewer can't do it
-across tools.
+| [claude-code-log](https://github.com/daaain/claude-code-log) | Rendering one tool's transcripts to HTML | Every tool at once, full-text search, and archive mode |
+| [cass](https://github.com/Dicklesworthstone/coding_agent_session_search) | Fast cross-tool + cross-machine search | Archived deleted sessions, curation, web UI |
 
 Honest tradeoff: a dedicated single-tool viewer will have more tool-specific
 polish than sessionwiki's adapter for that one tool. The bet is the cross-tool
-spine plus code provenance, over [twelve tools today](#supported-tools) and
+spine, over [twelve tools today](#supported-tools) and
 growing &mdash; adapters are the #1 thing [PRs](#adding-an-adapter) help with.
 
 ## Adding an adapter
@@ -431,8 +394,7 @@ drift between tool versions, so parse defensively and return what you can.
 - `clean` &mdash; reclaim disk from huge old session stores, safely
 - prebuilt binaries for every platform
 
-Shipped recently: [provenance](#trace-code-back-to-its-session) (`trace` /
-`files`) and [archive mode](#nothing-gets-lost-archive-mode).
+Shipped recently: [archive mode](#nothing-gets-lost-archive-mode).
 
 ## Contributing
 

@@ -13,7 +13,7 @@ fn seed(dir: &std::path::Path) {
     conn.execute_batch(
         "DELETE FROM files;
          INSERT INTO msgs(msgs,rowid,text) SELECT 'delete',id,text FROM messages;
-         DELETE FROM messages; DELETE FROM touched;",
+         DELETE FROM messages;",
     )
     .unwrap();
     // A title carrying an ESC and a raw newline: both must be stripped and must

@@ -1,7 +1,7 @@
 {
   "name": "@youdie006/sessionwiki",
   "version": "0.34.26",
-  "description": "Search, trace and resume your AI coding sessions (Claude Code, Codex, Gemini and more), locally.",
+  "description": "Search and resume your AI coding sessions (Claude Code, Codex, Gemini and more), locally.",
   "bin": {
     "sessionwiki": "bin/sessionwiki.js"
   },

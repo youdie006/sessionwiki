@@ -163,8 +163,6 @@ impl Adapter for Gptme {
             title,
             subagent: false,
             messages,
-            touched: Vec::new(),
-            edits: Vec::new(),
         })
     }
 }

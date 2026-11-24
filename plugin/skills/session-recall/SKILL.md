@@ -1,8 +1,8 @@
 ---
 name: session-recall
-description: Recall past AI coding sessions as long-term memory. Use at the START of any non-trivial task, and whenever the user references earlier work ("like we did before", "the X we set up", "last time", "that bug fix"), asks who/when a file was changed, or you need context that predates this conversation. Runs the local `sessionwiki` CLI to search prior sessions, pull a session briefing, and trace a file back to the sessions that edited it.
+description: Recall past AI coding sessions as long-term memory. Use at the START of any non-trivial task, and whenever the user references earlier work ("like we did before", "the X we set up", "last time", "that bug fix"), or you need context that predates this conversation. Runs the local `sessionwiki` CLI to search prior sessions, and pull a session briefing.
 user-invocable: false
-allowed-tools: Bash(sessionwiki search:*), Bash(sessionwiki brief:*), Bash(sessionwiki trace:*), Bash(command -v sessionwiki)
+allowed-tools: Bash(sessionwiki search:*), Bash(sessionwiki brief:*), Bash(command -v sessionwiki)
 ---
 
 # Session recall: use sessionwiki as long-term memory
@@ -16,7 +16,6 @@ it was already solved.
 - Starting a non-trivial task -> search for prior work on the same topic first.
 - The user references earlier work ("the auth flow we built", "last week", "that
   CORS fix") -> recall it instead of asking them to re-explain.
-- You need to know which session changed a file -> trace it.
 
 ## How to recall (run these, do not guess)
 
@@ -41,14 +40,6 @@ it was already solved.
    Returns the session's title, project, date, and a budgeted markdown
    transcript. Read it; carry forward decisions, file names, and gotchas. Do not
    re-derive what the prior session already settled.
-
-4. **Trace a file** to the sessions that touched it, newest first:
-   ```
-   sessionwiki trace --json <path-as-it-appears-in-the-editor>
-   ```
-   e.g. `sessionwiki trace --json src/auth.rs`. Returns sessions that *touched*
-   the file (not line-level authorship) - use it to find the conversation behind
-   a change, then `brief` it.
 
 ## Rules
 - Prefer recall over re-asking the user for context that already exists on disk.

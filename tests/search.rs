@@ -385,8 +385,6 @@ impl Adapter for SearchAdapter {
                 ts: None,
                 tool: None,
             }],
-            touched: vec![],
-            edits: vec![],
         })
     }
 }
