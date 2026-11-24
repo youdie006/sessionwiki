@@ -6,6 +6,17 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- Read OpenCode v2 SQLite sessions alongside v1 sessions in mixed databases,
+  retaining session keys and IDs. Separate schema readers share one inventory
+  per database; failed SQL scans skip deletion reconciliation and failed v2
+  reads do not silently fall back to legacy records. Native migration state
+  prevents stale v1 copies from resurrecting sessions deleted in v2.
+  File tracing includes paths recorded in assistant snapshots. Shell completion
+  refreshes the indexed result and activity date even when OpenCode only updates
+  the message row.
+
 ### Fixed
 
 - `scripts/install.sh` no longer prints `curl: (23) Failure writing output to
