@@ -6,6 +6,19 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- Muse Code sessions are indexed. sessionwiki reads Muse's session logs under
+  `$XDG_DATA_HOME/muse/sessions` (default `~/.local/share/muse/sessions`, on
+  every OS), so its conversations, tool calls and results appear in `list`,
+  `search` and `show`, and the files its edit tools changed appear in `trace`
+  and `blame`. Active sessions are searchable before they end. Embedders can
+  read one installation with `Muse::in_home` (Muse's configuration directory;
+  a private home keeps its sessions in `.data/muse/sessions`) or
+  `Muse::in_sessions_root`. Verified against Muse Code 1.4.24 on Linux. Muse
+  support covers discovery, indexing and reading; it does not add a native
+  `resume` command.
+
 ## [0.34.26] - 2026-11-24
 
 ### Added
