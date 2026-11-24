@@ -1504,13 +1504,17 @@ pub fn sync_with(
             let mut pending: Vec<String> = Vec::new();
             let mut restore: Vec<String> = Vec::new();
             for (key, token) in &store.keys {
+                if known.contains_key(key) && adapter.metadata_unavailable(key) {
+                    seen.push(key.clone());
+                    continue;
+                }
                 match known.get(key) {
                     Some(&(mtime, 0, true)) if mtime == *token => restore.push(key.clone()),
                     Some(&(mtime, 0, false)) if mtime == *token => {}
                     old if old.is_some_and(|row| row.2 || row.0 < 0 || row.1 < 0)
                         || since.is_none_or(|s| {
                             adapter
-                                .modified_at(key)
+                                .sync_activity_at(key)
                                 .map_or(*token, |time| time.timestamp())
                                 >= s
                         }) =>

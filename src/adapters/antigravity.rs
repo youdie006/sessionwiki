@@ -9,13 +9,14 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::hash::{Hash, Hasher};
+
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
 pub struct Antigravity {
     home: Option<PathBuf>,
     variant: &'static str,
+    degraded: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
     summaries: std::sync::Arc<std::sync::Mutex<HashMap<String, Option<Summary>>>>,
 }
 impl Default for Antigravity {
@@ -27,6 +28,7 @@ impl Antigravity {
     pub fn ide() -> Self {
         Self {
             home: None,
+            degraded: Default::default(),
             variant: "antigravity",
             summaries: Default::default(),
         }
@@ -34,6 +36,7 @@ impl Antigravity {
     pub fn cli() -> Self {
         Self {
             home: None,
+            degraded: Default::default(),
             variant: "antigravity-cli",
             summaries: Default::default(),
         }
@@ -120,17 +123,32 @@ fn preferred(dir: &Path) -> Result<PathBuf> {
     best.map(|(path, _, _)| path)
         .with_context(|| format!("no readable transcript in {}", dir.display()))
 }
+struct Token(u64);
+impl Token {
+    fn new() -> Self {
+        Self(0xcbf29ce484222325)
+    }
+    fn bytes(&mut self, bytes: &[u8]) {
+        for b in (bytes.len() as u64).to_le_bytes().iter().chain(bytes) {
+            self.0 = (self.0 ^ u64::from(*b)).wrapping_mul(0x100000001b3);
+        }
+    }
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
 fn change_token(files: &[PathBuf]) -> Result<i64> {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut h = Token::new();
     for path in files {
-        path.file_name().hash(&mut h);
+        h.bytes(path.as_os_str().as_encoded_bytes());
         let m = path.metadata()?;
-        m.len().hash(&mut h);
-        m.modified()?
+        h.bytes(&m.len().to_le_bytes());
+        let nanos = m
+            .modified()?
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_nanos()
-            .hash(&mut h);
+            .as_nanos();
+        h.bytes(&nanos.to_le_bytes());
     }
     Ok(((h.finish() & ((1 << 62) - 1)) | (1 << 62)) as i64)
 }
@@ -160,19 +178,15 @@ impl Adapter for Antigravity {
         let mut keys = Vec::new();
         let mut files = Vec::new();
         let mut had_error = false;
-        let summaries =
-            match read_summaries(&root.parent()?.join("conversation_summaries.db"), None) {
-                Ok(summaries) => summaries,
-                Err(_) => {
-                    // A transient metadata failure must not replace indexed titles,
-                    // workspaces or parent relationships with transcript fallbacks.
-                    return Some(Store {
-                        keys,
-                        files,
-                        had_error: true,
-                    });
-                }
-            };
+        let db = root.parent()?.join("conversation_summaries.db");
+        let (summaries, whole_failure) = match read_summaries(&db, None) {
+            Ok(rows) => (rows, false),
+            Err(e) => {
+                eprintln!("[antigravity] summary DB {} failed: {e:#}; existing indexed metadata preserved; new conversations indexed with transcript metadata", db.display());
+                (HashMap::new(), true)
+            }
+        };
+        let mut degraded = HashSet::new();
         let mut cache = HashMap::new();
         match std::fs::read_dir(&root) {
             Err(_) => had_error = true,
@@ -202,9 +216,21 @@ impl Adapter for Antigravity {
                                 .and_then(|n| n.to_str())
                                 .and_then(|id| summaries.get(id))
                                 .cloned();
-                            let mut h = std::collections::hash_map::DefaultHasher::new();
-                            token.hash(&mut h);
-                            summary.hash(&mut h);
+                            if whole_failure || summary.as_ref().is_some_and(|s| s.degraded) {
+                                degraded.insert(key.clone());
+                            }
+                            let mut h = Token::new();
+                            h.bytes(&token.to_le_bytes());
+                            h.bytes(&[u8::from(summary.is_some())]);
+                            if let Some(s) = &summary {
+                                for field in [&s.title, &s.project, &s.parent] {
+                                    h.bytes(field.as_bytes());
+                                }
+                                h.bytes(&[u8::from(s.updated.is_some())]);
+                                if let Some(t) = s.updated {
+                                    h.bytes(&t.timestamp_millis().to_le_bytes());
+                                }
+                            }
                             let token = ((h.finish() & ((1 << 62) - 1)) | (1 << 62)) as i64;
                             cache.insert(key.clone(), summary);
                             keys.push((key, token));
@@ -216,6 +242,7 @@ impl Adapter for Antigravity {
                 }
             }
         }
+        *self.degraded.lock().unwrap_or_else(|e| e.into_inner()) = degraded;
         keys.sort();
         *self.summaries.lock().unwrap_or_else(|e| e.into_inner()) = cache;
         Some(Store {
@@ -224,6 +251,12 @@ impl Adapter for Antigravity {
             had_error,
         })
     }
+    fn metadata_unavailable(&self, key: &str) -> bool {
+        self.degraded
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(key)
+    }
     fn modified_at(&self, key: &str) -> Option<DateTime<Utc>> {
         let log_time = sources(Path::new(key))
             .ok()?
@@ -231,21 +264,21 @@ impl Adapter for Antigravity {
             .filter_map(|p| p.metadata().ok()?.modified().ok())
             .max()
             .map(DateTime::<Utc>::from);
+        log_time
+            .into_iter()
+            .chain(self.summary(key).and_then(|s| s.updated))
+            .max()
+    }
+    fn sync_activity_at(&self, key: &str) -> Option<DateTime<Utc>> {
         let db = Path::new(key)
             .parent()?
             .parent()?
             .join("conversation_summaries.db");
-        let metadata_time = [db.clone(), PathBuf::from(format!("{}-wal", db.display()))]
+        [db.clone(), PathBuf::from(format!("{}-wal", db.display()))]
             .iter()
             .filter_map(|p| p.metadata().ok()?.modified().ok())
-            .max()
-            .map(DateTime::<Utc>::from);
-        log_time
-            .into_iter()
-            .chain(self.summary(key).and_then(|s| s.updated))
-            // Row timestamps need not advance on metadata edits or deletion.
-            // Database freshness affects eligibility, never the per-row token.
-            .chain(metadata_time)
+            .map(DateTime::<Utc>::from)
+            .chain(self.modified_at(key))
             .max()
     }
     fn parse_key(&self, key: &str) -> Result<Session> {
@@ -271,6 +304,7 @@ impl Adapter for Antigravity {
 }
 #[derive(Clone, Debug, Hash)]
 struct Summary {
+    degraded: bool,
     title: String,
     project: String,
     parent: String,
@@ -313,30 +347,28 @@ fn read_summaries(db: &Path, id: Option<&str>) -> Result<HashMap<String, Summary
         Err(e) => return Err(e.into()),
     }
     let read = |conn: Connection| -> Result<HashMap<String, Summary>> {
-        let has_parent = conn
+        let columns = conn
             .prepare("PRAGMA table_info(conversation_summaries)")?
             .query_map([], |r| r.get::<_, String>(1))?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-            .iter()
-            .any(|s| s == "parent_conversation_id");
-        let has_updated = conn
-            .prepare("PRAGMA table_info(conversation_summaries)")?
-            .query_map([], |r| r.get::<_, String>(1))?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-            .iter()
-            .any(|s| s == "last_modified_time");
-        let updated = if has_updated {
-            "last_modified_time"
-        } else {
-            "NULL"
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        anyhow::ensure!(
+            columns.iter().any(|c| c == "conversation_id"),
+            "missing conversation_summaries/conversation_id"
+        );
+        let projection = |name: &str| {
+            if columns.iter().any(|c| c == name) {
+                name.to_owned()
+            } else {
+                "NULL".to_owned()
+            }
         };
-        let parent = if has_parent {
-            "parent_conversation_id"
-        } else {
-            "''"
-        };
+        let title = projection("title");
+        let workspace = projection("workspace_uris");
+        let parent = projection("parent_conversation_id");
+        let updated = projection("last_modified_time");
+        let missing = [title.as_str(), workspace.as_str(), parent.as_str()].contains(&"NULL");
         let mut stmt = conn.prepare(&format!(
-            "SELECT conversation_id,title,workspace_uris,{parent},{updated} FROM conversation_summaries {}",
+            "SELECT conversation_id,{title},{workspace},{parent},{updated} FROM conversation_summaries {}",
             if id.is_some() {
                 "WHERE conversation_id=?1"
             } else {
@@ -345,16 +377,27 @@ fn read_summaries(db: &Path, id: Option<&str>) -> Result<HashMap<String, Summary
         ))?;
         let rows = stmt.query_map([id], |r| {
             Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                r.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                r.get::<_, String>(0).ok(),
+                r.get::<_, Option<String>>(1),
+                r.get::<_, Option<String>>(2),
+                r.get::<_, Option<String>>(3),
                 r.get::<_, rusqlite::types::Value>(4)?,
             ))
         })?;
         let mut out = HashMap::new();
         for row in rows {
             let (id, title, uris, parent, updated) = row?;
+            let Some(id) = id else {
+                eprintln!("[antigravity] skipped summary with invalid ID");
+                continue;
+            };
+            let degraded = missing || title.is_err() || uris.is_err() || parent.is_err();
+            if degraded {
+                eprintln!("[antigravity] summary {id} has unavailable fields; existing indexed metadata preserved; fresh sessions use available fields");
+            }
+            let title = title.ok().flatten().unwrap_or_default();
+            let uris = uris.ok().flatten().unwrap_or_default();
+            let parent = parent.ok().flatten().unwrap_or_default();
             let updated = match updated {
                 rusqlite::types::Value::Text(s) => {
                     parse_ts(&s.replacen(' ', "T", 1)).or_else(|| {
@@ -377,6 +420,7 @@ fn read_summaries(db: &Path, id: Option<&str>) -> Result<HashMap<String, Summary
             out.insert(
                 id,
                 Summary {
+                    degraded,
                     title,
                     project,
                     parent,
@@ -427,6 +471,62 @@ fn stamp(v: &Value) -> Option<DateTime<Utc>> {
 fn kind(v: &Value) -> &str {
     v.get("type").and_then(Value::as_str).unwrap_or("")
 }
+// Sort indexed entries within their original slots; missing indices retain line order.
+fn order_steps(steps: &mut [Value]) {
+    let mut ordered: Vec<Value> = steps
+        .iter()
+        .filter(|v| record_id(v).is_some())
+        .cloned()
+        .collect();
+    ordered.sort_by_key(record_id);
+    let mut ordered = ordered.into_iter();
+    for step in steps {
+        if record_id(step).is_some() {
+            *step = ordered.next().unwrap();
+        }
+    }
+}
+fn is_tool_result_step(v: &Value) -> bool {
+    if matches!(
+        v.get("source").and_then(Value::as_str),
+        Some("SYSTEM" | "USER_EXPLICIT")
+    ) {
+        return false;
+    }
+    if matches!(
+        kind(v),
+        "" | "UNSPECIFIED"
+            | "USER_INPUT"
+            | "PLANNER_RESPONSE"
+            | "EPHEMERAL_MESSAGE"
+            | "CONVERSATION_HISTORY"
+            | "CHECKPOINT"
+            | "SYSTEM_MESSAGE"
+            | "TASK_BOUNDARY"
+            | "KNOWLEDGE_ARTIFACTS"
+            | "KNOWLEDGE_GENERATION"
+            | "DIRECTORY_RULES"
+            | "TOOL_CALL_PROPOSAL"
+            | "TOOL_CALL_CHOICE"
+            | "PROPOSAL_FEEDBACK"
+            | "MANAGER_FEEDBACK"
+            | "SUGGESTED_RESPONSES"
+            | "CODE_ACKNOWLEDGEMENT"
+            | "ERROR_MESSAGE"
+            | "WAIT"
+            | "PLAN_INPUT"
+            | "BRAIN_UPDATE"
+            | "KI_INSERTION"
+            | "FINISH"
+            | "DUMMY"
+            | "CIDER_AGENT_DUMMY"
+    ) {
+        return false;
+    }
+    v.get("status").and_then(Value::as_str).is_some()
+        || v.get("is_error").and_then(Value::as_bool).is_some()
+        || v.get("content").and_then(Value::as_str).is_some()
+}
 fn record_id(v: &Value) -> Option<u64> {
     v.get("step_index").and_then(Value::as_u64)
 }
@@ -475,11 +575,20 @@ fn edit(name: &str, input: &Value, ts: Option<DateTime<Utc>>) -> Option<EditEven
     .iter()
     .find_map(|k| input.get(k).and_then(Value::as_str))
     .unwrap_or("");
+    let old = input
+        .get("TargetContent")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let text = if old.is_empty() {
+        text.to_owned()
+    } else {
+        format!("-{old}\n+{text}")
+    };
     Some(EditEvent {
         path: clean_path(path)?,
         kind,
         ts,
-        snippet: redacted_truncate(text, 200),
+        snippet: redacted_truncate(&text, 200),
     })
 }
 struct Pending {
@@ -491,13 +600,14 @@ fn parse_transcript(path: &Path, key: &str) -> Result<Session> {
         serde_json::from_str::<Value>(line)
             .is_ok_and(|v| matches!(kind(&v), "USER_INPUT" | "PLANNER_RESPONSE"))
     })?;
-    let retained: Vec<Value> = lines
+    let mut retained: Vec<Value> = lines
         .iter()
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect();
+    order_steps(&mut retained);
     let wanted: HashSet<u64> = retained
         .iter()
-        .filter(|v| kind(v) == "GENERIC")
+        .filter(|v| is_tool_result_step(v))
         .filter_map(record_id)
         .collect();
     let mut links: HashMap<u64, String> = HashMap::new();
@@ -506,12 +616,20 @@ fn parse_transcript(path: &Path, key: &str) -> Result<Session> {
     let mut started: Option<DateTime<Utc>> = None;
     let mut ended: Option<DateTime<Utc>> = None;
     let mut project = None;
-    // Stream the complete source for provenance, including middle tool steps
-    // outside a conversation window. Pending input is reduced to bounded edits.
+    // Order the complete source independently of the retained conversation window.
+    // This also preserves edit evidence from steps outside that window.
+    let mut all = Vec::new();
     crate::util::for_each_line(path, |line| {
-        let Ok(v) = serde_json::from_str::<Value>(line) else {
-            return;
-        };
+        if let Ok(mut v) = serde_json::from_str::<Value>(line) {
+            // Tool output can be large; only the retained window needs its text.
+            if let Some(o) = v.as_object_mut() {
+                o.remove("content");
+            }
+            all.push(v);
+        }
+    })?;
+    order_steps(&mut all);
+    for v in all {
         let ts = stamp(&v);
         if let Some(t) = ts {
             started = Some(started.map_or(t, |s| s.min(t)));
@@ -553,7 +671,7 @@ fn parse_transcript(path: &Path, key: &str) -> Result<Session> {
                     }
                 }
             }
-            "GENERIC" => {
+            _ if is_tool_result_step(&v) => {
                 if let Some(call) = pending.pop_front() {
                     if v.get("status").and_then(Value::as_str) == Some("DONE")
                         && !v.get("is_error").and_then(Value::as_bool).unwrap_or(false)
@@ -570,7 +688,19 @@ fn parse_transcript(path: &Path, key: &str) -> Result<Session> {
             }
             _ => {}
         }
-    })?;
+    }
+    let retained_calls: HashSet<String> = retained
+        .iter()
+        .filter(|v| kind(v) == "PLANNER_RESPONSE")
+        .flat_map(|v| {
+            v.get("tool_calls")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .map(move |(i, _)| format!("{}:{i}", record_id(v).unwrap_or(0)))
+        })
+        .collect();
     let mut messages = Vec::new();
     for v in &retained {
         let ts = stamp(v);
@@ -613,11 +743,15 @@ fn parse_transcript(path: &Path, key: &str) -> Result<Session> {
                     }
                 }
             }
-            "GENERIC" => {
+            _ if is_tool_result_step(v) => {
                 let call_id = record_id(v).and_then(|s| links.get(&s)).cloned();
                 // A window may have dropped the corresponding call. Do not
                 // pair its output with an unrelated retained tool invocation.
-                if windowed && call_id.is_none() {
+                if windowed
+                    && call_id
+                        .as_ref()
+                        .is_none_or(|id| !retained_calls.contains(id))
+                {
                     continue;
                 }
                 messages.push(Message::tool_result(

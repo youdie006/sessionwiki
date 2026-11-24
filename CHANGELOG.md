@@ -13,6 +13,10 @@ semantic versioning once it reaches 1.0.
   and full logs; full-stream edit evidence survives conversation windowing.
   Native summary metadata supplies titles, workspaces and parent relationships.
 
+### Fixed
+
+- Archived sessions read from the index even when their original path still exists.
+
 ## [0.34.26] - 2026-11-24
 
 ### Added

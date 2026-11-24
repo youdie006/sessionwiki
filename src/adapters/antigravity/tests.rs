@@ -292,3 +292,81 @@ fn nullable_summary_fields_do_not_discard_other_conversations() {
         "unrelated metadata must not invalidate this conversation"
     );
 }
+
+const AGY_1014: &str = include_str!("../../../tests/fixtures/antigravity/agy-1.0.14-linux.jsonl");
+#[test]
+fn typed_capture_pairs_out_of_order_results_and_edits() {
+    let h = tempfile::tempdir().unwrap();
+    let p = transcript(
+        h.path(),
+        "antigravity-cli",
+        "s",
+        "transcript.jsonl",
+        AGY_1014,
+    );
+    let s = parse_transcript(&p, "s").unwrap();
+    let encoded = serde_json::to_value(&s.messages).unwrap().to_string();
+    for id in ["2:0", "2:1", "6:0"] {
+        assert!(encoded.matches(id).count() >= 2, "{id}: {encoded}");
+    }
+    assert_eq!(s.edits.len(), 1);
+    assert_eq!(s.edits[0].kind, EditKind::Edit);
+    assert_eq!(s.touched, vec!["/work/sample.txt"]);
+    assert!(s.edits[0].snippet.contains("beta"));
+    assert!(s.edits[0].snippet.contains("gamma"));
+    assert!(!encoded.contains("Resuming from a compaction"));
+}
+#[test]
+fn typed_failure_and_bookkeeping_do_not_create_edits() {
+    let h = tempfile::tempdir().unwrap();
+    for (status, error) in [
+        ("ERROR", false),
+        ("DONE", true),
+        ("RUNNING", false),
+        ("PENDING", false),
+    ] {
+        let mut steps: Vec<Value> = AGY_1014
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        for v in &mut steps {
+            if kind(v) == "CODE_ACTION" {
+                v["status"] = json!(status);
+                v["is_error"] = json!(error);
+            }
+        }
+        steps.push(json!({"step_index": 3, "type":"TASK_BOUNDARY", "status":"DONE"}));
+        steps.push(json!({"step_index": 3, "type":"SYSTEM_MESSAGE", "status":"DONE"}));
+        let data = steps
+            .iter()
+            .map(|v| v.to_string() + "\n")
+            .collect::<String>();
+        let p = transcript(h.path(), "antigravity-cli", "s", "transcript.jsonl", &data);
+        assert!(parse_transcript(&p, "s").unwrap().edits.is_empty());
+    }
+}
+#[test]
+fn missing_optional_columns_keep_available_metadata_and_activity() {
+    let h = tempfile::tempdir().unwrap();
+    let p = transcript(h.path(), "antigravity-cli", "s", "transcript.jsonl", LIVE);
+    std::fs::File::open(&p)
+        .unwrap()
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1600000000)),
+        )
+        .unwrap();
+    let c = rusqlite::Connection::open(h.path().join("antigravity-cli/conversation_summaries.db"))
+        .unwrap();
+    c.execute_batch("CREATE TABLE conversation_summaries(conversation_id TEXT,title TEXT,parent_conversation_id TEXT); INSERT INTO conversation_summaries VALUES('s','Native','parent')").unwrap();
+    let a = Antigravity::cli_in_home(h.path());
+    let store = a.store().unwrap();
+    let key = &store.keys[0].0;
+    let s = a.parse_key(key).unwrap();
+    assert_eq!(s.title, "Native");
+    assert!(s.subagent);
+    assert_eq!(a.modified_at(key).unwrap().timestamp(), 1600000000);
+    assert!(a.sync_activity_at(key) > a.modified_at(key));
+    let report = crate::adapters::report(&a).unwrap();
+    assert_eq!(report.newest.unwrap().timestamp(), 1600000000);
+}

@@ -15,3 +15,4 @@ The public `in_home` / `cli_in_home` constructors take the Gemini configuration
 directory (normally `~/.gemini`, or the path passed to `agy --gemini-dir`).
 Both variants keep their own reconciliation scope. Summary SQLite metadata is
 optional; transcripts remain the authority for conversation discovery.
+agy-1.0.14-linux.jsonl is a verbatim agy 1.0.14 Linux capture against synthetic /work/sample.txt, including out-of-order flushes and typed results.

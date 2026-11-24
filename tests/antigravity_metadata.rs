@@ -2,8 +2,10 @@ use sessionwiki::{
     adapters::{Adapter, Antigravity},
     index,
 };
+static INDEX_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[test]
 fn bounded_sync_indexes_new_summary_metadata_on_an_old_transcript() {
+    let _guard = INDEX_ENV.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("gemini");
     let p = home.join("antigravity-cli/brain/s/.system_generated/logs/transcript.jsonl");
@@ -59,8 +61,8 @@ fn bounded_sync_indexes_new_summary_metadata_on_an_old_transcript() {
         .execute_batch("ALTER TABLE conversation_summaries RENAME TO unavailable_summaries")
         .unwrap();
     let failed = adapters[0].store().unwrap();
-    assert!(failed.had_error);
-    assert!(failed.keys.is_empty());
+    assert!(!failed.had_error);
+    assert_eq!(failed.keys.len(), 1);
     index::sync_with(&mut conn, &adapters, None).unwrap();
     let (title, archived): (String, bool) = conn
         .query_row(
@@ -89,7 +91,7 @@ fn bounded_sync_indexes_new_summary_metadata_on_an_old_transcript() {
     native
         .execute("UPDATE conversation_summaries SET title=x'0102'", [])
         .unwrap();
-    assert!(adapters[0].store().unwrap().had_error);
+    assert!(adapters[0].store().is_some());
     index::sync_with(&mut conn, &adapters, None).unwrap();
     let title: String = conn
         .query_row(
@@ -127,4 +129,78 @@ fn bounded_sync_indexes_new_summary_metadata_on_an_old_transcript() {
         )
         .unwrap();
     assert_eq!(title, "Inspect the example project");
+}
+
+#[test]
+fn degraded_databases_allow_new_sessions_and_root_errors_preserve_live_rows() {
+    let _guard = INDEX_ENV.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("gemini");
+    let brain = home.join("antigravity-cli/brain");
+    let write = |id: &str| {
+        let p = brain.join(id).join("transcript.jsonl");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(
+            p,
+            include_str!("fixtures/antigravity/agy-1.0.14-linux.jsonl"),
+        )
+        .unwrap();
+    };
+    write("old");
+    let db = home.join("antigravity-cli/conversation_summaries.db");
+    let native = rusqlite::Connection::open(&db).unwrap();
+    native.execute_batch("CREATE TABLE conversation_summaries(conversation_id TEXT,title TEXT,workspace_uris TEXT,parent_conversation_id TEXT); INSERT INTO conversation_summaries VALUES('old','Preserved','[]','parent')").unwrap();
+    std::env::set_var("SESSIONWIKI_DATA", dir.path().join("index"));
+    let mut conn = index::open().unwrap();
+    let adapters: Vec<Box<dyn Adapter>> = vec![Box::new(Antigravity::cli_in_home(&home))];
+    index::sync_with(&mut conn, &adapters, None).unwrap();
+    write("sibling");
+    native.execute_batch("INSERT INTO conversation_summaries VALUES('sibling','Good sibling','[]',''); UPDATE conversation_summaries SET title=x'0102' WHERE conversation_id='old'").unwrap();
+    index::sync_with(&mut conn, &adapters, None).unwrap();
+    let title: String = conn
+        .query_row(
+            "SELECT title FROM files WHERE path LIKE '%/sibling'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(title, "Good sibling");
+    native
+        .execute_batch(
+            "UPDATE conversation_summaries SET title='Preserved' WHERE conversation_id='old'",
+        )
+        .unwrap();
+    index::sync_with(&mut conn, &adapters, None).unwrap();
+    native.close().unwrap();
+    for bytes in [b"".as_slice(), b"not sqlite".as_slice()] {
+        std::fs::write(&db, bytes).unwrap();
+        write("new");
+        index::sync_with(&mut conn, &adapters, None).unwrap();
+        let title: String = conn
+            .query_row("SELECT title FROM files WHERE path LIKE '%/old'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(title, "Preserved");
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM files WHERE archived_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 3);
+    }
+    std::fs::rename(&brain, brain.with_extension("saved")).unwrap();
+    std::fs::write(&brain, "not a directory").unwrap();
+    assert!(adapters[0].store().unwrap().had_error);
+    index::sync_with(&mut conn, &adapters, None).unwrap();
+    let count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM files WHERE archived_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 3);
 }

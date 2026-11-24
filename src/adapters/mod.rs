@@ -107,6 +107,15 @@ pub trait Adapter {
     /// `scan` uses it for the store's time span. Keep this metadata-only; it
     /// must not parse the conversation. `None` preserves the legacy token
     /// interpretation for adapters whose tokens already encode timestamps.
+    /// Metadata is temporarily unavailable; preserve existing indexed rows.
+    fn metadata_unavailable(&self, _key: &str) -> bool {
+        false
+    }
+    /// Most recent timestamp relevant to bounded-sync eligibility.
+    /// Defaults to activity; shared metadata stores may fold in store freshness.
+    fn sync_activity_at(&self, key: &str) -> Option<DateTime<Utc>> {
+        self.modified_at(key)
+    }
     fn modified_at(&self, _key: &str) -> Option<chrono::DateTime<chrono::Utc>> {
         None
     }
