@@ -17,6 +17,17 @@ semantic versioning once it reaches 1.0.
   refreshes the indexed result and activity date even when OpenCode only updates
   the message row.
 
+### Fixed
+
+- `scripts/install.sh` no longer prints `curl: (23) Failure writing output to
+  destination` on a successful install. It looked up the latest tag with
+  `grep -m1`, which stops reading at the first match, so curl could fail
+  writing the rest of the GitHub API response. Whether it did depended on how
+  the response arrived, so the line showed up on some installs and not others.
+  The lookup now reads the whole response. The README's `curl | sh` command
+  fetches the script from `main`, so the fix reaches new installs without a
+  release.
+
 ## [0.34.25] - 2026-11-23
 
 ### Fixed
