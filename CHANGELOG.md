@@ -6,16 +6,25 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.34.26] - 2026-11-24
+
 ### Added
 
-- Read OpenCode v2 SQLite sessions alongside v1 sessions in mixed databases,
-  retaining session keys and IDs. Separate schema readers share one inventory
-  per database; failed SQL scans skip deletion reconciliation and failed v2
-  reads do not silently fall back to legacy records. Native migration state
-  prevents stale v1 copies from resurrecting sessions deleted in v2.
-  File tracing includes paths recorded in assistant snapshots. Shell completion
-  refreshes the indexed result and activity date even when OpenCode only updates
-  the message row.
+- OpenCode 2.x sessions are indexed (#131, thanks @jbellis and
+  @AlexZander85). OpenCode 2.x keeps its sessions in `session_v2` and
+  `session_message`, next to the v1 tables it migrated from, and sessionwiki
+  read only the v1 tables, so sessions started in OpenCode 2.x were missing
+  from `list`, `search` and `trace`. Both generations are now read from the
+  same database, with the same session IDs and keys as before. OpenCode's own
+  migration state decides which v1 rows are still current, so a v1 copy cannot
+  bring back a session you deleted in 2.x, and a v2 row that cannot be read is
+  reported instead of falling back to its v1 copy. Files recorded in assistant
+  snapshots count as touched, so `trace` also finds sessions whose edits came
+  through shell commands or patches. A shell command that finishes later
+  refreshes the session's indexed result and date. Restart any running
+  `sessionwiki mcp` servers after upgrading: an older server reads only the v1
+  tables, so on a store OpenCode 2.x has migrated, its syncs would keep
+  re-indexing these sessions the old way.
 
 ### Fixed
 
