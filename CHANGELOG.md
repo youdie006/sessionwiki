@@ -6,6 +6,17 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Added
+
+- Grok Build sessions are indexed. sessionwiki reads each conversation under
+  `~/.grok/sessions/<encoded cwd>/<session>/` (or `$GROK_HOME/sessions`):
+  messages, tool calls and results, the session title and project, and the
+  files `search_replace` changed, so `list`, `search`, `trace` and `blame`
+  cover Grok Build like the other tools. The reader was written against
+  sessions from Grok Build 1.0.92 on Linux. An edit counts only after its
+  result arrives without an error. The environment and skill reminders Grok
+  Build adds to a conversation are not indexed as your prompts.
+
 ## [0.34.26] - 2026-11-24
 
 ### Added
