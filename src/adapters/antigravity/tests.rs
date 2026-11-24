@@ -366,7 +366,7 @@ fn missing_optional_columns_keep_available_metadata_and_activity() {
     assert_eq!(s.title, "Native");
     assert!(s.subagent);
     assert_eq!(a.modified_at(key).unwrap().timestamp(), 1600000000);
-    assert!(a.sync_activity_at(key) > a.modified_at(key));
+    assert!(a.sync_activity_at(key, true) > a.modified_at(key));
     let report = crate::adapters::report(&a).unwrap();
     assert_eq!(report.newest.unwrap().timestamp(), 1600000000);
 }

@@ -204,3 +204,146 @@ fn degraded_databases_allow_new_sessions_and_root_errors_preserve_live_rows() {
         .unwrap();
     assert_eq!(count, 3);
 }
+
+#[test]
+fn degraded_fields_preserve_metadata_without_blocking_transcript_updates_or_restore() {
+    let _guard = INDEX_ENV.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("gemini");
+    let p = home.join("antigravity-cli/brain/s/transcript.jsonl");
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    let capture = include_str!("fixtures/antigravity/agy-1.0.14-linux.jsonl");
+    std::fs::write(&p, capture).unwrap();
+    let db = home.join("antigravity-cli/conversation_summaries.db");
+    let native = rusqlite::Connection::open(&db).unwrap();
+    native.execute_batch("CREATE TABLE conversation_summaries(conversation_id TEXT,title TEXT,workspace_uris TEXT,parent_conversation_id TEXT); INSERT INTO conversation_summaries VALUES('s','Initial','[\"file:///original\"]','parent')").unwrap();
+    std::env::set_var("SESSIONWIKI_DATA", dir.path().join("index"));
+    let mut conn = index::open().unwrap();
+    let adapters: Vec<Box<dyn Adapter>> = vec![Box::new(Antigravity::cli_in_home(&home))];
+    index::sync_with(&mut conn, &adapters, None).unwrap();
+    native.execute_batch("ALTER TABLE conversation_summaries DROP COLUMN workspace_uris; UPDATE conversation_summaries SET title='New title'").unwrap();
+    let appended = format!(
+        "{capture}\n{}\n{}\n{}\n",
+        serde_json::json!({"step_index":9,"type":"USER_INPUT","content":"Unique appended message"}),
+        serde_json::json!({"step_index":10,"type":"PLANNER_RESPONSE","tool_calls":[{"name":"replace_file_content","args":{"TargetFile":"/work/second.txt","TargetContent":"old","ReplacementContent":"new"}}]}),
+        serde_json::json!({"step_index":11,"type":"CODE_ACTION","status":"DONE","content":"success"})
+    );
+    std::fs::write(&p, &appended).unwrap();
+    index::sync_with(&mut conn, &adapters, None).unwrap();
+    let metadata = |c: &rusqlite::Connection| {
+        c.query_row(
+            "SELECT title,project,kind='sub' FROM files LIMIT 1",
+            [],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, bool>(2)?,
+                ))
+            },
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        metadata(&conn),
+        ("New title".into(), "/original".into(), true)
+    );
+    let count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM messages WHERE text LIKE '%Unique appended%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(count > 0);
+    let edits: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM edits WHERE path='/work/second.txt'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(edits > 0);
+    native.close().unwrap();
+    for bytes in [b"".as_slice(), b"corrupt".as_slice()] {
+        std::fs::write(&db, bytes).unwrap();
+        // Append a distinct edit while metadata is wholly unreadable.
+        let extra = appended
+            .replace("second.txt", "third.txt")
+            .replace("Unique appended", "Unique corrupt");
+        std::fs::write(&p, extra).unwrap();
+        conn.execute_batch("UPDATE files SET archived_at='2026-01-01'")
+            .unwrap();
+        index::sync_with(&mut conn, &adapters, None).unwrap();
+        assert_eq!(
+            metadata(&conn),
+            ("New title".into(), "/original".into(), true)
+        );
+        let live: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM files WHERE archived_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(live, 1);
+        // Indexed JSON retains the changed transcript, including new edit evidence.
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM messages WHERE text LIKE '%Unique corrupt%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(count > 0);
+        let edits: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM edits WHERE path='/work/third.txt'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(edits > 0);
+    }
+}
+
+#[test]
+fn first_bounded_sync_does_not_admit_old_unindexed_rows_from_db_freshness() {
+    let _guard = INDEX_ENV.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("gemini");
+    let p = home.join("antigravity-cli/brain/old/transcript.jsonl");
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(
+        &p,
+        include_str!("fixtures/antigravity/agy-1.0.14-linux.jsonl"),
+    )
+    .unwrap();
+    std::fs::File::open(&p)
+        .unwrap()
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1600000000)),
+        )
+        .unwrap();
+    let native =
+        rusqlite::Connection::open(home.join("antigravity-cli/conversation_summaries.db")).unwrap();
+    native.execute_batch("CREATE TABLE conversation_summaries(conversation_id TEXT,title TEXT,workspace_uris TEXT,parent_conversation_id TEXT); INSERT INTO conversation_summaries VALUES('old','Old','[]','')").unwrap();
+    std::env::set_var("SESSIONWIKI_DATA", dir.path().join("index"));
+    let mut conn = index::open().unwrap();
+    let adapters: Vec<Box<dyn Adapter>> = vec![Box::new(Antigravity::cli_in_home(&home))];
+    index::sync_with(&mut conn, &adapters, Some(1700000000)).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM files", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
+    index::sync_with(&mut conn, &adapters, None).unwrap();
+    native
+        .execute("UPDATE conversation_summaries SET title='Changed'", [])
+        .unwrap();
+    index::sync_with(&mut conn, &adapters, Some(1700000000)).unwrap();
+    let title: String = conn
+        .query_row("SELECT title FROM files", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(title, "Changed");
+}

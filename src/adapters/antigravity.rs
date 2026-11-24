@@ -1,7 +1,7 @@
 //! Antigravity IDE and agy CLI native JSONL histories.
 use super::{
     bounded_redacted_output, clean_path, dedup_paths, parse_ts, redacted_truncate, root_scope,
-    title_from_messages, Adapter, Discovered, Store,
+    title_from_messages, Adapter, Discovered, Store, UnavailableMetadata,
 };
 use crate::model::{EditEvent, EditKind, Message, Role, Session, ToolCall, ToolResult};
 use crate::util::{canonicalize_as_recorded, short_id};
@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 pub struct Antigravity {
     home: Option<PathBuf>,
     variant: &'static str,
-    degraded: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
+    degraded: std::sync::Arc<std::sync::Mutex<HashMap<String, UnavailableMetadata>>>,
     summaries: std::sync::Arc<std::sync::Mutex<HashMap<String, Option<Summary>>>>,
 }
 impl Default for Antigravity {
@@ -186,7 +186,7 @@ impl Adapter for Antigravity {
                 (HashMap::new(), true)
             }
         };
-        let mut degraded = HashSet::new();
+        let mut degraded = HashMap::new();
         let mut cache = HashMap::new();
         match std::fs::read_dir(&root) {
             Err(_) => had_error = true,
@@ -216,10 +216,22 @@ impl Adapter for Antigravity {
                                 .and_then(|n| n.to_str())
                                 .and_then(|id| summaries.get(id))
                                 .cloned();
-                            if whole_failure || summary.as_ref().is_some_and(|s| s.degraded) {
-                                degraded.insert(key.clone());
-                            }
+                            let unavailable = if whole_failure {
+                                UnavailableMetadata {
+                                    title: true,
+                                    project: true,
+                                    subagent: true,
+                                }
+                            } else {
+                                summary.as_ref().map(|s| s.degraded).unwrap_or_default()
+                            };
+                            degraded.insert(key.clone(), unavailable);
                             let mut h = Token::new();
+                            h.bytes(&[
+                                u8::from(unavailable.title),
+                                u8::from(unavailable.project),
+                                u8::from(unavailable.subagent),
+                            ]);
                             h.bytes(&token.to_le_bytes());
                             h.bytes(&[u8::from(summary.is_some())]);
                             if let Some(s) = &summary {
@@ -251,11 +263,13 @@ impl Adapter for Antigravity {
             had_error,
         })
     }
-    fn metadata_unavailable(&self, key: &str) -> bool {
+    fn unavailable_metadata(&self, key: &str) -> UnavailableMetadata {
         self.degraded
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .contains(key)
+            .get(key)
+            .copied()
+            .unwrap_or_default()
     }
     fn modified_at(&self, key: &str) -> Option<DateTime<Utc>> {
         let log_time = sources(Path::new(key))
@@ -269,7 +283,10 @@ impl Adapter for Antigravity {
             .chain(self.summary(key).and_then(|s| s.updated))
             .max()
     }
-    fn sync_activity_at(&self, key: &str) -> Option<DateTime<Utc>> {
+    fn sync_activity_at(&self, key: &str, already_indexed: bool) -> Option<DateTime<Utc>> {
+        if !already_indexed {
+            return self.modified_at(key);
+        }
         let db = Path::new(key)
             .parent()?
             .parent()?
@@ -302,9 +319,9 @@ impl Adapter for Antigravity {
         Ok(self.with_summary(parse_transcript(path, &key)?, &key))
     }
 }
-#[derive(Clone, Debug, Hash)]
+#[derive(Clone, Debug)]
 struct Summary {
-    degraded: bool,
+    degraded: UnavailableMetadata,
     title: String,
     project: String,
     parent: String,
@@ -366,7 +383,9 @@ fn read_summaries(db: &Path, id: Option<&str>) -> Result<HashMap<String, Summary
         let workspace = projection("workspace_uris");
         let parent = projection("parent_conversation_id");
         let updated = projection("last_modified_time");
-        let missing = [title.as_str(), workspace.as_str(), parent.as_str()].contains(&"NULL");
+        let missing_title = title == "NULL";
+        let missing_project = workspace == "NULL";
+        let missing_parent = parent == "NULL";
         let mut stmt = conn.prepare(&format!(
             "SELECT conversation_id,{title},{workspace},{parent},{updated} FROM conversation_summaries {}",
             if id.is_some() {
@@ -389,10 +408,14 @@ fn read_summaries(db: &Path, id: Option<&str>) -> Result<HashMap<String, Summary
             let (id, title, uris, parent, updated) = row?;
             let Some(id) = id else {
                 eprintln!("[antigravity] skipped summary with invalid ID");
-                continue;
+                anyhow::bail!("undecodable summary row ID; metadata cannot be attributed safely");
             };
-            let degraded = missing || title.is_err() || uris.is_err() || parent.is_err();
-            if degraded {
+            let degraded = UnavailableMetadata {
+                title: missing_title || title.is_err(),
+                project: missing_project || uris.is_err(),
+                subagent: missing_parent || parent.is_err(),
+            };
+            if degraded.any() {
                 eprintln!("[antigravity] summary {id} has unavailable fields; existing indexed metadata preserved; fresh sessions use available fields");
             }
             let title = title.ok().flatten().unwrap_or_default();
@@ -591,6 +614,28 @@ fn edit(name: &str, input: &Value, ts: Option<DateTime<Utc>>) -> Option<EditEven
         snippet: redacted_truncate(&text, 200),
     })
 }
+enum CompactStepKind {
+    User,
+    Planner(Vec<(Option<EditEvent>, Option<String>)>),
+    Result(bool),
+    Other,
+}
+struct CompactEditStep {
+    step_index: Option<u64>,
+    ts: Option<DateTime<Utc>>,
+    cwd: Option<String>,
+    kind: CompactStepKind,
+}
+impl CompactEditStep {
+    fn placeholder() -> Self {
+        Self {
+            step_index: Some(u64::MAX),
+            ts: None,
+            cwd: None,
+            kind: CompactStepKind::Other,
+        }
+    }
+}
 struct Pending {
     id: String,
     edit: Option<EditEvent>,
@@ -616,77 +661,108 @@ fn parse_transcript(path: &Path, key: &str) -> Result<Session> {
     let mut started: Option<DateTime<Utc>> = None;
     let mut ended: Option<DateTime<Utc>> = None;
     let mut project = None;
-    // Order the complete source independently of the retained conversation window.
-    // This also preserves edit evidence from steps outside that window.
     let mut all = Vec::new();
     crate::util::for_each_line(path, |line| {
-        if let Ok(mut v) = serde_json::from_str::<Value>(line) {
-            // Tool output can be large; only the retained window needs its text.
-            if let Some(o) = v.as_object_mut() {
-                o.remove("content");
-            }
-            all.push(v);
-        }
-    })?;
-    order_steps(&mut all);
-    for v in all {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            return;
+        };
         let ts = stamp(&v);
         if let Some(t) = ts {
             started = Some(started.map_or(t, |s| s.min(t)));
             ended = Some(ended.map_or(t, |s| s.max(t)));
         }
-        if let Some(cwd) = v
+        let cwd = v
             .get("cwd")
             .or_else(|| v.get("workspace"))
             .and_then(Value::as_str)
-        {
-            project = Some(cwd.to_owned());
-        }
-        match kind(&v) {
-            "USER_INPUT" => {
-                pending.clear();
-            }
+            .map(str::to_owned);
+        let kind = match kind(&v) {
+            "USER_INPUT" => CompactStepKind::User,
             "PLANNER_RESPONSE" => {
-                if let Some(calls) = v.get("tool_calls").and_then(Value::as_array) {
-                    for (i, tc) in calls.iter().enumerate() {
+                let calls = v
+                    .get("tool_calls")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(|tc| {
                         let input = args(tc);
-                        if project.is_none() {
-                            project = input
-                                .get("Cwd")
-                                .or_else(|| input.get("cwd"))
-                                .and_then(Value::as_str)
-                                .map(str::to_owned);
-                        }
-                        if pending.len() == 4096 {
-                            pending.pop_front();
-                        }
-                        pending.push_back(Pending {
-                            id: format!("{}:{i}", record_id(&v).unwrap_or(0)),
-                            edit: edit(
+                        let cwd = input
+                            .get("Cwd")
+                            .or_else(|| input.get("cwd"))
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
+                        (
+                            edit(
                                 tc.get("name").and_then(Value::as_str).unwrap_or("?"),
                                 &input,
                                 ts,
                             ),
-                        });
+                            cwd,
+                        )
+                    })
+                    .collect();
+                CompactStepKind::Planner(calls)
+            }
+            _ if is_tool_result_step(&v) => CompactStepKind::Result(
+                v.get("status").and_then(Value::as_str) == Some("DONE")
+                    && !v.get("is_error").and_then(Value::as_bool).unwrap_or(false),
+            ),
+            _ => CompactStepKind::Other,
+        };
+        all.push(CompactEditStep {
+            step_index: record_id(&v),
+            ts,
+            cwd,
+            kind,
+        });
+    })?;
+    // Keep unindexed entries in their original slots, as in the message pass.
+    let mut indexed: Vec<_> = all
+        .iter_mut()
+        .filter(|s| s.step_index.is_some())
+        .map(|s| std::mem::replace(s, CompactEditStep::placeholder()))
+        .collect();
+    indexed.sort_by_key(|s| s.step_index);
+    let mut indexed = indexed.into_iter();
+    for slot in &mut all {
+        if slot.step_index == Some(u64::MAX) {
+            *slot = indexed.next().unwrap();
+        }
+    }
+    for step in all {
+        if let Some(cwd) = step.cwd {
+            project = Some(cwd);
+        }
+        match step.kind {
+            CompactStepKind::User => pending.clear(),
+            CompactStepKind::Planner(calls) => {
+                for (i, (edit, cwd)) in calls.into_iter().enumerate() {
+                    if project.is_none() {
+                        project = cwd;
                     }
+                    if pending.len() == 4096 {
+                        pending.pop_front();
+                    }
+                    pending.push_back(Pending {
+                        id: format!("{}:{i}", step.step_index.unwrap_or(0)),
+                        edit,
+                    });
                 }
             }
-            _ if is_tool_result_step(&v) => {
+            CompactStepKind::Result(done) => {
                 if let Some(call) = pending.pop_front() {
-                    if v.get("status").and_then(Value::as_str) == Some("DONE")
-                        && !v.get("is_error").and_then(Value::as_bool).unwrap_or(false)
-                    {
+                    if done {
                         if let Some(mut edit) = call.edit {
-                            edit.ts = ts.or(edit.ts);
+                            edit.ts = step.ts.or(edit.ts);
                             edits.push(edit);
                         }
                     }
-                    if let Some(step) = record_id(&v).filter(|step| wanted.contains(step)) {
-                        links.insert(step, call.id);
+                    if let Some(id) = step.step_index.filter(|id| wanted.contains(id)) {
+                        links.insert(id, call.id);
                     }
                 }
             }
-            _ => {}
+            CompactStepKind::Other => {}
         }
     }
     let retained_calls: HashSet<String> = retained
