@@ -886,7 +886,7 @@ pub(crate) fn load_session(
     row: &index::SessionRow,
 ) -> Result<crate::model::Session> {
     let path = std::path::Path::new(&row.path);
-    if path.exists() {
+    if !row.archived && path.exists() {
         if let Some(adapter) = adapters::by_name(&row.tool) {
             return adapters::parse_session(adapter.as_ref(), path);
         }

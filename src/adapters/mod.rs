@@ -1,4 +1,5 @@
 mod aider;
+mod antigravity;
 mod claude_code;
 mod cline;
 mod codex;
@@ -9,6 +10,7 @@ mod gptme;
 pub mod harness;
 mod opencode;
 mod prodex;
+pub use antigravity::Antigravity;
 pub use claude_code::ClaudeCode;
 pub(crate) use codex::is_subagent_meta as codex_is_subagent_meta;
 #[cfg(test)]
@@ -79,6 +81,18 @@ pub(crate) fn ok_or_flag<T, E>(r: std::result::Result<T, E>, had_error: &mut boo
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UnavailableMetadata {
+    pub title: bool,
+    pub project: bool,
+    pub subagent: bool,
+}
+impl UnavailableMetadata {
+    pub fn any(self) -> bool {
+        self.title || self.project || self.subagent
+    }
+}
+
 pub trait Adapter {
     fn name(&self) -> &'static str;
     /// Store root, e.g. ~/.claude/projects. May not exist on this machine.
@@ -100,9 +114,20 @@ pub trait Adapter {
     fn parse_key(&self, _key: &str) -> Result<Session> {
         anyhow::bail!("this adapter is not a shared store")
     }
+    /// Fields whose stored values should survive temporarily unavailable metadata.
+    fn unavailable_metadata(&self, _key: &str) -> UnavailableMetadata {
+        UnavailableMetadata::default()
+    }
+    /// Most recent timestamp relevant to bounded-sync eligibility. Shared metadata
+    /// freshness may be included for already-indexed keys without backfilling old
+    /// unindexed conversations. Defaults to real per-key activity.
+    fn sync_activity_at(&self, key: &str, already_indexed: bool) -> Option<DateTime<Utc>> {
+        let _ = already_indexed;
+        self.modified_at(key)
+    }
     /// Actual last activity time for a shared-store key, independent of its
-    /// opaque change-token. Bounded sync compares this time to its cutoff and
-    /// `scan` uses it for the store's time span. Keep this metadata-only; it
+    /// opaque change-token. The default bounded-sync hook and
+    /// `scan` use it for the store's time span. Keep this metadata-only; it
     /// must not parse the conversation. `None` preserves the legacy token
     /// interpretation for adapters whose tokens already encode timestamps.
     fn modified_at(&self, _key: &str) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -156,6 +181,8 @@ pub fn all() -> Vec<Box<dyn Adapter>> {
         Box::new(Codex::archived()),
         Box::new(CodexHistory::default()),
         Box::new(gemini::Gemini),
+        Box::new(Antigravity::ide()),
+        Box::new(Antigravity::cli()),
         Box::new(opencode::OpenCode::default()),
         Box::new(cline::Cline),
         Box::new(cline::RooCode),

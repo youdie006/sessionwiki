@@ -1510,7 +1510,7 @@ pub fn sync_with(
                     old if old.is_some_and(|row| row.2 || row.0 < 0 || row.1 < 0)
                         || since.is_none_or(|s| {
                             adapter
-                                .modified_at(key)
+                                .sync_activity_at(key, old.is_some())
                                 .map_or(*token, |time| time.timestamp())
                                 >= s
                         }) =>
@@ -1559,7 +1559,7 @@ pub fn sync_with(
                     }
                     // A failed parse is warned, not silently dropped: the user
                     // must know a session is missing from the corpus.
-                    let session = match adapters::parse_session_key(adapter.as_ref(), key) {
+                    let mut session = match adapters::parse_session_key(adapter.as_ref(), key) {
                         Ok(s) => s,
                         Err(e) => {
                             failed += 1;
@@ -1568,6 +1568,33 @@ pub fn sync_with(
                         }
                     };
                     let token = token_of.get(key.as_str()).copied().unwrap_or(0);
+                    let unavail = adapter.unavailable_metadata(key);
+                    if unavail.any() {
+                        let prior = tx
+                            .query_row(
+                                "SELECT title,project,kind='sub' FROM files WHERE path=?1",
+                                [key],
+                                |r| {
+                                    Ok((
+                                        r.get::<_, String>(0)?,
+                                        r.get::<_, String>(1)?,
+                                        r.get::<_, bool>(2)?,
+                                    ))
+                                },
+                            )
+                            .optional()?;
+                        if let Some((title, project, subagent)) = prior {
+                            if unavail.title {
+                                session.title = title;
+                            }
+                            if unavail.project {
+                                session.project = project;
+                            }
+                            if unavail.subagent {
+                                session.subagent = subagent;
+                            }
+                        }
+                    }
                     index_one(&tx, &session, key, token, 0, output_mode)?;
                 }
                 tx.commit()?;
