@@ -119,7 +119,7 @@ plugin degrades gracefully and Claude just works without recall.
 Expose your cross-tool session history as tools any MCP client can call, all
 read-only and 100% local (stdio, no sockets):
 
-- **`search_sessions`**, **`trace_file`**, **`get_session_brief`** &mdash; find a session and read a briefing of it.
+- **`search_sessions`**, **`get_session_brief`** &mdash; find a session and read a briefing of it.
 - **`recent_sessions`**, **`related_sessions`**, **`session_window`** &mdash; how one agent reads what a sibling session is doing: list who is around, find the relevant one, then pull its recent turns as a bounded, versioned JSON window (with a per-turn drill-down).
 
 ```console

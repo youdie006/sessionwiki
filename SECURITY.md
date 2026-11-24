@@ -55,8 +55,9 @@ posture is deliberately small:
 - **The `mcp` server is stdio-only and read-only.** `sessionwiki mcp` speaks
   newline-delimited JSON-RPC over stdin/stdout with no sockets and no network,
   and opens the index with a read-only handle, so a tool call can never write,
-  migrate, or VACUUM your data. Its three tools (`search_sessions`, `trace_file`,
-  `get_session_brief`) never sync (no store walk). Session content returned to an
+  migrate, or VACUUM your data. Its five tools (`search_sessions`, `get_session_brief`,
+  `session_window`, `related_sessions`, `recent_sessions`) never sync (no store
+  walk). Session content returned to an
   agent is untrusted data: it is control-stripped, short free-text fields are
   neutralized against tag/fence forgery, briefs are prefixed with a treat-as-data
   line, and no absolute session-file paths are ever emitted. Inbound lines are

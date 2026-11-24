@@ -6,6 +6,15 @@ semantic versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+### Removed
+
+- The MCP server no longer offers `trace_file`. Agents find sessions with
+  `search_sessions`, `recent_sessions` and `related_sessions`, then read them
+  with `get_session_brief` and `session_window`. A client that still calls
+  `trace_file` gets the standard unknown-tool error (-32602). The `trace`
+  command in the CLI and the web UI is unchanged. Restart any running
+  `sessionwiki mcp` servers after upgrading so clients see the new tool list.
+
 ## [0.34.26] - 2026-11-24
 
 ### Added

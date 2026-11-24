@@ -1,5 +1,5 @@
 //! A hand-rolled, stdio-only MCP server: newline-delimited JSON-RPC 2.0,
-//! six read-only tools over the local session index. No network (stdio only),
+//! five read-only tools over the local session index. No network (stdio only),
 //! no sync, no writes (the DB handle is read-only). The server owns every byte
 //! written to stdout; all logging goes to stderr.
 
@@ -111,27 +111,14 @@ fn tools_list() -> Value {
             }
         },
         {
-            "name": "trace_file",
-            "title": "Trace a file to the sessions that touched it",
-            "description": "List the AI coding sessions that edited or created a given file, across every tool. Read-only, local.",
-            "annotations": {"readOnlyHint": true},
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "A file path; the repo-relative tail is matched, e.g. src/auth.rs."}
-                },
-                "required": ["path"]
-            }
-        },
-        {
             "name": "get_session_brief",
             "title": "Get a bounded briefing of one session",
-            "description": "Return a markdown briefing (head and tail) of one session by its short id from search or trace results. Tool calls appear as compact one-line summaries; bulk tool output is omitted. Read-only, local.",
+            "description": "Return a markdown briefing (head and tail) of one session by its short id from search or recent results. Tool calls appear as compact one-line summaries; bulk tool output is omitted. Read-only, local.",
             "annotations": {"readOnlyHint": true},
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id": {"type": "string", "description": "The short session id from search_sessions or trace_file."},
+                    "id": {"type": "string", "description": "The short session id from search_sessions or recent_sessions."},
                     "max_chars": {"type": "integer", "description": "Max briefing length, 1-20000 (default 4000)."}
                 },
                 "required": ["id"]
@@ -140,12 +127,12 @@ fn tools_list() -> Value {
         {
             "name": "session_window",
             "title": "Read another session's recent conversation (bounded)",
-            "description": "Return the ACTUAL recent turns of one session (not a summary) as versioned JSON (schema \"sessionwiki.window/1\"), so you can see what a sibling agent/session is doing. Fields: id, tool, project, title, started/ended, messages (total turns), large (indexed head+tail), budget_tokens, omitted_leading, turns[] (each with i=index, role=user|assistant|tool, text, and truncated/folded+bytes), drilldown. Structured tool calls appear as compact one-line summaries with status and output line count; legacy tool text is folded head+tail and byte-bounded. The recent tail is kept within budget_tokens. Reads the session file directly (0-delay), so a still-running session's latest turns show without a sync. Pass `turn` (a turn's i) to fetch that one turn's full retained text, untruncated by the window's folding/cap (schema \"sessionwiki.turn/1\"). Use `search_sessions`/`trace_file`/`recent_sessions` to find the id. Read-only, local.",
+            "description": "Return the ACTUAL recent turns of one session (not a summary) as versioned JSON (schema \"sessionwiki.window/1\"), so you can see what a sibling agent/session is doing. Fields: id, tool, project, title, started/ended, messages (total turns), large (indexed head+tail), budget_tokens, omitted_leading, turns[] (each with i=index, role=user|assistant|tool, text, and truncated/folded+bytes), drilldown. Structured tool calls appear as compact one-line summaries with status and output line count; legacy tool text is folded head+tail and byte-bounded. The recent tail is kept within budget_tokens. Reads the session file directly (0-delay), so a still-running session's latest turns show without a sync. Pass `turn` (a turn's i) to fetch that one turn's full retained text, untruncated by the window's folding/cap (schema \"sessionwiki.turn/1\"). Use `search_sessions`/`recent_sessions` to find the id. Read-only, local.",
             "annotations": {"readOnlyHint": true},
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id": {"type": "string", "description": "The short session id from search_sessions or trace_file."},
+                    "id": {"type": "string", "description": "The short session id from search_sessions or recent_sessions."},
                     "budget_tokens": {"type": "integer", "description": "Approx token cap for the window, 200-8000 (default 1500). The most recent turns within the budget are kept."},
                     "turn": {"type": "integer", "description": "Optional: a turn index i from a prior window's turns[]. Returns just that turn's full untruncated text (drill-down) instead of the window."}
                 },
@@ -160,7 +147,7 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id": {"type": "string", "description": "The short session id from search_sessions or trace_file."},
+                    "id": {"type": "string", "description": "The short session id from search_sessions or recent_sessions."},
                     "limit": {"type": "integer", "description": "Max results, 1-30 (default 8)."},
                     "exclude_id": {"type": "string", "description": "Drop this session from the results (e.g. your own), by its id or the tool's own session id; a prefix is enough."}
                 },
@@ -186,7 +173,7 @@ fn tools_list() -> Value {
 
 /// Open the read-only index lazily on first use. On a machine with no index
 /// yet, `open_readonly` fails; the caller decides whether that is empty-success
-/// (search/trace) or an error (brief).
+/// (search) or an error (brief).
 fn get_conn(conn: &mut Option<Connection>) -> Option<&Connection> {
     if conn.is_none() {
         *conn = crate::index::open_readonly().ok();
@@ -214,7 +201,7 @@ fn text_result(text: String, is_error: bool) -> Value {
     json!({"content": [{"type": "text", "text": capped}], "isError": is_error})
 }
 
-/// A JSON-array result (search/trace). Cap by dropping whole rows so the text
+/// A JSON-array result (search). Cap by dropping whole rows so the text
 /// is always valid JSON - a char cut would truncate mid-string and break an
 /// agent parsing it.
 fn json_result(mut rows: Vec<Value>) -> Value {
@@ -399,7 +386,6 @@ fn tool_call(conn: &mut Option<Connection>, params: &Value) -> Result<Value, (i6
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
     match name {
         "search_sessions" => Ok(tool_search(conn, &args)),
-        "trace_file" => Ok(tool_trace(conn, &args)),
         "get_session_brief" => Ok(tool_brief(conn, &args)),
         "session_window" => Ok(tool_window(conn, &args)),
         "related_sessions" => Ok(tool_related(conn, &args)),
@@ -719,36 +705,6 @@ fn tool_search(conn: &mut Option<Connection>, args: &Value) -> Value {
     json_result(rows)
 }
 
-fn tool_trace(conn: &mut Option<Connection>, args: &Value) -> Value {
-    let path = args
-        .get("path")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim();
-    if path.is_empty() {
-        return text_result("path is required".into(), true);
-    }
-    let Some(conn) = get_conn(conn) else {
-        return text_result("[]".into(), false);
-    };
-    let hits = match crate::index::sessions_for_file(conn, path, 20) {
-        Ok(h) => h,
-        Err(e) => return text_result(format!("trace failed: {}", safe_text(&e.to_string())), true),
-    };
-    // Drop `matched` (it can be an absolute stored path); SessionRow.path is
-    // never serialized verbatim - only its native_id UUID. Every free-text field
-    // is neutralized.
-    let rows: Vec<Value> = hits
-        .iter()
-        .map(|(row, _matched)| {
-            let mut v = serde_json::to_value(row).unwrap_or_else(|_| json!({}));
-            neutralize_row(&mut v);
-            v
-        })
-        .collect();
-    json_result(rows)
-}
-
 fn tool_brief(conn: &mut Option<Connection>, args: &Value) -> Value {
     let id = args.get("id").and_then(Value::as_str).unwrap_or("").trim();
     if id.is_empty() {
@@ -1021,39 +977,19 @@ mod tests {
     }
 
     #[test]
-    fn unknown_tool_is_minus_32602() {
+    fn trace_file_is_an_unknown_tool() {
         let mut conn = None;
-        let req = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"nope","arguments":{}}}"#;
+        let req = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"trace_file","arguments":{"path":"src/auth.rs"}}}"#;
         let v: Value = serde_json::from_str(&handle_line(&mut conn, req).unwrap()).unwrap();
         assert_eq!(v["error"]["code"], -32602);
     }
 
     #[test]
-    fn trace_matches_by_suffix_no_matched_field() {
-        let _lock = LOCK.lock().unwrap();
-        let _c = seed("sessionwiki-test-mcp-trace");
-        let (v, text) = tool("trace_file", json!({"path": "src/auth.rs"}));
-        assert!(v["result"]["isError"] != true);
-        let arr: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(arr[0]["id"], "s1");
-        assert!(
-            arr[0].get("matched").is_none(),
-            "matched (abs path) dropped"
-        );
-        assert!(arr[0].get("path").is_none());
-    }
-
-    #[test]
-    fn trace_percent_arg_does_not_enumerate_everything() {
-        let _lock = LOCK.lock().unwrap();
-        let _c = seed("sessionwiki-test-mcp-trace-pct");
-        let (_v, text) = tool("trace_file", json!({"path": "%"}));
-        let arr: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(
-            arr.as_array().unwrap().len(),
-            0,
-            "% is escaped, not a wildcard"
-        );
+    fn unknown_tool_is_minus_32602() {
+        let mut conn = None;
+        let req = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"nope","arguments":{}}}"#;
+        let v: Value = serde_json::from_str(&handle_line(&mut conn, req).unwrap()).unwrap();
+        assert_eq!(v["error"]["code"], -32602);
     }
 
     #[test]
@@ -1379,15 +1315,6 @@ mod tests {
     }
 
     #[test]
-    fn trace_neutralizes_summary_and_project() {
-        let _lock = LOCK.lock().unwrap();
-        let _c = seed_hostile("sessionwiki-test-mcp-hostile-trace");
-        let (_v, text) = tool("trace_file", json!({"path": "src/auth.rs"}));
-        serde_json::from_str::<Value>(&text).expect("valid JSON");
-        assert_no_forgery(&text);
-    }
-
-    #[test]
     fn brief_neutralizes_title_and_redacts_project() {
         let _lock = LOCK.lock().unwrap();
         let _c = seed_hostile("sessionwiki-test-mcp-hostile-brief");
@@ -1539,7 +1466,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_has_six_readonly_tools() {
+    fn tools_list_has_five_readonly_tools() {
         let v = call(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).unwrap();
         let tools = v["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -1551,7 +1478,6 @@ mod tests {
             names,
             [
                 "search_sessions",
-                "trace_file",
                 "get_session_brief",
                 "session_window",
                 "related_sessions",
