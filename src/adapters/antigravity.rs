@@ -92,35 +92,47 @@ fn sources(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 fn preferred(dir: &Path) -> Result<PathBuf> {
-    let mut best: Option<(PathBuf, Option<u64>, std::time::SystemTime)> = None;
+    #[derive(PartialEq, Eq, PartialOrd, Ord)]
+    struct Coverage {
+        last_step: Option<u64>,
+        terminal_steps: usize,
+        full: bool,
+    }
+    let mut best: Option<(PathBuf, Coverage)> = None;
     for path in sources(dir)? {
-        let metadata = path.metadata()?;
-        if metadata.len() == 0 {
+        if path.metadata()?.len() == 0 {
             continue;
         }
-        // Full logs retain richer output, but can lag behind the compact log
-        // during a live conversation. Prefer coverage before format, retaining
-        // the FILES order (full first) when both reach the same native step.
+        // Prefer coverage, then completion, then richer full output. Compact
+        // logs normally flush slightly later even when their state is identical.
         let mut last_step = None;
+        let mut terminal_steps = 0;
         crate::util::for_each_line(&path, |line| {
             if let Ok(v) = serde_json::from_str::<Value>(line) {
                 if let Some(step) = record_id(&v) {
                     last_step = Some(last_step.map_or(step, |old: u64| old.max(step)));
                 }
+                if matches!(
+                    v.get("status").and_then(Value::as_str),
+                    Some("DONE" | "ERROR" | "FAILED" | "CANCELLED")
+                ) {
+                    terminal_steps += 1;
+                }
             }
         })?;
-        let modified = metadata.modified()?;
-        let newer =
-            best.as_ref()
-                .is_none_or(|(_, old_step, old_modified)| match (*old_step, last_step) {
-                    (Some(old), Some(new)) => new > old,
-                    _ => modified > *old_modified,
-                });
+        let score = Coverage {
+            last_step,
+            terminal_steps,
+            full: path
+                .file_name()
+                .is_some_and(|n| n == "transcript_full.jsonl"),
+        };
+        let newer = best.as_ref().is_none_or(|(_, old)| score > *old);
         if newer {
-            best = Some((path, last_step, modified));
+            best = Some((path, score));
         }
     }
-    best.map(|(path, _, _)| path)
+    best.map(|(path, _)| path)
         .with_context(|| format!("no readable transcript in {}", dir.display()))
 }
 struct Token(u64);
@@ -410,14 +422,11 @@ fn read_summaries(db: &Path, id: Option<&str>) -> Result<HashMap<String, Summary
                 eprintln!("[antigravity] skipped summary with invalid ID");
                 anyhow::bail!("undecodable summary row ID; metadata cannot be attributed safely");
             };
-            let degraded = UnavailableMetadata {
+            let mut degraded = UnavailableMetadata {
                 title: missing_title || title.is_err(),
                 project: missing_project || uris.is_err(),
                 subagent: missing_parent || parent.is_err(),
             };
-            if degraded.any() {
-                eprintln!("[antigravity] summary {id} has unavailable fields; existing indexed metadata preserved; fresh sessions use available fields");
-            }
             let title = title.ok().flatten().unwrap_or_default();
             let uris = uris.ok().flatten().unwrap_or_default();
             let parent = parent.ok().flatten().unwrap_or_default();
@@ -438,7 +447,20 @@ fn read_summaries(db: &Path, id: Option<&str>) -> Result<HashMap<String, Summary
                 }
                 _ => None,
             };
-            let uris: Vec<String> = serde_json::from_str(&uris).unwrap_or_default();
+            let uris: Vec<String> = if uris.trim().is_empty() {
+                Vec::new()
+            } else {
+                match serde_json::from_str(&uris) {
+                    Ok(uris) => uris,
+                    Err(_) => {
+                        degraded.project = true;
+                        Vec::new()
+                    }
+                }
+            };
+            if degraded.any() {
+                eprintln!("[antigravity] summary {id} has unavailable fields; existing indexed metadata preserved; fresh sessions use available fields");
+            }
             let project = uris.first().and_then(|s| file_uri(s)).unwrap_or_default();
             out.insert(
                 id,
@@ -614,10 +636,60 @@ fn edit(name: &str, input: &Value, ts: Option<DateTime<Utc>>) -> Option<EditEven
         snippet: redacted_truncate(&text, 200),
     })
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ToolFamily {
+    Generic,
+    Edit,
+    Directory,
+    View,
+    Command,
+    Search,
+    Web,
+    Other(String),
+}
+fn call_family(name: &str) -> ToolFamily {
+    match name {
+        "write_file"
+        | "write_to_file"
+        | "edit_file"
+        | "replace_file_content"
+        | "multi_replace_file_content"
+        | "code_action"
+        | "file_change"
+        | "edit_notebook"
+        | "write_blob" => ToolFamily::Edit,
+        "list_dir" | "list_directory" => ToolFamily::Directory,
+        "view_file" | "read_file" | "view_file_outline" | "view_code_item" => ToolFamily::View,
+        "run_command" | "command_status" | "shell_exec" => ToolFamily::Command,
+        "grep_search" | "find_by_name" | "code_search" => ToolFamily::Search,
+        "search_web" => ToolFamily::Web,
+        _ => ToolFamily::Other(name.to_owned()),
+    }
+}
+fn result_family(name: &str) -> ToolFamily {
+    match name {
+        "GENERIC" => ToolFamily::Generic,
+        "CODE_ACTION" | "FILE_CHANGE" | "EDIT_NOTEBOOK" | "WRITE_BLOB" => ToolFamily::Edit,
+        "LIST_DIRECTORY" => ToolFamily::Directory,
+        "VIEW_FILE" | "VIEW_FILE_OUTLINE" | "VIEW_CODE_ITEM" => ToolFamily::View,
+        "RUN_COMMAND" | "SHELL_EXEC" | "COMMAND_STATUS" => ToolFamily::Command,
+        "GREP_SEARCH" | "FIND" | "CODE_SEARCH" => ToolFamily::Search,
+        "SEARCH_WEB" => ToolFamily::Web,
+        _ => ToolFamily::Other(name.to_ascii_lowercase()),
+    }
+}
+fn take_pending(pending: &mut VecDeque<Pending>, family: &ToolFamily) -> Option<Pending> {
+    let index = if *family == ToolFamily::Generic {
+        0
+    } else {
+        pending.iter().position(|p| p.family == *family)?
+    };
+    pending.remove(index)
+}
 enum CompactStepKind {
     User,
-    Planner(Vec<(Option<EditEvent>, Option<String>)>),
-    Result(bool),
+    Planner(Vec<(Option<EditEvent>, Option<String>, ToolFamily)>),
+    Result(bool, ToolFamily),
     Other,
 }
 struct CompactEditStep {
@@ -637,6 +709,7 @@ impl CompactEditStep {
     }
 }
 struct Pending {
+    family: ToolFamily,
     id: String,
     edit: Option<EditEvent>,
 }
@@ -698,6 +771,7 @@ fn parse_transcript(path: &Path, key: &str) -> Result<Session> {
                                 ts,
                             ),
                             cwd,
+                            call_family(tc.get("name").and_then(Value::as_str).unwrap_or("?")),
                         )
                     })
                     .collect();
@@ -706,6 +780,7 @@ fn parse_transcript(path: &Path, key: &str) -> Result<Session> {
             _ if is_tool_result_step(&v) => CompactStepKind::Result(
                 v.get("status").and_then(Value::as_str) == Some("DONE")
                     && !v.get("is_error").and_then(Value::as_bool).unwrap_or(false),
+                result_family(kind(&v)),
             ),
             _ => CompactStepKind::Other,
         };
@@ -736,7 +811,7 @@ fn parse_transcript(path: &Path, key: &str) -> Result<Session> {
         match step.kind {
             CompactStepKind::User => pending.clear(),
             CompactStepKind::Planner(calls) => {
-                for (i, (edit, cwd)) in calls.into_iter().enumerate() {
+                for (i, (edit, cwd, family)) in calls.into_iter().enumerate() {
                     if project.is_none() {
                         project = cwd;
                     }
@@ -744,14 +819,15 @@ fn parse_transcript(path: &Path, key: &str) -> Result<Session> {
                         pending.pop_front();
                     }
                     pending.push_back(Pending {
+                        family,
                         id: format!("{}:{i}", step.step_index.unwrap_or(0)),
                         edit,
                     });
                 }
             }
-            CompactStepKind::Result(done) => {
-                if let Some(call) = pending.pop_front() {
-                    if done {
+            CompactStepKind::Result(done, family) => {
+                if let Some(call) = take_pending(&mut pending, &family) {
+                    if done && matches!(family, ToolFamily::Generic | ToolFamily::Edit) {
                         if let Some(mut edit) = call.edit {
                             edit.ts = step.ts.or(edit.ts);
                             edits.push(edit);

@@ -370,3 +370,63 @@ fn missing_optional_columns_keep_available_metadata_and_activity() {
     let report = crate::adapters::report(&a).unwrap();
     assert_eq!(report.newest.unwrap().timestamp(), 1600000000);
 }
+
+#[test]
+fn typed_results_skip_incompatible_pending_edits() {
+    use crate::model::{ToolEvent, ToolPart};
+    let h = tempfile::tempdir().unwrap();
+    for (result_type, call_name) in [
+        ("VIEW_FILE", "view_file"),
+        ("LIST_DIRECTORY", "list_dir"),
+        ("RUN_COMMAND", "run_command"),
+        ("SEARCH_WEB", "search_web"),
+        ("GREP_SEARCH", "grep_search"),
+    ] {
+        let data = [
+            json!({"step_index":0,"type":"PLANNER_RESPONSE","tool_calls":[
+                {"name":"replace_file_content","args":{"TargetFile":"/work/sample.txt","TargetContent":"old","ReplacementContent":"new"}},
+                {"name":call_name,"args":{}}
+            ]}),
+            json!({"step_index":1,"type":result_type,"source":"MODEL","status":"DONE","content":"read-only result"}),
+        ].iter().map(|v| v.to_string()+"\n").collect::<String>();
+        let p = transcript(h.path(), "antigravity-cli", "s", "transcript.jsonl", &data);
+        let s = parse_transcript(&p, "s").unwrap();
+        assert!(s.edits.is_empty(), "{result_type}");
+        assert!(s.touched.is_empty(), "{result_type}");
+        let result = s
+            .messages
+            .iter()
+            .find_map(|m| match &m.tool {
+                Some(ToolEvent::Part(ToolPart::Result(r))) => Some(r),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(result.call_id.as_deref(), Some("0:1"), "{result_type}");
+    }
+}
+
+#[test]
+fn preferred_log_uses_completion_before_full_format() {
+    let h = tempfile::tempdir().unwrap();
+    let running =
+        json!({"step_index":4,"type":"CODE_ACTION","status":"RUNNING","content":"pending"})
+            .to_string();
+    let done = running.replace("RUNNING", "DONE");
+    let full = transcript(
+        h.path(),
+        "antigravity-cli",
+        "s",
+        "transcript_full.jsonl",
+        &done,
+    );
+    let compact = transcript(h.path(), "antigravity-cli", "s", "transcript.jsonl", &done);
+    let dir = full.parent().unwrap().parent().unwrap().parent().unwrap();
+    // Compact is newer on disk even when its step content is identical.
+    std::fs::File::open(&full)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+        .unwrap();
+    assert_eq!(preferred(dir).unwrap(), full);
+    std::fs::write(&full, running).unwrap();
+    assert_eq!(preferred(dir).unwrap(), compact);
+}

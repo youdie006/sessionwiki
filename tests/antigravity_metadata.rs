@@ -221,6 +221,22 @@ fn degraded_fields_preserve_metadata_without_blocking_transcript_updates_or_rest
     let mut conn = index::open().unwrap();
     let adapters: Vec<Box<dyn Adapter>> = vec![Box::new(Antigravity::cli_in_home(&home))];
     index::sync_with(&mut conn, &adapters, None).unwrap();
+    for bad in ["{broken", "[1]", "{\"key\":\"value\"}"] {
+        native
+            .execute(
+                "UPDATE conversation_summaries SET workspace_uris=?1,title='Malformed workspace'",
+                [bad],
+            )
+            .unwrap();
+        index::sync_with(&mut conn, &adapters, None).unwrap();
+        let (title, project): (String, String) = conn
+            .query_row("SELECT title,project FROM files", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(title, "Malformed workspace");
+        assert_eq!(project, "/original");
+    }
     native.execute_batch("ALTER TABLE conversation_summaries DROP COLUMN workspace_uris; UPDATE conversation_summaries SET title='New title'").unwrap();
     let appended = format!(
         "{capture}\n{}\n{}\n{}\n",
